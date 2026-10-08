@@ -3,8 +3,7 @@
 Ein Messenger nach dem Vorbild von Apple Nachrichten – mit eigenem Server, immer Ende-zu-Ende-verschlüsselt,
 ohne Telefonnummer, ohne Werbung, ohne Datensammlung. Teil der Li-Apps von LiSoftware.
 
-> Arbeitsname „LiChat“ (Board). In Olafs Konzept-Notiz steht als Antwort „LiTalk“ – der endgültige Name ist
-> noch offen (Frage A unten).
+> Name: **LiChat** (Olaf, 08.10.2026).
 
 ## Grundsätze (Wertekompass, gilt für alle Li-Apps)
 1. **Privatsphäre:** Der Server sieht nur verschlüsselte Pakete. Keine Kontaktlisten, keine Gruppennamen,
@@ -21,14 +20,20 @@ Gespräch eingeladen werden, mit deutlichem Hinweis und Schlüsselwechsel beim E
 | Ordner | Inhalt | Stand |
 |---|---|---|
 | `server/` | LiChat-Server, Stufe 1: Einladungen, Geräte, MLS-Key-Packages, Postfach je Gerät, ntfy-Anstoß. Python, nur Standardbibliothek | **Grundgerüst mit Tests** |
-| `core/` | Gemeinsamer Kern in Rust: OpenMLS (RFC 9420), verschlüsselter Speicher; Bindings für Kotlin (uniffi) und Python (pyo3) | geplant |
+| `core/` | Gemeinsamer Kern in Rust: OpenMLS (RFC 9420); Bindings für Kotlin (uniffi) und Python (pyo3) folgen | **Gespräche mit Tests** (zu zweit, Gruppe, Schlüsselwechsel, Fälschungen) |
 | `android/` | Android-App (Kotlin/Compose), Look wie Nachrichten auf dem iPhone | geplant |
 | `linux/` | Ubuntu-App (GTK4/libadwaita, Python), Look wie Nachrichten auf dem Mac; dazu `lichat-cli` fürs Team | geplant |
 | `shared/` | Gemeinsames: Übersetzungen (DE/EN/FR), Hilfe, Testdaten | geplant |
 | `docs/` | Architektur, Protokoll, später Transparenzbericht | begonnen |
 
-Ausbaustufen (Konzept): **1** Einzelgespräche · **2** Gruppen · **3** Signal auf dem Gerät (libsignal als
+Ausbaustufen (Konzept): **1** Einzel- und Gruppengespräche (Gruppen früh, Olaf 08.10.) · **2** Anhänge, mehrere Geräte · **3** Signal auf dem Gerät (libsignal als
 verknüpftes Gerät, keine Brücke auf dem Server, AGPL). Telegram vorerst nicht.
+
+## Kern testen
+
+```
+cd core && nice cargo test -j 3                     # zwei Geräte, Gruppe, Schlüsselwechsel, Fälschungen
+```
 
 ## Server ausprobieren (nur lokal)
 
@@ -41,11 +46,13 @@ LICHAT_DATA=/tmp/lichat python3 -m lichat_server.admin invite "für Anna"
 
 Die Schnittstelle steht oben in `server/lichat_server/app.py`.
 
-## Offene Fragen an Olaf
-- **A** Name: LiChat oder LiTalk?
-- **B** Gruppen schon in Stufe 1, damit das Team früh dabei ist, oder erst Einzelgespräche?
-- **C** Farbe des eigenen Netzes: Blau wie iMessage (Grün bleibt für „unsicherer“) oder Grün wie in der Notiz?
-- Lizenz (wegen libsignal in Stufe 3 vermutlich AGPL-3.0) – entscheidet Olaf.
+## Entschieden (Olaf, 08.10.2026)
+- **A** Name: LiChat.
+- **B** Gruppen schon in Stufe 1, damit das Team früh dabei ist.
+- **C** Farben wie iMessage: eigenes Netz blau, Grün bleibt für „unsicherer“ (z. B. Signal-Brücke später).
+
+## Noch offen
+- Lizenz (wegen libsignal in einer späteren Stufe vermutlich AGPL-3.0) – entscheidet Olaf.
 
 Grundlagen: Olafs Notiz „LiChat – Konzept“ (LiNotes 1a8a84fc), Anforderungskarte 37ad8505,
 Konzeptabgleich `~/Team/Jean-Marie/lichat-konzept.md`, Testplan `~/Team/Michelle/lichat-testplan.md`.
