@@ -1052,6 +1052,7 @@ dependencies = [
 name = "lichat_core"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
