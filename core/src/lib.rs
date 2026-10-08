@@ -41,6 +41,28 @@ fn mls<E: std::fmt::Debug>(error: E) -> Error {
     Error::Mls(format!("{error:?}"))
 }
 
+/// The sealed state file starts with this; the rest: 12 bytes nonce, AES-256-GCM ciphertext + tag (magic = additional data).
+pub const STATE_MAGIC: &[u8] = b"LICHAT1";
+
+fn put(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], Error> {
+    let bad = || Error::Malformed("Zustand beschädigt".into());
+    if input.len() < 4 {
+        return Err(bad());
+    }
+    let length = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+    if input.len() < 4 + length {
+        return Err(bad());
+    }
+    let (value, rest) = input[4..].split_at(length);
+    *input = rest;
+    Ok(value)
+}
+
 /// What arrived from the mailbox, after decryption.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Received {
@@ -188,6 +210,85 @@ impl Device {
             .filter_map(|m| BasicCredential::try_from(m.credential).ok())
             .map(|c| String::from_utf8_lossy(c.identity()).into_owned())
             .collect())
+    }
+
+    /// The whole device – identity, keys, key packages not yet used, conversations – sealed with [key] (32 bytes from the
+    /// Android Keystore / GNOME keyring, never stored next to the file). Only this goes to disk.
+    pub fn save(&self, key: &[u8; 32]) -> Result<Vec<u8>, Error> {
+        use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+        let mut plain = Vec::new();
+        put(&mut plain, self.identity.as_bytes());
+        put(&mut plain, &self.signer.to_public_vec());   // the private key is in the storage (signer.store)
+        let ids: Vec<&Vec<u8>> = self.conversations.keys().collect();
+        plain.extend_from_slice(&(ids.len() as u32).to_be_bytes());
+        for id in ids {
+            put(&mut plain, id);
+        }
+        let values = self.provider.storage().values.read().map_err(mls)?;
+        plain.extend_from_slice(&(values.len() as u32).to_be_bytes());
+        for (k, v) in values.iter() {
+            put(&mut plain, k);
+            put(&mut plain, v);
+        }
+        let cipher = aes_gcm::Aes256Gcm::new(key.into());
+        let nonce = aes_gcm::Aes256Gcm::generate_nonce(&mut OsRng);
+        let sealed = cipher.encrypt(&nonce, Payload { msg: &plain, aad: STATE_MAGIC }).map_err(mls)?;
+        Ok([STATE_MAGIC, nonce.as_slice(), &sealed].concat())
+    }
+
+    /// The device [save] wrote. A wrong key or a changed byte: refused, nothing half-loaded.
+    pub fn load(sealed: &[u8], key: &[u8; 32]) -> Result<Self, Error> {
+        use aes_gcm::aead::{Aead, KeyInit, Payload};
+        if sealed.len() < STATE_MAGIC.len() + 12 || &sealed[..STATE_MAGIC.len()] != STATE_MAGIC {
+            return Err(Error::Malformed("kein LiChat-Zustand".into()));
+        }
+        let (nonce, body) = sealed[STATE_MAGIC.len()..].split_at(12);
+        let plain = aes_gcm::Aes256Gcm::new(key.into())
+            .decrypt(nonce.into(), Payload { msg: body, aad: STATE_MAGIC })
+            .map_err(|_| Error::Malformed("falscher Schlüssel oder Datei verändert".into()))?;
+        let mut input = plain.as_slice();
+        let identity = String::from_utf8_lossy(take(&mut input)?).into_owned();
+        let public = take(&mut input)?.to_vec();
+        let count = |input: &mut &[u8]| -> Result<usize, Error> {
+            if input.len() < 4 {
+                return Err(Error::Malformed("Zustand beschädigt".into()));
+            }
+            let n = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+            *input = &input[4..];
+            Ok(n)
+        };
+        let mut ids = Vec::new();
+        for _ in 0..count(&mut input)? {
+            ids.push(take(&mut input)?.to_vec());
+        }
+        let provider = OpenMlsRustCrypto::default();
+        {
+            let mut values = provider.storage().values.write().map_err(mls)?;
+            for _ in 0..count(&mut input)? {
+                let k = take(&mut input)?.to_vec();
+                let v = take(&mut input)?.to_vec();
+                values.insert(k, v);
+            }
+        }
+        let signer = SignatureKeyPair::read(provider.storage(), &public, CIPHERSUITE.signature_algorithm())
+            .ok_or_else(|| Error::Malformed("Signaturschlüssel fehlt im Zustand".into()))?;
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity.as_bytes().to_vec()).into(),
+            signature_key: signer.to_public_vec().into(),
+        };
+        let mut conversations = HashMap::new();
+        for id in ids {
+            let group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&id))
+                .map_err(mls)?
+                .ok_or_else(|| Error::Malformed("Gespräch fehlt im Zustand".into()))?;
+            conversations.insert(id, group);
+        }
+        Ok(Self { provider, signer, credential, identity, conversations })
+    }
+
+    /// The conversations this device is in.
+    pub fn conversations(&self) -> Vec<Vec<u8>> {
+        self.conversations.keys().cloned().collect()
     }
 
     /// The epoch authenticator: the same on every device of the conversation – compared, it shows nobody sits in between.

@@ -90,3 +90,32 @@ fn group_of_three() {
     let from_anna = anna.encrypt(&id, b"Ja!").unwrap();
     assert!(matches!(erna.receive(&from_anna).unwrap(), Received::Message { payload, .. } if payload == b"Ja!"));
 }
+
+/// The state survives a restart only sealed: saved, loaded with the key, the conversation goes on; wrong key refused.
+#[test]
+fn save_and_load() {
+    let key = [7u8; 32];
+    let mut anna = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let spare = bernd.key_packages(2).unwrap();
+    let started = anna.start_conversation(&spare[..1]).unwrap();
+    bernd.join(&started.welcome).unwrap();
+    let id = started.conversation;
+
+    let sealed = bernd.save(&key).unwrap();
+    assert!(!sealed.windows(5).any(|w| w == b"bernd"), "Identität im Klartext");
+    assert!(Device::load(&sealed, &[8u8; 32]).is_err());
+    let mut bernd = Device::load(&sealed, &key).unwrap();
+    assert_eq!(bernd.identity(), "bernd");
+    assert_eq!(bernd.conversations(), vec![id.clone()]);
+
+    let hello = anna.encrypt(&id, b"nach dem Neustart").unwrap();
+    assert!(matches!(bernd.receive(&hello).unwrap(), Received::Message { payload, .. } if payload == b"nach dem Neustart"));
+    let back = bernd.encrypt(&id, b"bin wieder da").unwrap();
+    assert!(matches!(anna.receive(&back).unwrap(), Received::Message { sender, .. } if sender == "bernd"));
+
+    // The unused key package from before the restart still works (its private key came along).
+    let mut erna = Device::new("erna").unwrap();
+    let late = erna.start_conversation(&spare[1..]).unwrap();
+    assert!(bernd.join(&late.welcome).is_ok());
+}
