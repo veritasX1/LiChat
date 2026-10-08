@@ -17,6 +17,8 @@ from pathlib import Path
 
 KEEP_UNFETCHED = 30 * 24 * 3600      # seconds
 MAX_KEY_PACKAGES = 100               # per device
+MAILBOX_BYTES = 32 * 1024 * 1024     # per device: nobody fills a stranger's mailbox (Michelle 4ba8dc07)
+MAILBOX_MESSAGES = 5000
 INVITE_DAYS = 14
 
 
@@ -33,6 +35,8 @@ class Store:
         self.db = sqlite3.connect(self.dir / "lichat.db", check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        # Deleted rows are overwritten, not only unlinked – on every system, not only where SQLite was built so (a255c433).
+        self.db.execute("PRAGMA secure_delete=ON")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, expires REAL NOT NULL, note TEXT);
             CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, created REAL NOT NULL);
@@ -42,6 +46,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS key_packages (
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS last_resort (
+                device TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE, blob BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL, received REAL NOT NULL);
@@ -112,8 +118,15 @@ class Store:
             self.db.executemany("INSERT INTO key_packages (device, blob) VALUES (?, ?)", [(device, b) for b in blobs])
             return have + len(blobs)
 
+    def set_last_resort(self, device, blob):
+        """The device's last-resort key package (MLS RFC 9420 §16.8): handed out when the supply is empty and never
+        used up, so nobody can make a device unreachable by claiming all its packages (Michelle 3c7ea47d)."""
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO last_resort VALUES (?, ?)", (device, blob))
+
     def claim_key_packages(self, username):
-        """One key package per device of the user; each package is used only once (MLS)."""
+        """One key package per device of the user; each package is used only once (MLS) – when none is left, the
+        device's last-resort package (kept)."""
         out = []
         with self.lock:
             for device, _identity in self.db.execute(
@@ -123,6 +136,10 @@ class Store:
                 if row:
                     self.db.execute("DELETE FROM key_packages WHERE id = ?", (row[0],))
                     out.append({"device": device, "key_package": row[1]})
+                else:
+                    last = self.db.execute("SELECT blob FROM last_resort WHERE device = ?", (device,)).fetchone()
+                    if last:
+                        out.append({"device": device, "key_package": last[0], "last_resort": True})
         return out
 
     def key_package_count(self, device):
@@ -132,17 +149,22 @@ class Store:
 
     def deliver(self, devices, blob):
         """Puts one encrypted message into the mailbox of each device. Unknown devices are skipped
-        and reported, so the sender can refresh its view of the recipient."""
-        known, unknown = [], []
+        and reported, so the sender can refresh its view of the recipient; a full mailbox too."""
+        known, unknown, full = [], [], []
         with self.lock:
             for device in devices:
                 if self.db.execute("SELECT 1 FROM devices WHERE id = ?", (device,)).fetchone():
+                    count, size = self.db.execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(blob)), 0) FROM messages WHERE device = ?",
+                                                  (device,)).fetchone()
+                    if count >= MAILBOX_MESSAGES or size + len(blob) > MAILBOX_BYTES:
+                        full.append(device)
+                        continue
                     self.db.execute("INSERT INTO messages (device, blob, received) VALUES (?, ?, ?)",
                                     (device, blob, self.clock()))
                     known.append(device)
                 else:
                     unknown.append(device)
-        return known, unknown
+        return known, unknown, full
 
     def fetch(self, device, limit=100):
         rows = self.db.execute("SELECT id, blob, received FROM messages WHERE device = ? ORDER BY id LIMIT ?",

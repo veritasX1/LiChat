@@ -8,8 +8,9 @@ them once fetched. Endpoints (all JSON, blobs base64):
     POST   /v1/devices              {identity, push?} another own device      -> {device, token}
     DELETE /v1/devices/me           sign this device out, mailbox goes too
     POST   /v1/key-packages         {key_packages: [b64, …]}                  -> {count}
-    POST   /v1/key-packages/<name>  claim one package per device of <name>    -> {key_packages: [...]}
-    POST   /v1/messages             {to: [device, …], blob}                   -> {delivered, unknown}
+    POST   /v1/key-packages/<name>  claim one package per device of <name>    -> {key_packages: [...]}  (10/h per claimer)
+    PUT    /v1/key-packages/last-resort {key_package}  kept, handed out when the supply is empty
+    POST   /v1/messages             {to: [device, …], blob}                   -> {delivered, unknown, full}
     GET    /v1/messages             own mailbox                               -> {messages: [...]}
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
     GET    /v1/health
@@ -90,13 +91,18 @@ def unb64(text, limit):
 
 
 class App:
-    def __init__(self, data_dir=None, notifier=ntfy_push, clock=time.time, push_hosts=None):
+    def __init__(self, data_dir=None, notifier=ntfy_push, clock=time.time, push_hosts=None, trusted_proxies=None):
         self.store = Store(data_dir or os.environ.get("LICHAT_DATA", "./data"), clock=clock)
         self.notifier = notifier
         # Push only to our own ntfy (no third parties); LICHAT_PUSH_HOSTS="https://ntfy.example/,…"
         hosts = push_hosts if push_hosts is not None else os.environ.get("LICHAT_PUSH_HOSTS", "")
         self.push_hosts = [h.strip() for h in hosts.split(",") if h.strip()]
+        # X-Real-IP only from our own reverse proxy (Michelle ddb9b934): LICHAT_TRUSTED_PROXIES="127.0.0.1" on the Pi.
+        proxies = os.environ.get("LICHAT_TRUSTED_PROXIES", "") if trusted_proxies is None else trusted_proxies
+        self.trusted_proxies = {p.strip() for p in proxies.split(",") if p.strip()}
         self.register_limit = Limiter(10, 3600, clock)
+        # Claiming key packages: per claimer and user, so nobody empties a supply (3c7ea47d).
+        self.claim_limit = Limiter(10, 3600, clock)
         self.send_limit = Limiter(300, 600, clock)
         self.auth_failures = Limiter(20, 900, clock)
         self.routes = [
@@ -106,6 +112,7 @@ class App:
             ("DELETE", r"/v1/devices/me", self.remove_me, True),
             ("POST", r"/v1/key-packages", self.upload_key_packages, True),
             ("POST", r"/v1/key-packages/(?P<name>[^/]+)", self.claim_key_packages, True),
+            ("PUT", r"/v1/key-packages/last-resort", self.upload_last_resort, True),
             ("POST", r"/v1/messages", self.send, True),
             ("GET", r"/v1/messages", self.mailbox, True),
             ("POST", r"/v1/messages/ack", self.ack, True),
@@ -142,7 +149,10 @@ class App:
         raise HttpError(405 if allowed else 404, "unbekannt")
 
     def address(self, environ):
-        return environ.get("HTTP_X_REAL_IP") or environ.get("REMOTE_ADDR") or "?"
+        remote = environ.get("REMOTE_ADDR") or "?"
+        if remote in self.trusted_proxies and environ.get("HTTP_X_REAL_IP"):
+            return environ["HTTP_X_REAL_IP"]
+        return remote
 
     def authenticate(self, environ):
         header = environ.get("HTTP_AUTHORIZATION", "")
@@ -229,10 +239,16 @@ class App:
         except ValueError:
             raise HttpError(409, "zu viele Key-Packages")
 
+    def upload_last_resort(self, environ, body, me):
+        self.store.set_last_resort(me[0], unb64(body.get("key_package"), MAX_BLOB))
+        return {"ok": True}
+
     def claim_key_packages(self, environ, body, me, name):
         if not self.store.devices(name):
             raise HttpError(404, "unbekannt")
-        return {"key_packages": [{"device": p["device"], "key_package": b64(p["key_package"])}
+        if not self.claim_limit.hit((me[0], name)):
+            raise HttpError(429, "zu viele Abrufe")
+        return {"key_packages": [{"device": p["device"], "key_package": b64(p["key_package"]), "last_resort": p.get("last_resort", False)}
                                  for p in self.store.claim_key_packages(name)]}
 
     def send(self, environ, body, me):
@@ -242,12 +258,12 @@ class App:
         if not isinstance(to, list) or not to or len(to) > 1000 or not all(
                 isinstance(d, str) and DEVICE.fullmatch(d) for d in to):
             raise HttpError(400, "Empfänger fehlen")
-        known, unknown = self.store.deliver(sorted(set(to)), unb64(body.get("blob"), MAX_BLOB))
+        known, unknown, full = self.store.deliver(sorted(set(to)), unb64(body.get("blob"), MAX_BLOB))
         for device in known:
             target = self.store.push_target(device)
             if target and device != me[0]:
                 self.notifier(target)
-        return {"delivered": known, "unknown": unknown}
+        return {"delivered": known, "unknown": unknown, "full": full}
 
     def mailbox(self, environ, body, me):
         return {"messages": [{"id": m["id"], "blob": b64(m["blob"]), "received": m["received"]}
