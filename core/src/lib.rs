@@ -7,6 +7,9 @@
 //!
 //! Step 1 keeps the state in memory; the encrypted store on the device follows (docs, „nächste Schritte“).
 
+#[cfg(feature = "python")]
+mod python;
+
 use std::collections::HashMap;
 
 use openmls::prelude::{tls_codec::*, *};
