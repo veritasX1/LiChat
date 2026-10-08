@@ -123,6 +123,55 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(first[0]["device"], bernd_dev)
         self.assertEqual(third, [])
 
+    def test_last_resort_package_and_claim_limit(self):
+        """3c7ea47d: an emptied supply still leaves the last-resort package (kept); claiming is limited per claimer."""
+        _, anna = self.account("anna")
+        _, erna = self.account("erna")
+        _, bernd = self.account("bernd")
+        self.call("POST", "/v1/key-packages", {"key_packages": [b64(b"kp1")]}, token=bernd)
+        self.assertEqual(self.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(b"reserve")}, token=bernd)[0], 200)
+        first = self.call("POST", "/v1/key-packages/bernd", token=anna)[1]["key_packages"]
+        self.assertEqual((first[0]["key_package"], first[0]["last_resort"]), (b64(b"kp1"), False))
+        for _ in range(9):
+            again = self.call("POST", "/v1/key-packages/bernd", token=anna)[1]["key_packages"]
+            self.assertEqual((again[0]["key_package"], again[0]["last_resort"]), (b64(b"reserve"), True))
+        self.assertEqual(self.call("POST", "/v1/key-packages/bernd", token=anna)[0], 429)
+        self.assertEqual(self.call("POST", "/v1/key-packages/bernd", token=erna)[1]["key_packages"][0]["key_package"], b64(b"reserve"))
+
+    def test_real_ip_header_only_from_trusted_proxy(self):
+        """ddb9b934: X-Real-IP from anyone else does not dodge the brakes."""
+        def wrong(ip, header):
+            environ_ip = {"ip": ip}
+            raw = b""
+            environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/v1/messages", "CONTENT_LENGTH": "0", "wsgi.input": io.BytesIO(raw),
+                       "REMOTE_ADDR": environ_ip["ip"], "HTTP_X_REAL_IP": header, "HTTP_AUTHORIZATION": "Bearer falsch"}
+            out = {}
+            self.app(environ, lambda status, headers: out.setdefault("status", int(status.split()[0])))
+            return out["status"]
+        statuses = [wrong("10.0.0.9", f"192.0.2.{i}") for i in range(25)]
+        self.assertIn(429, statuses, "fremder X-Real-IP umgeht die Bremse")
+        self.app.trusted_proxies = {"127.0.0.1"}
+        self.assertEqual(self.app.address({"REMOTE_ADDR": "127.0.0.1", "HTTP_X_REAL_IP": "198.51.100.7"}), "198.51.100.7")
+        self.assertEqual(self.app.address({"REMOTE_ADDR": "10.0.0.9", "HTTP_X_REAL_IP": "198.51.100.7"}), "10.0.0.9")
+
+    def test_mailbox_quota(self):
+        """4ba8dc07: nobody fills a stranger's mailbox – beyond the quota the device is reported as full."""
+        from lichat_server import store as store_module
+        _, anna = self.account("anna")
+        bernd_dev, _ = self.account("bernd")
+        old = store_module.MAILBOX_BYTES
+        store_module.MAILBOX_BYTES = 3000
+        try:
+            results = [self.call("POST", "/v1/messages", {"to": [bernd_dev], "blob": b64(b"x" * 1000)}, token=anna)[1] for _ in range(4)]
+        finally:
+            store_module.MAILBOX_BYTES = old
+        self.assertEqual([r["delivered"] for r in results], [[bernd_dev]] * 3 + [[]])
+        self.assertEqual(results[3]["full"], [bernd_dev])
+
+    def test_secure_delete_is_on(self):
+        """a255c433: deleted messages are overwritten in the database file."""
+        self.assertEqual(self.app.store.db.execute("PRAGMA secure_delete").fetchone()[0], 1)
+
     # Messages ------------------------------------------------------------------------------------
 
     def test_message_round_trip_and_deleted_after_ack(self):
