@@ -681,6 +681,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_conversations(
     ): Int
+    external fun uniffi_lichat_core_checksum_method_device_device_keys(
+    ): Int
     external fun uniffi_lichat_core_checksum_method_device_encrypt(
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_identity(
@@ -696,6 +698,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_lichat_core_checksum_method_device_members(
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_receive(
+    ): Int
+    external fun uniffi_lichat_core_checksum_method_device_remove_device(
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_remove_members(
     ): Int
@@ -743,6 +747,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_conversations(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_lichat_core_fn_method_device_device_keys(`ptr`: Long,`conversation`: RustBuffer.ByValue,`identity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_encrypt(`ptr`: Long,`conversation`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_identity(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -758,6 +764,8 @@ internal object UniffiLib {
     external fun uniffi_lichat_core_fn_method_device_members(`ptr`: Long,`conversation`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_receive(`ptr`: Long,`data`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_lichat_core_fn_method_device_remove_device(`ptr`: Long,`conversation`: RustBuffer.ByValue,`signatureKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_remove_members(`ptr`: Long,`conversation`: RustBuffer.ByValue,`identities`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -899,6 +907,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_lichat_core_checksum_method_device_conversations() and 0xFFFF) != 53091) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_lichat_core_checksum_method_device_device_keys() and 0xFFFF) != 37153) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_lichat_core_checksum_method_device_encrypt() and 0xFFFF) != 39191) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -921,6 +932,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_lichat_core_checksum_method_device_receive() and 0xFFFF) != 13956) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_lichat_core_checksum_method_device_remove_device() and 0xFFFF) != 48914) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_lichat_core_checksum_method_device_remove_members() and 0xFFFF) != 47547) {
@@ -1305,6 +1319,8 @@ public interface DeviceInterface {
     
     fun `conversations`(): List<kotlin.ByteArray>
     
+    fun `deviceKeys`(`conversation`: kotlin.ByteArray, `identity`: kotlin.String): List<kotlin.ByteArray>
+    
     fun `encrypt`(`conversation`: kotlin.ByteArray, `payload`: kotlin.ByteArray): kotlin.ByteArray
     
     fun `identity`(): kotlin.String
@@ -1320,6 +1336,8 @@ public interface DeviceInterface {
     fun `members`(`conversation`: kotlin.ByteArray): List<kotlin.String>
     
     fun `receive`(`data`: kotlin.ByteArray): Incoming
+    
+    fun `removeDevice`(`conversation`: kotlin.ByteArray, `signatureKey`: kotlin.ByteArray): kotlin.ByteArray
     
     fun `removeMembers`(`conversation`: kotlin.ByteArray, `identities`: List<kotlin.String>): kotlin.ByteArray
     
@@ -1477,6 +1495,22 @@ open class Device: Disposable, AutoCloseable, DeviceInterface
     
 
     
+    @Throws(CoreException::class)override fun `deviceKeys`(`conversation`: kotlin.ByteArray, `identity`: kotlin.String): List<kotlin.ByteArray> {
+            return FfiConverterSequenceByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.uniffi_lichat_core_fn_method_device_device_keys(
+        it,
+        
+        FfiConverterByteArray.lower(`conversation`),
+        FfiConverterString.lower(`identity`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `encrypt`(`conversation`: kotlin.ByteArray, `payload`: kotlin.ByteArray): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     callWithHandle {
@@ -1586,6 +1620,22 @@ open class Device: Disposable, AutoCloseable, DeviceInterface
         it,
         
         FfiConverterByteArray.lower(`data`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `removeDevice`(`conversation`: kotlin.ByteArray, `signatureKey`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.uniffi_lichat_core_fn_method_device_remove_device(
+        it,
+        
+        FfiConverterByteArray.lower(`conversation`),
+        FfiConverterByteArray.lower(`signatureKey`),_status)
 }
     }
     )

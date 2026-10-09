@@ -898,7 +898,9 @@ fun Section(header: String?, footer: String? = null, content: @Composable () -> 
 fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, onPreview: (Boolean) -> Unit, onPicture: () -> Unit,
                    onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {},
                    receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> },
-                   typing: Boolean = false, onTyping: (Boolean) -> Unit = {}) {
+                   typing: Boolean = false, onTyping: (Boolean) -> Unit = {},
+                   devices: List<Account.OwnDevice>? = null, linking: String? = null, onAddDevice: (String) -> Unit = {},
+                   onRemoveDevice: (String) -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -943,6 +945,40 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             SwitchRow("Tipp-Anzeige senden", typing, onTyping)
         }
+        // Several devices per person (card da5cbfcb): the list, „Gerät hinzufügen“ with the new device's code, sign out others.
+        var adding by remember { mutableStateOf(false) }
+        var code by remember { mutableStateOf("") }
+        var confirm by remember { mutableStateOf<String?>(null) }
+        Section("GERÄTE", footer = "Auf dem neuen Gerät „Mit vorhandenem Gerät verbinden“ wählen – es zeigt einen Code. Es liest alles, was ab dann " +
+            "kommt; ältere Nachrichten bleiben auf deinen bisherigen Geräten. Gerätenamen bleiben auf dem Gerät, der Server kennt sie nicht.") {
+            devices.orEmpty().forEachIndexed { i, d ->
+                if (i > 0) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val since = java.text.SimpleDateFormat("dd.MM.yyyy, HH:mm", java.util.Locale.GERMANY).format(java.util.Date(d.since * 1000))
+                    Column(Modifier.weight(1f)) {
+                        BasicText(if (d.isThis) "Dieses Gerät" + (if (d.name.isNotEmpty()) " (${d.name})" else "") else "Gerät", style = style(17f, 400, colors.label))
+                        BasicText("seit $since", style = style(13f, 400, colors.secondary))
+                    }
+                    if (!d.isThis) BasicText(if (confirm == d.id) "Wirklich abmelden?" else "Abmelden", style = style(15f, if (confirm == d.id) 600 else 400, colors.red),
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button) {
+                            if (confirm == d.id) { confirm = null; onRemoveDevice(d.id) } else confirm = d.id
+                        }.padding(horizontal = 6.dp, vertical = 8.dp))
+                }
+            }
+            if (devices == null) BasicText("Wird geladen …", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(16.dp))
+            Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+            when {
+                linking != null -> BasicText(linking, style = style(17f, 400, colors.secondary), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                adding -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(code, { code = it.uppercase().take(12) }, singleLine = true, textStyle = style(17f, 400, colors.label),
+                        cursorBrush = SolidColor(colors.blue), modifier = Modifier.weight(1f).padding(vertical = 6.dp).semantics { contentDescription = "Code vom neuen Gerät" },
+                        decorationBox = { inner -> if (code.isEmpty()) BasicText("Code vom neuen Gerät", style = style(17f, 400, colors.tertiary)); inner() })
+                    TextButton("Verbinden", colors.blue, 600, enabled = code.replace("-", "").length >= 8) { adding = false; onAddDevice(code.trim()); code = "" }
+                }
+                else -> BasicText("Gerät hinzufügen …", style = style(17f, 400, colors.blue),
+                    modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { adding = true }.padding(horizontal = 16.dp, vertical = 12.dp))
+            }
+        }
         Section("VERBINDUNG", footer = "LiChat hält selbst eine Verbindung zu deinem Server – kein anderer Dienst erfährt, wann du Nachrichten bekommst. " +
             "Solange Android LiChat beim Akku einschränkt, können Nachrichten verspätet kommen.") {
             Row(Modifier.fillMaxWidth().clickable(enabled = !unrestricted, onClick = onUnrestrict).padding(horizontal = 16.dp, vertical = 12.dp),
@@ -984,9 +1020,44 @@ fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
 // ---------------------------------------------------------------------------------------------- sign in
 
 @Composable
-fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, String, String, String) -> Unit) {
+fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLink: (String) -> Unit = {}, onLinkCancel: () -> Unit = {},
+                onSignIn: (String, String, String, String, String) -> Unit) {
     val colors = palette()
-    var server by remember { mutableStateOf("https://") }
+    // Our own server as a default (Tante Erna types nothing) – any other one can be entered.
+    var server by remember { mutableStateOf("https://exampleserver.lisoftware.de") }
+    var linkMode by remember { mutableStateOf(false) }
+    if (linkMode || linkCode != null) {
+        // A second device (card da5cbfcb): this one shows a code, the existing device accepts it – like Signal.
+        Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.ime))
+            .verticalScroll(rememberScrollState()).padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            AppIcon(88.dp)
+            BasicText("Mit vorhandenem Gerät verbinden", style = style(24f, 700, colors.label).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))
+            if (linkCode == null) {
+                Section(null) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BasicText("Server", style = style(17f, 400, colors.label), modifier = Modifier.width(120.dp))
+                        BasicTextField(server, { server = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                            modifier = Modifier.weight(1f).semantics { contentDescription = "Server" })
+                    }
+                }
+                if (problem != null) BasicText(problem, style = style(13f, 400, colors.red).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))
+                val ready = !busy && server.length > 8
+                Box(Modifier.padding(16.dp).fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(if (ready) colors.blue else colors.fill)
+                    .clickable(enabled = ready, role = Role.Button) { onLink(server) }, contentAlignment = Alignment.Center) {
+                    BasicText("Code anzeigen", style = style(17f, 600, if (ready) Color.White else colors.tertiary))
+                }
+            } else {
+                BasicText(linkCode, style = style(40f, 700, colors.label).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(3f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                    modifier = Modifier.padding(16.dp).semantics { contentDescription = "Code ${linkCode.toList().joinToString(" ")}" })
+                BasicText("Auf deinem anderen Gerät: Einstellungen › Geräte › „Gerät hinzufügen …“ und diesen Code eingeben. Er gilt 10 Minuten.",
+                    style = style(15f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp))
+                BasicText(if (busy) "Warte auf dein anderes Gerät …" else "", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(16.dp))
+                if (problem != null) BasicText(problem, style = style(13f, 400, colors.red).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))
+            }
+            TextButton("Abbrechen", colors.blue) { linkMode = false; onLinkCancel() }
+        }
+        return
+    }
     var invite by remember { mutableStateOf("") }
     // Name as people write it (Olaf 09.10.: capitals, spaces); the user name is made from it and can be changed.
     var first by remember { mutableStateOf("") }
@@ -1019,6 +1090,8 @@ fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, Stri
             .clickable(enabled = ready, role = Role.Button) { onSignIn(server, invite.trim(), name.trim(), first.trim(), last.trim()) }, contentAlignment = Alignment.Center) {
             BasicText(if (busy) "Anmelden …" else "Anmelden", style = style(17f, 600, if (ready) Color.White else colors.tertiary))
         }
+        TextButton("Mit vorhandenem Gerät verbinden", colors.blue) { linkMode = true }
+        Spacer(Modifier.height(24.dp))
     }
 }
 

@@ -6,6 +6,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertIsOff
@@ -248,6 +249,38 @@ httpd.serve_forever()
     fun settings() = shot("6-einstellungen") { SettingsScreen(anna, false, false, {}, {}, {}, {}) }
 
     /** Michelle: the switches had no checked state and only their pixels reacted – now the whole row is one switch. */
+    /** da5cbfcb: the devices in the settings – this one, another with „Abmelden“ (asked twice), „Gerät hinzufügen …“ with the code. */
+    @Test
+    fun devices() {
+        var added = ""; var removed = ""
+        val list = listOf(io.github.veritasx1.lichat.core.Account.OwnDevice("aaaa", 1791500000, true, "Pixel"),
+            io.github.veritasx1.lichat.core.Account.OwnDevice("bbbb", 1791540000, false, ""))
+        shot("6d-geraete") { SettingsScreen(anna, false, true, {}, {}, {}, {}, devices = list, onAddDevice = { added = it }, onRemoveDevice = { removed = it }) }
+        compose.onNodeWithText("Dieses Gerät (Pixel)").assertExists()
+        compose.onNodeWithText("Abmelden").performScrollTo().performClick()
+        org.junit.Assert.assertEquals("", removed)
+        compose.onNodeWithText("Wirklich abmelden?").performScrollTo().performClick()
+        org.junit.Assert.assertEquals("bbbb", removed)
+        compose.onNodeWithText("Gerät hinzufügen …").performScrollTo().performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Code vom neuen Gerät")).performTextInput("abcd-ef23")
+        compose.onNodeWithText("Verbinden").performScrollTo().performClick()
+        org.junit.Assert.assertEquals("ABCD-EF23", added)
+    }
+
+    @Test
+    fun linkSetup() {
+        var server = ""
+        shot("7b-koppeln") { SetupScreen(false, null, onLink = { server = it }) { _, _, _, _, _ -> } }
+        compose.onNodeWithText("Mit vorhandenem Gerät verbinden").performClick()
+        compose.onNodeWithText("Code anzeigen").assertExists()
+    }
+
+    @Test
+    fun linkCodeShown() = shot("7c-koppeln-code") {
+        // the code as the new device shows it (the mode is opened by the link on the sign-in screen)
+        SetupScreen(true, null, linkCode = "ABCD-EF23") { _, _, _, _, _ -> }
+    }
+
     @Test
     fun switchRowsAreSwitches() {
         var on = false
