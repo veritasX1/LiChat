@@ -1131,6 +1131,26 @@ class Cli(Base):
         self.assertIn("bernd: Nach dem Neustart", out)
         self.assertIn("neuer Versuch", err)
 
+    def test_abholen_after_a_once_picture_was_opened(self):
+        """Michelle 84a2318e: „abholen“ crashed (KeyError 'from') on „einmal_geoeffnet“ – and showed nothing after it."""
+        self.run_cli("anna", "register", self.url, self.app.store.create_invite(), "anna")
+        bernd = self.person("bernd")
+        chat = self.run_cli("anna", "neu", "bernd")[1].split()[1]
+        bernd.fetch()
+        photo = test_image(self.root / "einmal.jpg", size=(200, 150))
+        self.assertEqual(self.run_cli("anna", "datei", chat, str(photo), "--einmal")[0], 0)
+        bernd.fetch()
+        cid = next(iter(bernd.visible_chats()))
+        mid = bernd.chats[cid]["messages"][-1]["mid"]
+        bernd.open_once(cid, mid)
+        bernd.report_screenshot(cid, mid)
+        bernd.send(cid, "Danach")
+        code, out = self.run_cli("anna", "abholen")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Einmal-Bild geöffnet", out)
+        self.assertIn("Bildschirmfoto vom Einmal-Bild", out)
+        self.assertIn("bernd: Danach", out)
+
     def test_cli_round_trip(self):
         code, out = self.run_cli("anna", "register", self.url, self.app.store.create_invite(), "anna")
         self.assertEqual(code, 0, out)

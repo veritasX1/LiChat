@@ -1176,6 +1176,13 @@ class Account(val folder: File, private val key: ByteArray) {
     fun openOnce(cid: String, mid: String): ByteArray {
         val message = findMessage(cid, mid)
         if (message == null || onceState(message) != "neu") throw LiChatException("Dieses Einmal-Bild lässt sich nicht mehr öffnen")
+        synchronized(lock) { if (!openingOnce.add(mid)) throw LiChatException("Das Einmal-Bild wird schon geöffnet") }
+        try { return openOnceNow(cid, mid, message) } finally { synchronized(lock) { openingOnce.remove(mid) } }
+    }
+
+    private val openingOnce = mutableSetOf<String>()
+
+    private fun openOnceNow(cid: String, mid: String, message: JSONObject): ByteArray {
         val info = message.getJSONObject("anhang")
         val sealed = try { server.raw("GET", "/v1/anhaenge/${info.getString("id")}") } catch (e: LiChatException) {
             if (e.message?.let { "(404)" in it || "(410)" in it } != true) throw e        // offline: try again later

@@ -161,11 +161,16 @@ def main(argv):
                 print(f"[{chat}] {item['from']} hat eine Nachricht widerrufen")
             elif item.get("problem"):
                 print(f"[{chat}] ⚠ {item['problem']}")
+            elif "opened" in item:
+                # fe9f2029 (Michelle 84a2318e: this crashed „abholen“ – the event has no sender of its own)
+                print(f"[{chat}] Einmal-Bild geöffnet")
+            elif item.get("text") is None:
+                continue                # anything else without a line of its own
             else:
                 quote = item.get("antwort")
                 about = f" (↪ {quote.get('from')}: {quote.get('text', '')[:40]})" if quote else ""
                 mark = " (@dich)" if item.get("mention") else ""
-                who = "ich" if item["from"] == account.username else item["from"]     # mine, from another of my devices
+                who = "ich" if item.get("from") == account.username else item.get("from", "?")     # mine, from another of my devices
                 print(f"[{chat}] {when(item['at'])} {who}{mark}{about}: {item['text']}")
         if not news:
             print("nichts Neues")
