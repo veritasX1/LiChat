@@ -332,6 +332,49 @@ def main():
     assert "erna" not in texts(window.info.get_popover()), texts(window.info.get_popover())
     assert "Du hast erna aus der Unterhaltung entfernt." in texts(window.bubbles)
 
+    # Mac points (Michelle 09.10.): pinned on top, filters, unread pill, per-chat receipts, delete + „Zuletzt gelöscht“,
+    # shortcuts with Strg.
+    anna.pin(cid, True)
+    window.fill_list()
+    settle(0.2)
+    assert window.pins.get_visible() and "bernd" in texts(window.pins)
+    shot(window, "09-angeheftet.png")
+    window.open_number(1)
+    settle(0.2)
+    assert window.current == cid
+    window.open_number(2)
+    settle(0.2)
+    assert window.current == group
+    window.next_chat()
+    settle(0.2)
+    assert window.current == cid
+    window.lookup_action("filter").change_state(GLib.Variant.new_string("ungelesen"))
+    settle(0.2)
+    assert window.filter_label.get_visible() and window.filter_label.get_label() == "Ungelesen"
+    window.lookup_action("filter").change_state(GLib.Variant.new_string("alle"))
+    bernd.send(cid, "Neu eins"); bernd.send(cid, "Neu zwei")
+    window.open_chat(group)
+    until(lambda: anna.unread(cid) == 2)
+    window.open_chat(cid)
+    settle(0.3)
+    assert "2 ungelesene" in window.first_pill.get_label()
+    assert not window.first_pill.get_visible(), "both unread are in view – no pill (like the Mac)"
+    window.to_first_unread()
+    victim = [m for m in anna.chats[cid]["messages"] if m.get("text") == "Neu eins"][0]
+    anna.delete_message(cid, victim["mid"])
+    window.show_conversation()
+    settle(0.2)
+    assert "Neu eins" not in texts(window.bubbles)
+    window.lookup_action("filter").change_state(GLib.Variant.new_string("geloescht"))
+    settle(0.2)
+    assert window.list.get_row_at_index(0) is not None
+    anna.restore(cid)
+    window.lookup_action("filter").change_state(GLib.Variant.new_string("alle"))
+    window.fill_info(window.info)
+    assert "Lesebestätigungen senden" in texts(window.info.get_popover())
+    assert any("blockieren" in (t or "") for t in texts(window.info.get_popover()))
+    anna.pin(cid, False)
+
     # A second device (da5cbfcb): a new window shows a code, Anna's „Meine Geräte“ accepts it, the new one is Anna too.
     second = app_module.Window(app, folder=Path(SCRATCH) / "anna-zwei")
     second.present()
@@ -391,7 +434,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 11  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen
+    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 13  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")
