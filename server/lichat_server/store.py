@@ -62,6 +62,8 @@ class Store:
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL, received REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS messages_device ON messages(device, id);
+            -- Contact PINs (card 89aae55d): a short code that names its user for 10 minutes, once.
+            CREATE TABLE IF NOT EXISTS pins (pin TEXT PRIMARY KEY, username TEXT NOT NULL, expires REAL NOT NULL);
             -- Attachments (card 9780f3a0): encrypted on the phone, the server keeps opaque bytes – no name, no type.
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -213,12 +215,31 @@ class Store:
             now = self.clock()
             gone = self.db.execute("DELETE FROM messages WHERE received < ?", (now - KEEP_UNFETCHED,)).rowcount
             self.db.execute("DELETE FROM invites WHERE expires < ?", (now,))
+            self.db.execute("DELETE FROM pins WHERE expires < ?", (now,))
             old = [row[0] for row in self.db.execute("SELECT id FROM attachments WHERE created < ?", (now - KEEP_UNFETCHED,))]
             self.db.executemany("DELETE FROM attachments WHERE id = ?", [(i,) for i in old])
         for attachment in old:
             self.attachment_path(attachment).unlink(missing_ok=True)
         self.forget_orphans()
         return gone
+
+    # Contact PINs --------------------------------------------------------------------------------
+
+    def create_pin(self, username, minutes=10):
+        """A PIN for „Kontakt hinzufügen“: 8 signs without I/L/O/0/1, 10 minutes, once; the user's earlier PIN goes."""
+        pin = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(4)) + "-" + "".join(secrets.choice(INVITE_ALPHABET) for _ in range(4))
+        with self.lock:
+            self.db.execute("DELETE FROM pins WHERE username = ? OR expires < ?", (username, self.clock()))
+            self.db.execute("INSERT INTO pins VALUES (?, ?, ?)", (pin, username, self.clock() + minutes * 60))
+        return pin
+
+    def redeem_pin(self, pin):
+        """The user behind a PIN – and the PIN is gone (once). None when unknown or expired."""
+        key = invite_key(pin)
+        with self.lock:
+            row = self.db.execute("SELECT username, expires FROM pins WHERE pin = ?", (key,)).fetchone()
+            self.db.execute("DELETE FROM pins WHERE pin = ? OR expires < ?", (key, self.clock()))
+        return row[0] if row and row[1] >= self.clock() else None
 
     # Attachments ---------------------------------------------------------------------------------
 

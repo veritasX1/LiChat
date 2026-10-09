@@ -35,6 +35,11 @@ and {"t": "reaktion", "mid", "emoji"} sets the sender's one reaction on a messag
 Display names (Olaf 09.10.: „groß und Kleinschreibung … vor und Nachnamen“): {"t": "name", "vorname", "nachname"}
 travels like the picture, only inside the conversations; the user name stays the lower-case handle on the server.
 
+Contacts (card 89aae55d): kept only on the device (sealed in profile.bin). A contact QR / link carries user name, server
+and the fingerprint of the person's identity keys – scanning it checks the fingerprint against the directory, so the
+contact is „verifiziert“ (nobody slipped in other keys). A PIN (10 minutes, once) only names the user: not verified.
+    lichat://kontakt?server=…&name=…&fp=…        lichat://einladung?server=…&code=…   (or https://<server>/e/<code>)
+
 Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
 <JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
@@ -299,8 +304,13 @@ class Account:
         return found[0]
 
     def directory(self, username):
-        """The user's devices and public keys, as the server lists them."""
-        return {d["device"]: unb64(d["identity"]) for d in self.server.call("GET", f"/v1/users/{urllib.parse.quote(username)}")["devices"]}
+        """The user's devices and public keys, as the server lists them ({} when the name is unknown)."""
+        try:
+            return {d["device"]: unb64(d["identity"]) for d in self.server.call("GET", f"/v1/users/{urllib.parse.quote(username)}")["devices"]}
+        except LiChatError as error:
+            if "(404)" in str(error):
+                return {}
+            raise
 
     def start(self, usernames, title=""):
         """A conversation with these people (all their devices). Every claimed key package must belong to the user and
@@ -449,6 +459,71 @@ class Account:
         for targets, packet in sends:
             if targets:
                 self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    # ------------------------------------------------------------------------------------------ contacts (89aae55d)
+
+    @staticmethod
+    def fingerprint(identities):
+        """16 bytes of SHA-256 over a user's identity keys (sorted) – what a contact QR carries and scanning checks."""
+        digest = hashlib.sha256(b"".join(sorted(bytes(i) for i in identities))).hexdigest()
+        return digest[:32]
+
+    def contact_link(self):
+        """My contact as a link (and QR): no phone number, only name, server and my keys' fingerprint."""
+        fp = self.fingerprint(list(self.directory(self.username).values()) or [bytes(self.device.identity_key())])
+        return f"lichat://kontakt?server={urllib.parse.quote(self.info['server'], safe='')}&name={self.username}&fp={fp}"
+
+    @staticmethod
+    def parse_link(text):
+        """A pasted or scanned text: {"art": "kontakt", "server", "name", "fp"} | {"art": "einladung", "server", "code"} | None."""
+        text = str(text).strip()
+        match = re.match(r"^(https?://[^/\s]+)/e/([A-Za-z0-9-]{4,40})/?$", text)
+        if match:
+            return {"art": "einladung", "server": match.group(1), "code": match.group(2).upper()}
+        parsed = urllib.parse.urlparse(text)
+        if parsed.scheme != "lichat":
+            return None
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
+        if parsed.netloc == "einladung" and query.get("code"):
+            return {"art": "einladung", "server": query.get("server", ""), "code": query["code"].upper()}
+        if parsed.netloc == "kontakt" and query.get("name"):
+            return {"art": "kontakt", "server": query.get("server", ""), "name": query["name"], "fp": query.get("fp", "")}
+        return None
+
+    @property
+    def contacts(self):
+        return self.profiles.setdefault("kontakte", {})
+
+    def add_contact(self, username, fingerprint=None):
+        """Adds a contact – verified when the fingerprint from their QR matches the directory now."""
+        username = str(username).strip().lower()
+        listed = self.directory(username)
+        if not listed:
+            raise LiChatError(f"{username} gibt es auf diesem Server nicht")
+        verified = bool(fingerprint) and self.fingerprint(list(listed.values())) == fingerprint
+        if fingerprint and not verified:
+            raise LiChatError(f"Der Schlüssel von {username} passt nicht zum QR-Code – Kontakt nicht übernommen")
+        with self.lock:
+            known = self.contacts.get(username, {})
+            self.contacts[username] = {"verifiziert": verified or known.get("verifiziert", False), "seit": known.get("seit", int(time.time()))}
+            self.save()
+        return self.contacts[username]
+
+    def add_contact_link(self, text):
+        link = self.parse_link(text)
+        if not link or link["art"] != "kontakt":
+            raise LiChatError("Das ist kein LiChat-Kontakt")
+        if link["server"] and check_server(urllib.parse.unquote(link["server"])) != self.info["server"]:
+            raise LiChatError("Dieser Kontakt ist auf einem anderen LiChat-Server")
+        return link["name"], self.add_contact(link["name"], link["fp"])
+
+    def new_pin(self):
+        """A PIN for someone to add me (10 minutes, once)."""
+        return self.server.call("POST", "/v1/pins", {})["pin"]
+
+    def redeem_pin(self, pin):
+        username = self.server.call("POST", "/v1/pins/einloesen", {"pin": pin})["username"]
+        return username, self.add_contact(username)
 
     def display(self, username):
         """What people see: „Vorname Nachname“ when that person told us (end to end), else the user name."""

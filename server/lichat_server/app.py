@@ -16,6 +16,9 @@ them once fetched. Endpoints (all JSON, blobs base64):
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
     PUT    /v1/anhaenge             raw encrypted bytes (≤ 100 MB, 1 GB per device) -> {id}   (card 9780f3a0)
     GET    /v1/anhaenge/<id>        the bytes again (signed in; gone after 30 days)
+    POST   /v1/pins                 a contact PIN for me (10 min, once)        -> {pin, gueltig}   (card 89aae55d)
+    POST   /v1/pins/einloesen       {pin} -> {username}  (wrong PINs: 10 per 15 min and device)
+    GET    /e/<code>                an invitation as a page: „In LiChat öffnen“, QR code, the code to type (card 4fe6d0ee)
     GET    /v1/health
 
 Signed in = header "Authorization: Bearer <token>" (the device token from register).
@@ -34,7 +37,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 
-from .store import ATTACHMENT_BYTES, Store
+from .store import ATTACHMENT_BYTES, Store, invite_key
 
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
 DEVICE = re.compile(r"^[0-9a-f]{16}$")
@@ -119,6 +122,8 @@ class App:
         self.claim_limit = Limiter(10, 3600, clock)
         self.send_limit = Limiter(300, 600, clock)
         self.auth_failures = Limiter(20, 900, clock)
+        self.pin_failures = Limiter(10, 900, clock)
+        self.public = (os.environ.get("LICHAT_OEFFENTLICH") or "https://lichat.lisoftware.de").rstrip("/")
         self.routes = [
             ("POST", r"/v1/register", self.register, False),
             ("GET", r"/v1/users/(?P<name>[^/]+)", self.user, True),
@@ -132,6 +137,9 @@ class App:
             ("POST", r"/v1/messages/ack", self.ack, True),
             ("GET", r"/v1/health", lambda env, body, me: {"ok": True}, False),
             ("PUT", r"/v1/anhaenge", self.put_attachment, True),
+            ("POST", r"/v1/pins", self.new_pin, True),
+            ("POST", r"/v1/pins/einloesen", self.redeem_pin, True),
+            ("GET", r"/e/(?P<code>[A-Za-z0-9-]{4,40})", self.invite_page, False),
             ("GET", r"/v1/anhaenge/(?P<attachment>[0-9a-f]{32})", self.get_attachment, True),
         ]
 
@@ -142,6 +150,12 @@ class App:
             status, payload = 200, self.dispatch(environ)
         except HttpError as error:
             status, payload = error.status, {"error": error.message}
+        if isinstance(payload, Page):
+            data = payload.html.encode()
+            start_response("200 OK", [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(data))),
+                                      ("Cache-Control", "no-store"), ("Referrer-Policy", "no-referrer"),
+                                      ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")])
+            return [data]
         if isinstance(payload, Raw):
             start_response("200 OK", [("Content-Type", "application/octet-stream"), ("Content-Length", str(payload.size)),
                                       ("Cache-Control", "no-store")])
@@ -311,12 +325,52 @@ class App:
             raise HttpError(404, "Anhang nicht mehr da")
         return Raw(*found)
 
+    def new_pin(self, environ, body, me):
+        return {"pin": self.store.create_pin(me[1]), "gueltig": 600}
+
+    def redeem_pin(self, environ, body, me):
+        username = self.store.redeem_pin(str(body.get("pin", "")))
+        if username is None:
+            if not self.pin_failures.hit(me[0]):
+                raise HttpError(429, "zu viele falsche PINs – bitte später")
+            raise HttpError(404, "PIN unbekannt oder abgelaufen")
+        return {"username": username}
+
+    def invite_page(self, environ, body, me, code):
+        """The invitation as a page (QR, link, code). Says nothing about whether the code is valid – no oracle."""
+        import html
+        from urllib.parse import quote
+        from .qrcodegen import QrCode
+        code = invite_key(code)
+        link = f"{self.public}/e/{code}"
+        app = f"lichat://einladung?server={quote(self.public, safe='')}&code={code}"
+        qr = QrCode.encode_text(link, QrCode.Ecc.MEDIUM)
+        cells = "".join(f'<rect x="{x + 4}" y="{y + 4}" width="1" height="1"/>' for y in range(qr.get_size()) for x in range(qr.get_size()) if qr.get_module(x, y))
+        size = qr.get_size() + 8
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="240" height="240" shape-rendering="crispEdges">'
+               f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{cells}</g></svg>')
+        import base64 as b
+        image = "data:image/svg+xml;base64," + b.b64encode(svg.encode()).decode()
+        return Page(f"""<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Einladung zu LiChat</title><style>body{{font:17px -apple-system,Inter,sans-serif;text-align:center;margin:40px 16px;color:#1d1d1f}}
+a.b{{display:inline-block;background:#0a7aff;color:#fff;padding:12px 22px;border-radius:12px;text-decoration:none;font-weight:600}}
+code{{font-size:22px;letter-spacing:2px}} p{{color:#6e6e73}}</style></head><body>
+<h1>Einladung zu LiChat</h1><p>Ende-zu-Ende verschlüsselt, ohne Telefonnummer.</p>
+<p><a class="b" href="{html.escape(app)}">In LiChat öffnen</a></p>
+<p>Oder mit LiChat scannen:</p><img alt="QR-Code der Einladung" src="{image}">
+<p>Zum Abtippen: <code>{html.escape(code)}</code><br>Server: {html.escape(self.public)}</p></body></html>""")
+
     def ack(self, environ, body, me):
         ids = body.get("ids")
         if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
             raise HttpError(400, "ids fehlen")
         self.store.acknowledge(me[0], ids)
         return {"ok": True}
+
+
+class Page:
+    def __init__(self, html):
+        self.html = html
 
 
 class Raw:

@@ -9,7 +9,10 @@ from .store import Store
 def main(argv):
     store = Store(os.environ.get("LICHAT_DATA", "./data"))
     if argv[:1] == ["invite"]:
-        print(store.create_invite(" ".join(argv[1:])))
+        code = store.create_invite(" ".join(argv[1:]))
+        public = (os.environ.get("LICHAT_OEFFENTLICH") or "https://lichat.lisoftware.de").rstrip("/")
+        print(code)
+        print(f"{public}/e/{code}", file=sys.stderr)   # the link (page with QR) on stderr – the code alone stays on stdout
     elif argv[:1] == ["purge"]:
         print(f"{store.purge()} alte Nachrichten gelöscht")
     else:
