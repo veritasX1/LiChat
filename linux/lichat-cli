@@ -10,6 +10,7 @@
     lichat-cli [--profil NAME] verlauf <gespräch>
     lichat-cli [--profil NAME] mitglieder <gespräch>
     lichat-cli [--profil NAME] code <gespräch>              # Sicherheitscode zum Vergleichen
+    lichat-cli [--profil NAME] entfernen <gespräch> <person …>  # aus dem Gespräch nehmen
     lichat-cli [--profil NAME] bild <datei>|--weg           # Profilbild (512 px, ohne EXIF, nur in den Gesprächen)
 
 Daten: $XDG_DATA_HOME/lichat-cli/<profil> (Standard „standard“, oder LICHAT_PROFIL). Ein <gespräch> ist die kurze
@@ -70,6 +71,8 @@ def main(argv):
             chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
             if item.get("joined"):
                 print(f"[{chat}] neues Gespräch")
+            elif item.get("removed"):
+                print(f"[{chat}] {item['removed']} hat dich aus dem Gespräch entfernt")
             elif item.get("picture"):
                 print(f"[{chat}] neues Profilbild von {item['picture']}")
             elif item.get("problem"):
@@ -94,6 +97,12 @@ def main(argv):
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":
         print(account.safety_code(account.chat(args[0] if args else "")))
+    elif command == "entfernen":
+        if len(args) < 2:
+            raise LiChatError("entfernen <gespräch> <person …>")
+        cid = account.chat(args[0])
+        account.remove(cid, args[1:])
+        print(f"{', '.join(args[1:])} aus {short(bytes.fromhex(cid))} entfernt")
     elif command == "bild":
         if not args:
             raise LiChatError("bild <datei> | bild --weg")

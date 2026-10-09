@@ -78,7 +78,8 @@ impl Device {
         Ok(PyBytes::new(py, &self.inner.update_keys(conversation).map_err(err)?))
     }
 
-    /// -> {"kind": "message", "conversation", "sender", "payload"} or {"kind": "changed", "conversation"}
+    /// -> {"kind": "message", "conversation", "sender", "payload"} | {"kind": "changed", "conversation"}
+    ///    | {"kind": "removed", "conversation", "sender"}
     fn receive<'py>(&mut self, py: Python<'py>, data: &[u8]) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let out = pyo3::types::PyDict::new(py);
         match self.inner.receive(data).map_err(err)? {
@@ -92,8 +93,17 @@ impl Device {
                 out.set_item("kind", "changed")?;
                 out.set_item("conversation", PyBytes::new(py, &conversation))?;
             }
+            Received::Removed { conversation, by } => {
+                out.set_item("kind", "removed")?;
+                out.set_item("conversation", PyBytes::new(py, &conversation))?;
+                out.set_item("sender", by)?;
+            }
         }
         Ok(out)
+    }
+
+    fn remove_members<'py>(&mut self, py: Python<'py>, conversation: &[u8], identities: Vec<String>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.remove_members(conversation, &identities).map_err(err)?))
     }
 
     fn members(&self, conversation: &[u8]) -> PyResult<Vec<String>> {

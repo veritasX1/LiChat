@@ -195,6 +195,27 @@ class Pictures(Base):
         self.assertIsNone(bernd.picture("anna"))
 
 
+class Remove(Base):
+    def test_removed_member_reads_nothing_after(self):
+        """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = anna.start(["bernd", "erna"], title="Verein")
+        bernd.fetch(), erna.fetch()
+        anna.remove(cid, ["erna"])
+        self.assertEqual(sorted(anna.members(cid)), ["anna", "bernd"])
+        self.assertNotIn("erna", anna.chats[cid]["roster"])
+        self.assertEqual(erna.fetch(), [{"chat": cid, "removed": "anna"}])
+        bernd.fetch()
+        self.assertNotIn("erna", bernd.chats[cid]["roster"])
+        bernd.send(cid, "Jetzt ohne Erna")
+        self.assertEqual([n["text"] for n in anna.fetch()], ["Jetzt ohne Erna"])
+        self.assertEqual(erna.fetch(), [], "nichts mehr für Erna")
+        with self.assertRaises(LiChatError):
+            erna.send(cid, "Hallo?")
+        erna = self.reopen(erna)
+        self.assertEqual(erna.chats[cid]["removed"], "anna")   # history stays, the conversation is closed
+
+
 class Supply(Base):
     def test_last_resort_keeps_a_device_reachable(self):
         account_module.SUPPLY, before = 1, account_module.SUPPLY

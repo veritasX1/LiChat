@@ -184,6 +184,15 @@ def main():
     assert "erna" in texts(window.bubbles)          # the sender's name over the bubble in a group
     shot(window, "06-gruppe.png")
 
+    # Take Erna out of the group (test plan S2): her side shows it, the input is gone.
+    window.current = group
+    window.show_conversation()
+    window.remove_member(group, "erna")
+    until(lambda: "erna" not in anna.chats[group]["roster"])
+    assert "anna" in [n.get("removed") for n in erna.fetch()]
+    window.fill_info(window.info)
+    assert "erna" not in " ".join(texts(window.info.get_popover()))
+
     # Search in the list.
     window.search.set_text("Kartoffel")
     settle(0.5)
