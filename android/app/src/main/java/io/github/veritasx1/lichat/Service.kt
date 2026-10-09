@@ -101,8 +101,9 @@ object Notifications {
             .setContentIntent(open(context, null))
             .build()
 
-    fun message(context: Context, news: News) {
-        val text = if (Settings.preview(context)) (if (news.mention) "${news.from} hat dich erwähnt: ${news.text}" else "${news.from}: ${news.text}")
+    fun message(context: Context, news: News, who: String = news.from) {
+        // who: the display name („Testerin Clí Äpfelgrün“), not the user name (Michelle 09.10.)
+        val text = if (Settings.preview(context)) (if (news.mention) "$who hat dich erwähnt: ${news.text}" else "$who: ${news.text}")
             else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
         val notification = Notification.Builder(context, MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lichat)
@@ -212,7 +213,7 @@ class LiChatService : Service() {
             if (Hub.visible && Hub.openChat == item.chat) continue
             if (item.chat != null && account.muted(item.chat) && !item.mention) continue   // muted – but a mention comes through (d54175ed)
             val shown = Settings.notifying(this)
-            if (shown) Notifications.message(this, item)
+            if (shown) Notifications.message(this, item, account.display(item.from))
             if (debuggable) {
                 // Michelle Z5 a: one line per message, without content and names – only to measure the way. When Android
                 // does not let LiChat notify, it says so instead of a time (24e8f89c).

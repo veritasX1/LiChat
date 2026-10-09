@@ -682,6 +682,23 @@ class Devices(Base):
         self.assertEqual(result["device"], second.device_id)
         return second
 
+    def test_an_unreadable_packet_is_shown_not_swallowed(self):
+        """Michelle 09.10.: a packet the core refuses (here: the same one delivered twice) leaves a grey line in its
+        conversation instead of vanishing."""
+        from lichat.account import MLS, b64
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        with anna.lock:
+            packet = anna.device.encrypt(bytes.fromhex(cid), anna._payload({"t": "text", "text": "einmal", "at": int(time.time())}))
+            anna.save()
+        for _ in range(2):
+            anna.server.call("POST", "/v1/messages", {"to": anna.targets(cid), "blob": b64(MLS + bytes(packet))})
+        news = bernd.fetch()
+        self.assertIn("einmal", [n.get("text") for n in news])
+        self.assertIn("Eine Nachricht konnte nicht entschlüsselt werden.", [n.get("system") for n in news])
+        self.assertEqual(bernd.chats[cid]["messages"][-1]["text"], "Eine Nachricht konnte nicht entschlüsselt werden.")
+
     def test_second_device(self):
         phone, bernd = self.person("anna"), self.person("bernd")
         cid = phone.start(["bernd"])

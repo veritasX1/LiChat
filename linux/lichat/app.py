@@ -968,7 +968,8 @@ class Window(Adw.ApplicationWindow):
         """A GNOME notification. By default only „Neue Nachricht“ (Michelle S4) – sender and text only when switched on."""
         note = Gio.Notification.new("LiChat")
         if self.settings["vorschau"]:
-            note.set_body(f"{item['from']} hat dich erwähnt: {item['text']}" if item.get("mention") else f"{item['from']}: {item['text']}")
+            who = self.account.display(item["from"])     # the display name, not the user name (Michelle)
+            note.set_body(f"{who} hat dich erwähnt: {item['text']}" if item.get("mention") else f"{who}: {item['text']}")
         else:
             note.set_body("Neue Erwähnung" if item.get("mention") else "Neue Nachricht")
         note.set_default_action_and_target("app.oeffnen", GLib.Variant.new_string(item["chat"]))

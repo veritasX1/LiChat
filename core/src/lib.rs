@@ -286,6 +286,14 @@ impl Device {
             .collect())
     }
 
+    /// Which conversation a packet belongs to – readable without the keys (the group id is not encrypted), so a packet
+    /// that cannot be decrypted is still shown in its conversation instead of vanishing (Michelle 09.10.).
+    pub fn conversation_of(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        let message = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;
+        let protocol = message.try_into_protocol_message().map_err(|e| Error::Malformed(format!("{e:?}")))?;
+        Ok(protocol.group_id().as_slice().to_vec())
+    }
+
     /// Handles one message from the mailbox (application message or commit of a conversation this device is in).
     pub fn receive(&mut self, bytes: &[u8]) -> Result<Received, Error> {
         let message = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;
@@ -390,9 +398,13 @@ impl Device {
         };
         let mut conversations = HashMap::new();
         for id in ids {
-            let group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&id))
+            let mut group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&id))
                 .map_err(mls)?
                 .ok_or_else(|| Error::Malformed("Gespräch fehlt im Zustand".into()))?;
+            // Groups from before 09.10. 09:47 kept no past epochs: a message crossing a change was lost (Michelle) –
+            // they get the same policy as new ones.
+            // (OpenMLS only resizes the store when the policy really differs.)
+            group.set_configuration(provider.storage(), &Self::join_config()).map_err(mls)?;
             conversations.insert(id, group);
         }
         Ok(Self { provider, signer, credential, identity, conversations })

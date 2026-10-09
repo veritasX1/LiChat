@@ -156,6 +156,12 @@ impl Device {
     }
 }
 
+/// The conversation a packet belongs to, without decrypting it (to show „konnte nicht entschlüsselt werden“ there).
+#[uniffi::export]
+pub fn conversation_of(packet: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+    Ok(Core::conversation_of(&packet)?)
+}
+
 /// Whose a claimed key package is (signature checked) – compared with the directory before a conversation starts.
 #[uniffi::export]
 pub fn key_package_owner(key_package: Vec<u8>) -> Result<Owner, CoreError> {

@@ -5,6 +5,7 @@ import org.json.JSONObject
 import uniffi.lichat_core.CoreException
 import uniffi.lichat_core.Device
 import uniffi.lichat_core.Incoming
+import uniffi.lichat_core.conversationOf
 import uniffi.lichat_core.keyPackageOwner
 import java.io.File
 import java.net.HttpURLConnection
@@ -39,6 +40,7 @@ val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
 val MENTION = Regex("(?<![\\w@])@([a-zA-Z0-9][a-zA-Z0-9._-]{1,31})")
 val EVERYONE = setOf("alle", "all")
+const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
@@ -924,8 +926,13 @@ class Account(val folder: File, private val key: ByteArray) {
                         else -> news.add(News(null, News.Kind.Problem, text = "unbekanntes Paket"))
                     }
                 } catch (e: CoreException) {
-                    // Replayed, forged or from an epoch long gone: the core refused it – it is dropped, not kept.
-                    news.add(News(null, News.Kind.Problem, text = "Paket verworfen"))
+                    // Replayed, forged or from an epoch long gone: the core refused it. Not swallowed (Michelle 09.10.): its
+                    // conversation shows a grey line, so nobody believes a message never came.
+                    val cid = if (blob.firstOrNull() == MLS) runCatching { conversationOf(blob.copyOfRange(1, blob.size)).hex() }.getOrNull() else null
+                    if (cid != null && chats.has(cid)) {
+                        system(chat(cid), UNREADABLE)
+                        news.add(News(cid, News.Kind.System, text = UNREADABLE, received = received))
+                    } else news.add(News(null, News.Kind.Problem, text = "Paket verworfen"))
                 }
                 done.put(item.getLong("id"))
             }
@@ -998,7 +1005,7 @@ class Account(val folder: File, private val key: ByteArray) {
                     else roster.keys().asSequence().filter { it !in members }.sorted().toList()
                 return gone.map { name ->
                     roster.remove(name)
-                    val text = "${received.by} hat $name aus der Unterhaltung entfernt."
+                    val text = "${display(received.by)} hat ${display(name)} aus der Unterhaltung entfernt."
                     system(chat, text)
                     News(cid, News.Kind.System, text = text, received = at)
                 }
@@ -1025,7 +1032,7 @@ class Account(val folder: File, private val key: ByteArray) {
                         val lines = mutableListOf<News>()
                         if (known.isNotEmpty()) {
                             for (name in names.filter { it !in known }.sorted()) {
-                                val text = if (name == username) "$sender hat dich hinzugefügt." else "$sender hat $name hinzugefügt."
+                                val text = if (name == username) "${display(sender)} hat dich hinzugefügt." else "${display(sender)} hat ${display(name)} hinzugefügt."
                                 system(chat, text)
                                 lines.add(News(cid, News.Kind.System, text = text, received = at))
                             }
@@ -1048,7 +1055,7 @@ class Account(val folder: File, private val key: ByteArray) {
                     "titel" -> {
                         val title = data.optString("titel").take(80)
                         chat.put("title", title)
-                        val text = if (title.isNotEmpty()) "$sender hat die Gruppe „$title“ genannt." else "$sender hat den Gruppennamen entfernt."
+                        val text = if (title.isNotEmpty()) "${display(sender)} hat die Gruppe „$title“ genannt." else "${display(sender)} hat den Gruppennamen entfernt."
                         system(chat, text)
                         return listOf(News(cid, News.Kind.System, text = text, received = at))
                     }
@@ -1059,13 +1066,13 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (raw.isNotEmpty() && (raw.size > PICTURE_MAX || !jpeg))
                             return listOf(News(cid, News.Kind.Problem, text = "Gruppenbild von $sender nicht übernommen"))
                         chat.put("bild", if (picture.isEmpty()) JSONObject.NULL else picture)
-                        val text = if (picture.isNotEmpty()) "$sender hat das Gruppenbild geändert." else "$sender hat das Gruppenbild entfernt."
+                        val text = if (picture.isNotEmpty()) "${display(sender)} hat das Gruppenbild geändert." else "${display(sender)} hat das Gruppenbild entfernt."
                         system(chat, text)
                         return listOf(News(cid, News.Kind.System, text = text, received = at))
                     }
                     "verlassen" -> {
                         chat.getJSONObject("roster").remove(sender)
-                        val text = "$sender hat die Unterhaltung verlassen."
+                        val text = "${display(sender)} hat die Unterhaltung verlassen."
                         system(chat, text)
                         val remaining = chat.getJSONObject("roster").keys().asSequence().sorted().toList()
                         if (remaining.firstOrNull() == username && sender in members(cid)) oweRemoval.getOrPut(cid) { mutableSetOf() }.add(sender)

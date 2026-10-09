@@ -1164,8 +1164,9 @@ class Account:
                     else:
                         news.append({"chat": None, "problem": "unbekanntes Paket"})
                 except ValueError as error:
-                    # Replayed, forged or from an epoch long gone: the core refused it – it is dropped, not kept.
-                    news.append({"chat": None, "problem": f"Paket verworfen: {error}"})
+                    # Replayed, forged or from an epoch long gone: the core refused it. Not swallowed (Michelle 09.10.): its
+                    # conversation shows a grey line, so nobody believes a message never came.
+                    news.append(self._unreadable(tag, body, error))
                 done.append(item["id"])
             if not done:
                 return news
@@ -1226,7 +1227,7 @@ class Account:
             chat["roster"] = {u: d for u, d in chat["roster"].items() if u in members}
             news = []
             for name in gone:
-                line = self._system(chat, f"{received['sender']} hat {name} aus der Unterhaltung entfernt.")
+                line = self._system(chat, f"{self.display(received['sender'])} hat {self.display(name)} aus der Unterhaltung entfernt.")
                 news.append({"chat": cid, "system": line["text"]})
             return news
         sender = received["sender"]
@@ -1248,7 +1249,7 @@ class Account:
             news = []
             if known:    # not the first roster after joining: say who came in, like Messages
                 for name in sorted(set(devices) - known):
-                    line = self._system(chat, f"{sender} hat {name} hinzugefügt." if name != self.username else f"{sender} hat dich hinzugefügt.")
+                    line = self._system(chat, f"{self.display(sender)} hat {self.display(name)} hinzugefügt." if name != self.username else f"{self.display(sender)} hat dich hinzugefügt.")
                     news.append({"chat": cid, "system": line["text"]})
                 for name in sorted(set(devices) & known):
                     # Another device of someone I write with – worth knowing, like a changed safety code.
@@ -1266,7 +1267,7 @@ class Account:
         if data.get("t") == "titel":
             title = str(data.get("titel") or "")[:80]
             chat["title"] = title
-            line = self._system(chat, f"{sender} hat die Gruppe „{title}“ genannt." if title else f"{sender} hat den Gruppennamen entfernt.")
+            line = self._system(chat, f"{self.display(sender)} hat die Gruppe „{title}“ genannt." if title else f"{self.display(sender)} hat den Gruppennamen entfernt.")
             return [{"chat": cid, "system": line["text"]}]
         if data.get("t") == "gruppenbild":
             picture = str(data.get("bild") or "")
@@ -1277,12 +1278,12 @@ class Account:
             if raw and (len(raw) > PICTURE_MAX or not raw.startswith(b"\xff\xd8\xff")):
                 return [{"chat": cid, "problem": f"Gruppenbild von {sender} nicht übernommen"}]
             chat["bild"] = picture or None
-            line = self._system(chat, f"{sender} hat das Gruppenbild geändert." if picture else f"{sender} hat das Gruppenbild entfernt.")
+            line = self._system(chat, f"{self.display(sender)} hat das Gruppenbild geändert." if picture else f"{self.display(sender)} hat das Gruppenbild entfernt.")
             return [{"chat": cid, "system": line["text"]}]
         if data.get("t") == "verlassen":
             # No more packets for the one who left; the first remaining member (by name) takes the device out of the group.
             chat["roster"].pop(sender, None)
-            line = self._system(chat, f"{sender} hat die Unterhaltung verlassen.")
+            line = self._system(chat, f"{self.display(sender)} hat die Unterhaltung verlassen.")
             remaining = sorted(chat["roster"])
             if remaining and remaining[0] == self.username and sender in self.members(cid):
                 self._owe_removal.setdefault(cid, set()).add(sender)
@@ -1384,6 +1385,18 @@ class Account:
                 news["mention"] = True      # „@ich“ or „@alle“: a notification even when the chat is muted (iOS)
             return [news]
         return []
+
+    UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
+
+    def _unreadable(self, tag, body, error):
+        try:
+            cid = bytes(lichat_core.Device.conversation_of(body)).hex() if tag == MLS else None
+        except ValueError:
+            cid = None
+        if cid in self.chats:
+            line = self._system(self.chats[cid], self.UNREADABLE)
+            return {"chat": cid, "system": line["text"]}
+        return {"chat": None, "problem": f"Paket verworfen: {error}"}
 
     def _remember_mid(self, cid, message, data):
         mid = data.get("mid")
