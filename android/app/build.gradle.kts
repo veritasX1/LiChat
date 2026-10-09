@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("io.github.takahirom.roborazzi")
+}
+
+// Olaf's LiChat (release) is signed with its own key (~/Dokumente/Signaturschlüssel/LiChat, copy on the Pi).
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
 }
 
 android {
@@ -18,6 +26,17 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreProperties.isNotEmpty()) {
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         // The test build lives next to a real LiChat (Michelle Z5 c): own package and name.
         debug {
@@ -27,8 +46,9 @@ android {
         }
         release {
             manifestPlaceholders["appLabel"] = "LiChat"
-            signingConfig = signingConfigs.getByName("debug")   // until Olaf's release key exists
-            isMinifyEnabled = true
+            signingConfig = if (keystoreProperties.isNotEmpty()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+            // Not shrunk for now: JNA and the uniffi bindings work by reflection – safe first, smaller later.
+            isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

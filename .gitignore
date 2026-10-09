@@ -8,3 +8,5 @@ build/
 local.properties
 *.apk
 *.so
+*.jks
+keystore.properties
