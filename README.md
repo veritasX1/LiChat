@@ -52,7 +52,11 @@ Die Schnittstelle steht oben in `server/lichat_server/app.py`.
 - **C** Farben wie iMessage: eigenes Netz blau, Grün bleibt für „unsicherer“ (z. B. Signal-Brücke später).
 
 ## Noch offen
-- Lizenz (wegen libsignal in einer späteren Stufe vermutlich AGPL-3.0) – entscheidet Olaf.
+- **Lizenz AGPL-3.0-or-later** für ganz LiChat (Server, Kern, Ubuntu, Android) – Olaf 09.10.2026: „agpl ja, veröffentlichen
+  ja, risiko ja“. Grund: libsignal (AGPL) für die Signal-Verknüpfung (a2f95231). Der Quelltext wird veröffentlicht (GitHub
+  wie die anderen Li-Apps), spätestens mit der ersten Weitergabe an andere. Signal ist ein fremder Dienst, der inoffizielle
+  Programme dulden, aber jederzeit aussperren kann – die Verknüpfung ist ein Zusatz zum Einschalten, mit Hinweis, „Signal“
+  nur beschreibend, ohne Logo.
 
 Grundlagen: Olafs Notiz „LiChat – Konzept“ (LiNotes 1a8a84fc), Anforderungskarte 37ad8505,
 Konzeptabgleich `~/Team/Jean-Marie/lichat-konzept.md`, Testplan `~/Team/Michelle/lichat-testplan.md`.
