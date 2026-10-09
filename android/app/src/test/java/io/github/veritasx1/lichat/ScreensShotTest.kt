@@ -89,6 +89,19 @@ httpd.serve_forever()
     @Test
     fun list() = shot("1-liste") { ChatList(anna, 0, mapOf(group to 1), null, false, {}, {}, {}, {}) }
 
+    /** Michelle 24e8f89c: notifications refused – said plainly in the list and in the settings. */
+    @Test
+    fun notificationsOff() {
+        shot("1b-mitteilungen-aus") { ChatList(anna, 0, emptyMap(), null, true, {}, {}, {}, {}, notifying = false) }
+        compose.onNodeWithText("Mitteilungen sind aus", substring = true).assertExists()
+    }
+
+    @Test
+    fun notificationsOffSettings() {
+        shot("6b-einstellungen-mitteilungen-aus") { SettingsScreen(anna, false, true, {}, {}, {}, {}, notifying = false) }
+        compose.onNodeWithText("Android zeigt für LiChat keine Mitteilungen", substring = true).assertExists()
+    }
+
     @Test
     fun listDark() = shot("1-liste-dunkel", dark = true) { ChatList(anna, 0, emptyMap(), null, true, {}, {}, {}, {}) }
 

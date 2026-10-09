@@ -64,6 +64,13 @@ object Settings {
     fun explained(context: Context) = prefs(context).getBoolean("erklaert", false)
     fun setExplained(context: Context) = prefs(context).edit().putBoolean("erklaert", true).apply()
 
+    /** Notifications allowed – the app's switch and the channel „Nachrichten“ (Michelle 24e8f89c: say it when not). */
+    fun notifying(context: Context): Boolean {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        return manager.areNotificationsEnabled() &&
+            (manager.getNotificationChannel(Notifications.MESSAGES)?.importance ?: NotificationManager.IMPORTANCE_DEFAULT) != NotificationManager.IMPORTANCE_NONE
+    }
+
     /** Without this, Android stops the connection in Doze and messages come late (Michelle Z6: said honestly). */
     fun unrestricted(context: Context) =
         (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName)
@@ -189,11 +196,14 @@ class LiChatService : Service() {
         for (item in news) {
             if (item.kind != News.Kind.Text || item.from == account.username) continue
             if (Hub.visible && Hub.openChat == item.chat) continue
-            Notifications.message(this, item)
+            val shown = Settings.notifying(this)
+            if (shown) Notifications.message(this, item)
             if (debuggable) {
-                // Michelle Z5 a: one line per message, without content and names – only to measure the way.
+                // Michelle Z5 a: one line per message, without content and names – only to measure the way. When Android
+                // does not let LiChat notify, it says so instead of a time (24e8f89c).
                 Log.i("LiChatZ5", "hash=${(item.chat + item.at + item.text.length).hashCode().toUInt().toString(16)} " +
-                    "server_ms=${(item.received * 1000).toLong()} gezeigt_ms=${System.currentTimeMillis()} verbunden_seit=$connectedSince")
+                    "server_ms=${(item.received * 1000).toLong()} " + (if (shown) "gezeigt_ms=${System.currentTimeMillis()}" else "gezeigt=nein") +
+                    " verbunden_seit=$connectedSince")
             }
         }
     }

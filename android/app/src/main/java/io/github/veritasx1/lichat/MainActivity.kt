@@ -108,6 +108,22 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var preview by remember { mutableStateOf(Settings.preview(context)) }
     var unrestricted by remember { mutableStateOf(runCatching { Settings.unrestricted(context) }.getOrDefault(true)) }
     var explaining by remember { mutableStateOf(false) }
+    var notifying by remember { mutableStateOf(runCatching { Settings.notifying(context) }.getOrDefault(true)) }
+    // Back from Android's settings: look again (the person may have switched notifications on or off there).
+    val lifecycle = (context as? ComponentActivity)?.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                notifying = runCatching { Settings.notifying(context) }.getOrDefault(true)
+                unrestricted = runCatching { Settings.unrestricted(context) }.getOrDefault(true)
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
+    }
+    fun openNotificationSettings() {
+        runCatching { context.startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName)) }
+    }
 
     LaunchedEffect(opened.value) { opened.value?.let { cid -> if (account?.chats?.has(cid) == true) page = Page.Chat(cid); opened.value = null } }
     Hub.openChat = (page as? Page.Chat)?.cid
@@ -150,7 +166,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         when (val p = page) {
             Page.List -> ChatList(acc, version, seen, serverProblem, unrestricted,
                 onOpen = { page = Page.Chat(it) }, onNew = { problem = null; page = Page.New }, onSettings = { page = Page.Settings },
-                onUnrestrict = { askBattery() })
+                onUnrestrict = { askBattery() }, notifying = notifying, onNotifications = { openNotificationSettings() })
             is Page.Chat -> {
                 BackHandler { page = Page.List }
                 LaunchedEffect(version, p.cid) { seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() } }
@@ -178,7 +194,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 BackHandler { page = Page.List }
                 SettingsScreen(acc, preview, unrestricted, onPreview = { preview = it; Settings.setPreview(context, it) },
                     onPicture = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onUnrestrict = { askBattery() }, onBack = { page = Page.List })
+                    onUnrestrict = { askBattery() }, onBack = { page = Page.List }, notifying = notifying,
+                    onNotifications = { openNotificationSettings() })
             }
         }
         if (explaining) Explain(onContinue = {
