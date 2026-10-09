@@ -8,7 +8,7 @@ them once fetched. Endpoints (all JSON, blobs base64):
     POST   /v1/devices              {identity} another own device             -> {device, token}
     DELETE /v1/devices/me           sign this device out, mailbox goes too
     POST   /v1/key-packages         {key_packages: [b64, …]}                  -> {count}
-    POST   /v1/key-packages/<name>  claim one package per device of <name>    -> {key_packages: [...]}  (10/h per claimer)
+    POST   /v1/key-packages/<name>  claim one package per device of <name> ({device}: only that one) -> {key_packages: [...]}  (10/h per claimer)
     PUT    /v1/key-packages/last-resort {key_package}  kept, handed out when the supply is empty
     POST   /v1/messages             {to: [device, …], blob}                   -> {delivered, unknown, full}
     GET    /v1/messages[?warten=s]  own mailbox; with warten (1–60) the answer waits until something
@@ -16,6 +16,11 @@ them once fetched. Endpoints (all JSON, blobs base64):
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
     PUT    /v1/anhaenge             raw encrypted bytes (≤ 100 MB, 1 GB per device) -> {id}   (card 9780f3a0)
     GET    /v1/anhaenge/<id>        the bytes again (signed in; gone after 30 days)
+    POST   /v1/kopplung             a new device asks to join an account       -> {code}   (card da5cbfcb)
+    GET    /v1/kopplung/<code>      {} waiting | {username} accepted | {username, device} signed in   (404: gone)
+    POST   /v1/kopplung/annehmen    {code}  an existing device: that is my new device  (signed in; wrong codes limited)
+    POST   /v1/kopplung/<code>/geraet {identity, name}  the new device signs in, once -> {device, token, username}
+    DELETE /v1/devices/<id>         sign out another of my own devices (signed in)
     POST   /v1/pins                 a contact PIN for me (10 min, once)        -> {pin, gueltig}   (card 89aae55d)
     POST   /v1/pins/einloesen       {pin} -> {username}  (wrong PINs: 10 per 15 min and device)
     GET    /e/<code>                an invitation as a page: „In LiChat öffnen“, QR code, the code to type (card 4fe6d0ee)
@@ -123,12 +128,19 @@ class App:
         self.send_limit = Limiter(300, 600, clock)
         self.auth_failures = Limiter(20, 900, clock)
         self.pin_failures = Limiter(10, 900, clock)
+        self.link_limit = Limiter(20, 3600, clock)          # new link codes per address
+        self.link_failures = Limiter(10, 900, clock)        # wrong codes typed on an existing device
         self.public = (os.environ.get("LICHAT_OEFFENTLICH") or "https://exampleserver.lisoftware.de").rstrip("/")
         self.routes = [
             ("POST", r"/v1/register", self.register, False),
             ("GET", r"/v1/users/(?P<name>[^/]+)", self.user, True),
             ("POST", r"/v1/devices", self.new_device, True),
             ("DELETE", r"/v1/devices/me", self.remove_me, True),
+            ("DELETE", r"/v1/devices/(?P<device>[0-9a-f]{16})", self.remove_own_device, True),
+            ("POST", r"/v1/kopplung", self.link_open, False),
+            ("POST", r"/v1/kopplung/annehmen", self.link_accept, True),
+            ("GET", r"/v1/kopplung/(?P<code>[A-Za-z0-9-]{4,20})", self.link_state, False),
+            ("POST", r"/v1/kopplung/(?P<code>[A-Za-z0-9-]{4,20})/geraet", self.link_finish, False),
             ("POST", r"/v1/key-packages", self.upload_key_packages, True),
             ("POST", r"/v1/key-packages/(?P<name>[^/]+)", self.claim_key_packages, True),
             ("PUT", r"/v1/key-packages/last-resort", self.upload_last_resort, True),
@@ -252,6 +264,37 @@ class App:
         device, token = self.store.add_device(me[1], self.check_identity(body.get("identity")))
         return {"device": device, "token": token}
 
+    def remove_own_device(self, environ, body, me, device):
+        if device == me[0]:
+            raise HttpError(400, "Dieses Gerät meldet sich mit DELETE /v1/devices/me ab")
+        if not self.store.remove_own_device(me[1], device):
+            raise HttpError(404, "kein Gerät von dir")
+        return {"ok": True}
+
+    def link_open(self, environ, body, me):
+        if not self.link_limit.hit(self.address(environ)):
+            raise HttpError(429, "zu viele Versuche")
+        return {"code": self.store.link_open(), "gueltig": 600}
+
+    def link_accept(self, environ, body, me):
+        if not self.store.link_accept(str(body.get("code", "")), me[1]):
+            if not self.link_failures.hit(me[0]):
+                raise HttpError(429, "zu viele falsche Codes – bitte später")
+            raise HttpError(404, "Code unbekannt, abgelaufen oder schon benutzt")
+        return {"ok": True}
+
+    def link_state(self, environ, body, me, code):
+        state = self.store.link_state(code)
+        if state is None:
+            raise HttpError(404, "Code unbekannt oder abgelaufen")
+        return state
+
+    def link_finish(self, environ, body, me, code):
+        done = self.store.link_finish(code, self.check_identity(body.get("identity")), str(body.get("name", ""))[:40])
+        if done is None:
+            raise HttpError(409, "Noch nicht angenommen oder schon benutzt")
+        return {"device": done[0], "token": done[1], "username": done[2]}
+
     def remove_me(self, environ, body, me):
         self.store.remove_device(me[0])
         return {"ok": True}
@@ -276,7 +319,7 @@ class App:
         if not self.claim_limit.hit((me[0], name)):
             raise HttpError(429, "zu viele Abrufe")
         return {"key_packages": [{"device": p["device"], "key_package": b64(p["key_package"]), "last_resort": p.get("last_resort", False)}
-                                 for p in self.store.claim_key_packages(name)]}
+                                 for p in self.store.claim_key_packages(name, only=str(body.get("device") or "") or None)]}
 
     def send(self, environ, body, me):
         if not self.send_limit.hit(me[0]):
