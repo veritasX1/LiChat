@@ -230,6 +230,8 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         val phone = person("anna"); val bernd = person("bernd")
         val cid = phone.start(listOf("bernd"))
         bernd.fetch()
+        bernd.send(cid, "Vor dem Tablet")
+        phone.fetch()
         val (url, code) = Account.linkOpen(url)
         var accepted = ""
         val accept = Thread { accepted = phone.acceptLink(code, pollMs = 100) }.apply { start() }
@@ -240,8 +242,15 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(tablet.deviceId, accepted)
         assertEquals("anna", tablet.username)
         assertEquals(listOf(false to "", true to "Tablet"), tablet.myDevices().map { it.isThis to it.name })
-        tablet.fetch()
+        // Olaf: „synchronisieren sich einmal“ – the history came along, the devices' group stays hidden
+        assertTrue(tablet.fetch().any { it.kind == News.Kind.Synced })
         assertTrue(tablet.chats.has(cid))
+        assertEquals("Vor dem Tablet", tablet.chat(cid).getJSONArray("messages").getJSONObject(0).getString("text"))
+        assertEquals(listOf(cid), tablet.visibleChats())
+        // „… und bleiben dann synchronisiert“
+        phone.readReceipts = true
+        tablet.fetch()
+        assertTrue(tablet.readReceipts)
         assertTrue(bernd.fetch().any { it.text == "anna benutzt jetzt ein weiteres Gerät." })
         bernd.send(cid, "An beide")
         assertEquals(listOf("An beide"), phone.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
@@ -257,7 +266,8 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         val consoleCode = reader.readLine().substringAfter(":").trim().substringBefore(" ")
         phone.acceptLink(consoleCode, pollMs = 100)
         assertTrue(reader.readText().contains("Gekoppelt als anna"))
-        assertTrue(cli("anna3", "abholen").contains("neues Gespräch"))
+        assertTrue(cli("anna3", "abholen").contains("Verlauf vom anderen Gerät übernommen"))     // Kotlin → Python, same format
+        assertTrue(cli("anna3", "verlauf", cid.take(8)).contains("Vor dem Tablet"))
         assertEquals(3, phone.myDevices().size)
         // signed out from the phone
         phone.removeMyDevice(tablet.deviceId)

@@ -35,6 +35,7 @@ private val PROFILE_MAGIC = "LICHATP1".toByteArray()
 const val SUPPLY = 20
 const val PICTURE_MAX = 150 * 1024
 private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
+private val HISTORY_MAGIC = "LICHATV1".toByteArray()
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
@@ -57,7 +58,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
                 val attachment: JSONObject? = null, val mention: Boolean = false) {
-    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing, Edited }
+    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing, Edited, Synced, Settings }
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
@@ -310,10 +311,141 @@ class Account(val folder: File, private val key: ByteArray) {
         val end = System.currentTimeMillis() + waitS * 1000
         while (System.currentTimeMillis() < end) {
             val state = server.call("GET", "/v1/kopplung/${URLEncoder.encode(code, "UTF-8")}")
-            state.optString("device").takeIf { it.isNotEmpty() }?.let { syncOwnDevices(); return it }
+            state.optString("device").takeIf { it.isNotEmpty() }?.let {
+                syncOwnDevices()
+                ownGroup()            // my devices' private group (holds the new one now)
+                sendHistory(it)       // Olaf: „synchronisieren sich einmal und bleiben dann synchronisiert“
+                return it
+            }
             Thread.sleep(pollMs)
         }
         throw LiChatException("Das neue Gerät hat sich nicht gemeldet – noch einmal versuchen")
+    }
+
+    // ------------------------------------------------------------------------------------------ my devices' own group
+    // A conversation of my devices only („intern“, never shown): the history goes through it once when a device is
+    // linked, my settings follow on every change. The twin of Python's own_group/send_history – the same format.
+
+    fun ownGroupId(): String? = chats.keys().asSequence().firstOrNull { chats.getJSONObject(it).optBoolean("intern") && chats.getJSONObject(it).optString("removed").isEmpty() }
+
+    /** The conversations people see (without my devices' own group). */
+    fun visibleChats(): List<String> = chats.keys().asSequence().filter { !chats.getJSONObject(it).optBoolean("intern") }.toList()
+
+    fun ownGroup(): String? {
+        ownGroupId()?.let { return it }
+        val listed = directory(username)
+        val packages = mutableListOf<ByteArray>()
+        val devices = mutableListOf<String>()
+        for (id in (listed.keys - deviceId).sorted()) {
+            val claimed = server.call("POST", "/v1/key-packages/${URLEncoder.encode(username, "UTF-8")}", JSONObject().put("device", id)).getJSONArray("key_packages")
+            for (i in 0 until claimed.length()) {
+                val item = claimed.getJSONObject(i)
+                val bytes = unb64(item.getString("key_package"))
+                val owner = try { keyPackageOwner(bytes) } catch (e: CoreException) { continue }
+                if (item.getString("device") == id && owner.identity == username && listed[id]?.contentEquals(owner.signatureKey) == true) {
+                    packages.add(bytes); devices.add(id)
+                }
+            }
+        }
+        if (packages.isEmpty()) return null
+        val roster = JSONObject().put(username, JSONArray((devices + deviceId).sorted()))
+        val cid: String
+        val welcome: ByteArray
+        val hello: ByteArray
+        synchronized(lock) {
+            val started = device.startConversation(packages)
+            cid = started.conversation.hex()
+            welcome = started.welcome
+            chats.put(cid, newChat().put("roster", roster).put("intern", true))
+            hello = device.encrypt(started.conversation, payload(JSONObject().put("t", "roster").put("devices", roster).put("title", "").put("intern", true)))
+            save()
+        }
+        post(devices, byteArrayOf(WELCOME) + welcome)
+        post(devices, byteArrayOf(MLS) + hello)
+        return cid
+    }
+
+    private fun tellOwnDevices(content: JSONObject) {
+        val cid = ownGroupId() ?: return
+        if (targets(cid).isNotEmpty()) groupMessage(cid, content, null)
+    }
+
+    /** Everything I have, once to my new device: sealed with a fresh key, put on the server as an attachment, the key only
+     *  inside my devices' own group. */
+    fun sendHistory(newDevice: String): Boolean {
+        val cid = ownGroupId() ?: return false
+        val archive = synchronized(lock) {
+            val list = JSONObject()
+            for (c in visibleChats()) {
+                val chat = chat(c)
+                list.put(c, JSONObject().put("title", chat.optString("title")).put("bild", chat.opt("bild") ?: JSONObject.NULL)
+                    .put("stumm", chat.optBoolean("stumm")).put("messages", chat.getJSONArray("messages")))
+            }
+            val profile = JSONObject(profiles.toString()).apply { remove("gekoppelt"); remove("geraetename") }
+            JSONObject().put("chats", list).put("profile", profile).toString().toByteArray()
+        }
+        val deflater = java.util.zip.Deflater(9)
+        deflater.setInput(archive); deflater.finish()
+        val packed = java.io.ByteArrayOutputStream().also { out -> val buf = ByteArray(65536); while (!deflater.finished()) out.write(buf, 0, deflater.deflate(buf)) }.toByteArray()
+        deflater.end()
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(HISTORY_MAGIC)
+        val sealed = nonce + cipher.doFinal(packed)
+        if (sealed.size > ATTACHMENT_MAX) throw LiChatException("Der Verlauf ist zu groß für eine Übertragung")
+        val id = JSONObject(String(server.raw("PUT", "/v1/anhaenge", sealed))).getString("id")
+        groupMessage(cid, JSONObject().put("t", "verlauf").put("fuer", newDevice).put("id", id).put("schluessel", b64(key))
+            .put("sha256", java.security.MessageDigest.getInstance("SHA-256").digest(sealed).hex()), null)
+        return true
+    }
+
+    private fun takeHistory(data: JSONObject): List<News> {
+        val sealed = server.raw("GET", "/v1/anhaenge/${data.getString("id")}")
+        if (java.security.MessageDigest.getInstance("SHA-256").digest(sealed).hex() != data.optString("sha256"))
+            throw LiChatException("Verlauf verändert – nicht übernommen")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(unb64(data.getString("schluessel")), "AES"), GCMParameterSpec(128, sealed, 0, 12))
+        cipher.updateAAD(HISTORY_MAGIC)
+        val packed = cipher.doFinal(sealed, 12, sealed.size - 12)
+        val inflater = java.util.zip.Inflater()
+        inflater.setInput(packed)
+        val plain = java.io.ByteArrayOutputStream().also { out -> val buf = ByteArray(65536); while (!inflater.finished()) { val n = inflater.inflate(buf); if (n == 0 && inflater.needsInput()) break; out.write(buf, 0, n) } }.toByteArray()
+        inflater.end()
+        val archive = JSONObject(String(plain))
+        val old = archive.optJSONObject("chats") ?: JSONObject()
+        for (c in old.keys()) {
+            val from = old.getJSONObject(c)
+            if (!chats.has(c)) chats.put(c, newChat())
+            val chat = chat(c)
+            val before = from.optJSONArray("messages") ?: JSONArray()
+            val known = (0 until before.length()).mapNotNull { before.getJSONObject(it).optString("mid").takeIf { m -> m.isNotEmpty() } }.toSet()
+            val merged = JSONArray()
+            for (i in 0 until before.length()) merged.put(before.getJSONObject(i))
+            val now = chat.getJSONArray("messages")
+            for (i in 0 until now.length()) {
+                val m = now.getJSONObject(i)
+                if (m.optString("text") == "Ältere Nachrichten gibt es nur auf deinen anderen Geräten.") continue
+                if (m.optString("mid").isNotEmpty() && m.optString("mid") in known) continue
+                merged.put(m)
+            }
+            chat.put("messages", merged)
+            if (chat.optString("title").isEmpty() && from.optString("title").isNotEmpty()) chat.put("title", from.optString("title"))
+            if (chat.opt("bild") !is String && from.opt("bild") is String) chat.put("bild", from.getString("bild"))
+            if (from.optBoolean("stumm")) chat.put("stumm", true)
+        }
+        val profile = archive.optJSONObject("profile") ?: JSONObject()
+        for (k in profile.keys()) {
+            val value = profile.get(k)
+            if (k in setOf("people", "names", "kontakte") && value is JSONObject) {
+                val mine = profiles.optJSONObject(k) ?: JSONObject().also { profiles.put(k, it) }
+                for (n in value.keys()) mine.put(n, value.get(n))
+            } else if (!profiles.has(k) || profiles.isNull(k) || profiles.optString(k).isEmpty() || (profiles.opt(k) as? JSONObject)?.length() == 0) {
+                profiles.put(k, value)
+            }
+        }
+        return listOf(News(null, News.Kind.Synced))
     }
 
     /** My devices with the time each signed in; a name only for this one (it stays here). */
@@ -379,6 +511,7 @@ class Account(val folder: File, private val key: ByteArray) {
                     val now = roster.optJSONArray(username)?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
                     roster.put(username, JSONArray((now + adding).toSortedSet().toList()))
                     val payloads = mutableListOf(JSONObject().put("t", "roster").put("devices", roster).put("title", chat.optString("title")))
+                    if (chat.optBoolean("intern")) payloads[0].put("intern", true)   // a third device knows it as my devices' group
                     (chat.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "gruppenbild").put("bild", it)) }
                     payloads.forEach { packets.add(device.encrypt(cid.unhex(), payload(it))) }
                     save()
@@ -546,7 +679,11 @@ class Account(val folder: File, private val key: ByteArray) {
         synchronized(lock) { chat(cid).put("removed", username); save() }
     }
 
-    fun mute(cid: String, on: Boolean) = synchronized(lock) { chat(cid).put("stumm", on); save() }
+    /** Stummschalten – on all my devices (their own group). */
+    fun mute(cid: String, on: Boolean) {
+        synchronized(lock) { chat(cid).put("stumm", on); save() }
+        tellOwnDevices(JSONObject().put("t", "stumm").put("chat", cid).put("an", on))
+    }
 
     fun muted(cid: String) = chats.optJSONObject(cid)?.optBoolean("stumm") ?: false
 
@@ -698,14 +835,20 @@ class Account(val folder: File, private val key: ByteArray) {
     /** Read receipts: off by default like the iPhone (Olaf), mutual – off means none sent and no blue ticks seen. */
     var readReceipts: Boolean
         get() = profiles.optBoolean("lesebestaetigungen", false)
-        set(on) = synchronized(lock) { profiles.put("lesebestaetigungen", on); save() }
+        set(on) {
+            synchronized(lock) { profiles.put("lesebestaetigungen", on); save() }
+            tellOwnDevices(JSONObject().put("t", "einstellungen").put("lesebestaetigungen", on))
+        }
 
     // ------------------------------------------------------------------------------------------ typing (884f7c8a)
 
     /** „… tippt“ (Olaf 09.10.): off by default for privacy, mutual like read receipts; flüchtig – never stored. */
     var typingIndicator: Boolean
         get() = profiles.optBoolean("tippanzeige", false)
-        set(on) = synchronized(lock) { profiles.put("tippanzeige", on); if (!on) typingSeen.clear(); save() }
+        set(on) {
+            synchronized(lock) { profiles.put("tippanzeige", on); if (!on) typingSeen.clear(); save() }
+            tellOwnDevices(JSONObject().put("t", "einstellungen").put("tippanzeige", on))
+        }
 
     /** I am typing in this chat: the others see „…“ – at most every 3 s, nothing when switched off. */
     fun typing(cid: String): Boolean {
@@ -1014,6 +1157,34 @@ class Account(val folder: File, private val key: ByteArray) {
                 val sender = received.sender
                 val data = runCatching { JSONObject(String(received.payload)) }.getOrNull()
                     ?: return listOf(News(cid, News.Kind.Problem, text = "unlesbare Nachricht von $sender"))
+                if (chat.optBoolean("intern") || data.optBoolean("intern")) {
+                    // My devices' own group: only I may write in it (MLS says who sent it).
+                    if (sender != username) return listOf(News(cid, News.Kind.Problem, text = "fremde Nachricht in der Gerätegruppe – verworfen"))
+                    chat.put("intern", true)
+                    when (data.optString("t")) {
+                        "roster" -> chat.put("roster", JSONObject().put(username, data.optJSONObject("devices")?.optJSONArray(username) ?: JSONArray()))
+                        "verlauf" -> return if (data.optString("fuer") == deviceId) takeHistory(data) else emptyList()
+                        "einstellungen" -> {
+                            for (k in listOf("lesebestaetigungen", "tippanzeige")) if (data.has(k)) profiles.put(k, data.getBoolean(k))
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                        "stumm" -> {
+                            chats.optJSONObject(data.optString("chat"))?.put("stumm", data.optBoolean("an"))
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                        "name" -> {
+                            val name = JSONObject().put("vorname", data.optString("vorname").take(40)).put("nachname", data.optString("nachname").take(40))
+                            profiles.put("name", name)
+                            (profiles.optJSONObject("names") ?: JSONObject().also { profiles.put("names", it) }).put(sender, JSONObject(name.toString()))
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                        "profile" -> {
+                            profiles.put("me", data.optString("bild").ifEmpty { null } ?: JSONObject.NULL)
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                    }
+                    return emptyList()
+                }
                 when (data.optString("t")) {
                     "roster" -> {
                         val devices = data.optJSONObject("devices") ?: JSONObject()

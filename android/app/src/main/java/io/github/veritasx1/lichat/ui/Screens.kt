@@ -149,7 +149,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
     var query by remember { mutableStateOf("") }
     val all = remember(version) {
         synchronized(account.lock) {
-            account.chats.keys().asSequence().map { cid ->
+            account.visibleChats().asSequence().map { cid ->   // without my devices' own group
                 val chat = account.chat(cid)
                 val list = messages(chat)
                 Triple(cid, list.lastOrNull(), list.size)
