@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""LiChat ohne Oberfläche – fürs Team und zum Ausprobieren gegen den eigenen Server.
+
+    lichat-cli [--profil NAME] register <server> <einladung> <benutzername>
+    lichat-cli [--profil NAME] ich                          # Benutzer, Gerät, Server
+    lichat-cli [--profil NAME] neu [--titel T] <person …>   # Gespräch beginnen (auch Gruppe)
+    lichat-cli [--profil NAME] senden <gespräch> <text …>
+    lichat-cli [--profil NAME] abholen                      # Postfach holen, Neues zeigen
+    lichat-cli [--profil NAME] gespraeche                   # alle Gespräche
+    lichat-cli [--profil NAME] verlauf <gespräch>
+    lichat-cli [--profil NAME] mitglieder <gespräch>
+    lichat-cli [--profil NAME] code <gespräch>              # Sicherheitscode zum Vergleichen
+
+Daten: $XDG_DATA_HOME/lichat-cli/<profil> (Standard „standard“, oder LICHAT_PROFIL). Ein <gespräch> ist die kurze
+Kennung aus „gespraeche“ (8 Zeichen, ein eindeutiger Anfang reicht).
+"""
+
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lichat.account import Account, LiChatError, default_folder, short  # noqa: E402
+
+
+def when(at):
+    return time.strftime("%d.%m. %H:%M", time.localtime(at))
+
+
+def main(argv):
+    profile = os.environ.get("LICHAT_PROFIL", "standard")
+    if argv[:1] == ["--profil"] and len(argv) > 1:
+        profile, argv = argv[1], argv[2:]
+    if not argv or argv[0] in ("-h", "--help", "hilfe"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    folder = default_folder(profile)
+    command, args = argv[0], argv[1:]
+
+    if command == "register":
+        if len(args) != 3:
+            raise LiChatError("register <server> <einladung> <benutzername>")
+        account = Account.register(folder, *args)
+        print(f"Angemeldet als {account.username} (Gerät {account.device_id}) bei {account.info['server']}")
+        return 0
+
+    account = Account(folder)
+    if command == "ich":
+        print(f"{account.username} · Gerät {account.device_id} · {account.info['server']} · Profil {profile}")
+    elif command == "neu":
+        title = ""
+        if args[:1] == ["--titel"] and len(args) > 1:
+            title, args = args[1], args[2:]
+        cid = account.start(args, title)
+        print(f"Gespräch {short(bytes.fromhex(cid))} mit {account.title(cid)} begonnen")
+    elif command == "senden":
+        if len(args) < 2:
+            raise LiChatError("senden <gespräch> <text …>")
+        cid = account.chat(args[0])
+        answer = account.send(cid, " ".join(args[1:]))
+        if answer.get("unknown") or answer.get("full"):
+            print(f"Nicht zugestellt an: {', '.join(answer.get('unknown', []) + answer.get('full', []))}")
+        print(f"gesendet an {len(answer.get('delivered', []))} Gerät(e)")
+    elif command == "abholen":
+        news = account.fetch()
+        for item in news:
+            chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
+            if item.get("joined"):
+                print(f"[{chat}] neues Gespräch")
+            elif item.get("problem"):
+                print(f"[{chat}] ⚠ {item['problem']}")
+            else:
+                print(f"[{chat}] {when(item['at'])} {item['from']}: {item['text']}")
+        if not news:
+            print("nichts Neues")
+    elif command == "gespraeche":
+        for cid, chat in account.chats.items():
+            last = chat["messages"][-1] if chat["messages"] else None
+            tail = f" – {last['from']}: {last['text'][:40]}" if last else ""
+            print(f"{short(bytes.fromhex(cid))}  {account.title(cid)}{tail}")
+        if not account.chats:
+            print("noch keine Gespräche")
+    elif command == "verlauf":
+        cid = account.chat(args[0] if args else "")
+        print(f"— {account.title(cid)} —")
+        for m in account.chats[cid]["messages"]:
+            print(f"{when(m['at'])} {'ich' if m['from'] == account.username else m['from']}: {m['text']}")
+    elif command == "mitglieder":
+        print("\n".join(account.members(account.chat(args[0] if args else ""))))
+    elif command == "code":
+        print(account.safety_code(account.chat(args[0] if args else "")))
+    else:
+        raise LiChatError(f"Unbekannter Befehl „{command}“ – lichat-cli hilfe")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except LiChatError as error:
+        print(f"lichat-cli: {error}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as error:   # the core refused (wrong key, broken state …)
+        print(f"lichat-cli: Kern: {error}", file=sys.stderr)
+        sys.exit(1)
