@@ -3,20 +3,23 @@
 The server is deliberately "dumb": it relays end-to-end encrypted MLS blobs between devices and forgets
 them once fetched. Endpoints (all JSON, blobs base64):
 
-    POST   /v1/register             {invite, username, identity, push?}      -> {device, token}
+    POST   /v1/register             {invite, username, identity}              -> {device, token}
     GET    /v1/users/<name>         directory: devices + identity keys        (signed in)
-    POST   /v1/devices              {identity, push?} another own device      -> {device, token}
+    POST   /v1/devices              {identity} another own device             -> {device, token}
     DELETE /v1/devices/me           sign this device out, mailbox goes too
     POST   /v1/key-packages         {key_packages: [b64, …]}                  -> {count}
     POST   /v1/key-packages/<name>  claim one package per device of <name>    -> {key_packages: [...]}  (10/h per claimer)
     PUT    /v1/key-packages/last-resort {key_package}  kept, handed out when the supply is empty
     POST   /v1/messages             {to: [device, …], blob}                   -> {delivered, unknown, full}
-    GET    /v1/messages             own mailbox                               -> {messages: [...]}
+    GET    /v1/messages[?warten=s]  own mailbox; with warten (1–60) the answer waits until something
+                                     arrives or the time is up (the apps' standing connection) -> {messages: [...]}
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
     GET    /v1/health
 
-Signed in = header "Authorization: Bearer <token>" (the device token from register). A push target is an
-ntfy topic URL on our own ntfy; the push only says "Neue Nachricht" – no sender, no text (test plan S4).
+Signed in = header "Authorization: Bearer <token>" (the device token from register).
+
+Instant delivery (Olaf 09.10.: „wie bei einem echten Messenger“): every app keeps one waiting GET /v1/messages?warten=…
+open, like Signal without Google. No push service, no third party learns when someone gets a message.
 """
 
 import base64
@@ -26,7 +29,7 @@ import os
 import re
 import threading
 import time
-import urllib.request
+import urllib.parse
 from collections import defaultdict, deque
 
 from .store import Store
@@ -36,7 +39,7 @@ DEVICE = re.compile(r"^[0-9a-f]{16}$")
 MAX_BLOB = 256 * 1024          # one MLS message; attachments come later as separate encrypted uploads
 MAX_IDENTITY = 1024
 MAX_BODY = 4 * 1024 * 1024
-PUSH_TEXT = "Neue Nachricht"
+MAX_WAIT = 60                  # seconds one waiting fetch may stay open (nginx: proxy_read_timeout above it)
 
 
 class Limiter:
@@ -64,14 +67,26 @@ class HttpError(Exception):
         self.status, self.message = status, message
 
 
-def ntfy_push(url):
-    """Default notifier: a content-free nudge to the device's own ntfy topic."""
-    request = urllib.request.Request(url, data=PUSH_TEXT.encode(), method="POST",
-                                     headers={"Title": "LiChat", "Priority": "default"})
-    try:
-        urllib.request.urlopen(request, timeout=5).close()
-    except OSError:
-        pass   # push is only a hint; the app also fetches on its own
+class Doorbell:
+    """Rings for a device when something lands in its mailbox – the waiting fetch of that device wakes up."""
+
+    def __init__(self):
+        self.condition = threading.Condition()
+        self.rings = defaultdict(int)
+
+    def count(self, device):
+        with self.condition:
+            return self.rings[device]
+
+    def ring(self, devices):
+        with self.condition:
+            for device in devices:
+                self.rings[device] += 1
+            self.condition.notify_all()
+
+    def wait(self, device, seen, seconds):
+        with self.condition:
+            return self.condition.wait_for(lambda: self.rings[device] != seen, timeout=seconds)
 
 
 def b64(data):
@@ -91,12 +106,9 @@ def unb64(text, limit):
 
 
 class App:
-    def __init__(self, data_dir=None, notifier=ntfy_push, clock=time.time, push_hosts=None, trusted_proxies=None):
+    def __init__(self, data_dir=None, clock=time.time, trusted_proxies=None):
         self.store = Store(data_dir or os.environ.get("LICHAT_DATA", "./data"), clock=clock)
-        self.notifier = notifier
-        # Push only to our own ntfy (no third parties); LICHAT_PUSH_HOSTS="https://ntfy.example/,…"
-        hosts = push_hosts if push_hosts is not None else os.environ.get("LICHAT_PUSH_HOSTS", "")
-        self.push_hosts = [h.strip() for h in hosts.split(",") if h.strip()]
+        self.doorbell = Doorbell()
         # X-Real-IP only from our own reverse proxy (Michelle ddb9b934): LICHAT_TRUSTED_PROXIES="127.0.0.1" on the Pi.
         proxies = os.environ.get("LICHAT_TRUSTED_PROXIES", "") if trusted_proxies is None else trusted_proxies
         self.trusted_proxies = {p.strip() for p in proxies.split(",") if p.strip()}
@@ -186,13 +198,6 @@ class App:
 
     # Handlers ------------------------------------------------------------------------------------
 
-    def check_push(self, push):
-        if push is None:
-            return None
-        if not isinstance(push, str) or not any(push.startswith(h) for h in self.push_hosts):
-            raise HttpError(400, "Push nur über den eigenen ntfy")
-        return push
-
     def check_identity(self, identity):
         if not isinstance(identity, str) or not 16 <= len(identity) <= MAX_IDENTITY:
             raise HttpError(400, "Schlüssel fehlt")
@@ -205,9 +210,9 @@ class App:
         username = str(body.get("username", ""))
         if not USERNAME.fullmatch(username):
             raise HttpError(400, "Benutzername: 2–32 Zeichen a–z, 0–9, . _ -")
-        identity, push = self.check_identity(body.get("identity")), self.check_push(body.get("push"))
+        identity = self.check_identity(body.get("identity"))
         try:
-            device, token = self.store.register(str(body.get("invite", "")), username, identity, push)
+            device, token = self.store.register(str(body.get("invite", "")), username, identity)
         except KeyError:
             raise HttpError(403, "Einladung ungültig")
         except ValueError:
@@ -221,8 +226,7 @@ class App:
         return {"username": name, "devices": devices}
 
     def new_device(self, environ, body, me):
-        device, token = self.store.add_device(me[1], self.check_identity(body.get("identity")),
-                                              self.check_push(body.get("push")))
+        device, token = self.store.add_device(me[1], self.check_identity(body.get("identity")))
         return {"device": device, "token": token}
 
     def remove_me(self, environ, body, me):
@@ -259,15 +263,20 @@ class App:
                 isinstance(d, str) and DEVICE.fullmatch(d) for d in to):
             raise HttpError(400, "Empfänger fehlen")
         known, unknown, full = self.store.deliver(sorted(set(to)), unb64(body.get("blob"), MAX_BLOB))
-        for device in known:
-            target = self.store.push_target(device)
-            if target and device != me[0]:
-                self.notifier(target)
+        self.doorbell.ring(known)
         return {"delivered": known, "unknown": unknown, "full": full}
 
     def mailbox(self, environ, body, me):
-        return {"messages": [{"id": m["id"], "blob": b64(m["blob"]), "received": m["received"]}
-                             for m in self.store.fetch(me[0])]}
+        query = urllib.parse.parse_qs(environ.get("QUERY_STRING", ""))
+        try:
+            wait = min(max(int(query.get("warten", ["0"])[0]), 0), MAX_WAIT)
+        except ValueError:
+            raise HttpError(400, "warten: Sekunden")
+        seen = self.doorbell.count(me[0])      # before looking: a delivery in between is not missed
+        found = self.store.fetch(me[0])
+        if not found and wait and self.doorbell.wait(me[0], seen, wait):
+            found = self.store.fetch(me[0])
+        return {"messages": [{"id": m["id"], "blob": b64(m["blob"]), "received": m["received"]} for m in found]}
 
     def ack(self, environ, body, me):
         ids = body.get("ids")

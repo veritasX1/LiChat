@@ -2,12 +2,17 @@
 
     python3 main.py            the window (first start: sign in with an invitation)
 
-The account (account.py) is only touched by one worker thread: fetching, sending and starting run there one after the
-other; the window gets the results through GLib.idle_add. The mailbox is fetched every few seconds while LiChat runs.
+Sending and starting run in one worker thread; a listener thread keeps one waiting fetch open at the server (no push
+service – Olaf 09.10.: „wie bei einem echten Messenger“). The window gets results through GLib.idle_add. Closing the
+window keeps LiChat running in the background (GNOME notifications); it starts after login unless switched off.
+
+    python3 main.py --hintergrund   start without the window (the autostart entry)
 """
 
+import json
 import os
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -16,13 +21,15 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from .account import Account, LiChatError, short  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
-POLL_SECONDS = 4
+WAIT_SECONDS = 50     # one waiting fetch; the server answers at once when something arrives
+AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / f"{APP_ID}.desktop"
+DEFAULTS = {"hintergrund": True, "vorschau": False}
 GAP = 15 * 60          # a time stamp over the bubbles after this much quiet (like Messages)
 
 
@@ -76,6 +83,40 @@ def locked(method):
     return run
 
 
+class Listener:
+    """The standing connection: one waiting fetch after the other. After an error it tries again, waiting longer each
+    time (2 s … 60 s) – no network, server restarting."""
+
+    def __init__(self, account, on_news, on_error):
+        self.account, self.on_news, self.on_error = account, on_news, on_error
+        self.running = True
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        pause = 2
+        while self.running:
+            try:
+                news = self.account.fetch(wait=WAIT_SECONDS)
+            except (LiChatError, ValueError, OSError) as error:
+                GLib.idle_add(self.on_error, str(error))
+                time.sleep(pause)
+                pause = min(pause * 2, 60)
+                continue
+            pause = 2
+            GLib.idle_add(self.on_news, news)
+
+
+def autostart(on):
+    """The entry in ~/.config/autostart: LiChat starts after login without its window (Michelle Z7: can be switched off)."""
+    if on:
+        AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+        main = Path(__file__).resolve().parent.parent / "main.py"
+        AUTOSTART.write_text("[Desktop Entry]\nType=Application\nName=LiChat\nComment=Nachrichten im Hintergrund empfangen\n"
+                             f"Exec={sys.executable} {main} --hintergrund\nIcon=mail-message-new\nX-GNOME-Autostart-enabled=true\n")
+    elif AUTOSTART.exists():
+        AUTOSTART.unlink()
+
+
 class Worker:
     """One thread for everything that talks to the server or changes the account."""
 
@@ -108,7 +149,9 @@ class Window(Adw.ApplicationWindow):
         self.current = None        # the chosen conversation (hex id)
         self.composing = False     # „Neue Nachricht“: the An: line instead of a transcript
         self.seen = {}             # chat → number of messages already looked at (the blue dot)
-        self.busy = False
+        self.listener = None
+        self.settings = self.load_settings()
+        self.connect("close-request", self.on_close)
         manager = Adw.StyleManager.get_default()
         manager.connect("notify::dark", lambda *_: self.follow_appearance())
         self.follow_appearance()
@@ -118,6 +161,29 @@ class Window(Adw.ApplicationWindow):
             self.show_setup()
         else:
             self.show_main()
+
+    def load_settings(self):
+        try:
+            return {**DEFAULTS, **json.loads((self.folder / "einstellungen.json").read_text())}
+        except (OSError, ValueError):
+            return dict(DEFAULTS)
+
+    def set_setting(self, name, value):
+        self.settings[name] = value
+        if self.folder.exists():
+            (self.folder / "einstellungen.json").write_text(json.dumps(self.settings))
+
+    def on_close(self, *_):
+        """Closing keeps LiChat listening (like Messages on the Mac keeps receiving); „LiChat beenden“ ends it."""
+        if self.account is not None and self.settings["hintergrund"]:
+            self.set_visible(False)
+            return True
+        self.stop()
+        return False
+
+    def stop(self):
+        if self.listener:
+            self.listener.running = False
 
     def follow_appearance(self):
         if Adw.StyleManager.get_default().get_dark():
@@ -183,6 +249,8 @@ class Window(Adw.ApplicationWindow):
                 self.setup_note.set_label(error)
                 return
             self.account = account
+            if self.settings["hintergrund"] and self.key_store is not None:
+                autostart(True)
             self.show_main()
 
         self.worker.do(job, done)
@@ -196,6 +264,20 @@ class Window(Adw.ApplicationWindow):
         new = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["lichat-tool"], tooltip_text="Neue Nachricht")
         new.connect("clicked", lambda *_: self.start_composing())
         bar.pack_end(new)
+        menu = Gio.Menu()
+        menu.append("Im Hintergrund empfangen und beim Anmelden starten", "win.hintergrund")
+        menu.append("Absender und Text in Mitteilungen zeigen", "win.vorschau")
+        menu.append("LiChat beenden", "win.beenden")
+        for name in ("hintergrund", "vorschau"):
+            action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(self.settings[name]))
+            action.connect("change-state", self.on_setting)
+            self.add_action(action)
+        quit_action = Gio.SimpleAction.new("beenden", None)
+        quit_action.connect("activate", lambda *_: self.quit_all())
+        self.add_action(quit_action)
+        self.menu_button = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu, css_classes=["lichat-tool"],
+                                          tooltip_text="Einstellungen")
+        bar.pack_start(self.menu_button)
         sidebar.append(Gtk.WindowHandle(child=bar))
         self.search = Gtk.SearchEntry(placeholder_text="Suchen", css_classes=["lichat-search"])
         self.search.connect("search-changed", lambda *_: self.fill_list())
@@ -249,8 +331,7 @@ class Window(Adw.ApplicationWindow):
         self.add_controller(keys)
         self.fill_list()
         self.show_conversation()
-        self.fetch()
-        GLib.timeout_add_seconds(POLL_SECONDS, self.poll)
+        self.listener = Listener(self.account, self.fetched, self.show_notice)
 
     # ------------------------------------------------------------------------------------------ list
 
@@ -421,39 +502,71 @@ class Window(Adw.ApplicationWindow):
 
         self.worker.do(job, done)
 
-    def fetch(self):
-        if self.busy:
-            return
-        self.busy = True
-        self.worker.do(self.account.fetch, self.fetched)
-
-    def fetched(self, news, error):
-        self.busy = False
-        if error:
-            self.show_notice(error)
-            return
+    def fetched(self, news):
         self.show_notice("")
-        if news:
-            self.fill_list()
-            if self.current and any(n.get("chat") == self.current for n in news):
-                self.show_conversation()
+        if not news:
+            return
+        self.fill_list()
+        if self.current and any(n.get("chat") == self.current for n in news):
+            self.show_conversation()
+        for item in news:
+            if item.get("text") is None or item["from"] == self.account.username:
+                continue
+            if self.is_active() and self.get_visible() and item["chat"] == self.current:
+                continue
+            self.notify(item)
 
-    def poll(self):
-        self.fetch()
-        return True
+    def notify(self, item):
+        """A GNOME notification. By default only „Neue Nachricht“ (Michelle S4) – sender and text only when switched on."""
+        note = Gio.Notification.new("LiChat")
+        note.set_body(f"{item['from']}: {item['text']}" if self.settings["vorschau"] else "Neue Nachricht")
+        note.set_default_action_and_target("app.oeffnen", GLib.Variant.new_string(item["chat"]))
+        self.last_notification = note
+        self.get_application().send_notification(f"lichat-{item['chat']}", note)
+
+    def open_chat(self, cid):
+        if cid in self.account.chats:
+            self.composing = False
+            self.current = cid
+            self.fill_list()
+            self.show_conversation()
+        self.present()
+
+    def on_setting(self, action, value):
+        action.set_state(value)
+        self.set_setting(action.get_name(), value.get_boolean())
+        if action.get_name() == "hintergrund":
+            autostart(value.get_boolean())
+
+    def quit_all(self):
+        self.stop()
+        self.get_application().quit()
 
 
 class App(Adw.Application):
-    def __init__(self, account=None, folder=None, key_store=None):
+    def __init__(self, account=None, folder=None, key_store=None, background=False):
         super().__init__(application_id=APP_ID)
         self.options = (account, folder, key_store)
+        self.background = background
+        self.window = None
+        opening = Gio.SimpleAction.new("oeffnen", GLib.VariantType.new("s"))
+        opening.connect("activate", lambda _a, cid: self.window and self.window.open_chat(cid.get_string()))
+        self.add_action(opening)
 
     def do_activate(self):
-        load_css()
-        window = self.get_active_window() or Window(self, *self.options)
-        window.present()
+        if self.window is None:
+            load_css()
+            self.window = Window(self, *self.options)
+            self.hold()     # stays alive with the window hidden (background); „LiChat beenden“ releases it
+            if self.background and self.window.account is not None:
+                self.background = False
+                return
+        self.window.present()
 
 
 def main(argv=None):
     from . import keys
-    return App(key_store=keys).run(argv)
+    argv = list(argv or sys.argv)
+    background = "--hintergrund" in argv
+    argv = [a for a in argv if a != "--hintergrund"]
+    return App(key_store=keys, background=background).run(argv)

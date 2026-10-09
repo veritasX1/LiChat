@@ -86,14 +86,14 @@ class Server:
     def __init__(self, url, token=None):
         self.url, self.token = check_server(url), token
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, timeout=TIMEOUT):
         data = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(self.url + path, data=data, method=method)
         request.add_header("Content-Type", "application/json")
         if self.token:
             request.add_header("Authorization", "Bearer " + self.token)
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as error:
             try:
@@ -254,10 +254,13 @@ class Account:
 
     # ------------------------------------------------------------------------------------------ mailbox
 
-    def fetch(self):
+    def fetch(self, wait=0):
         """Fetches the mailbox, decrypts, keeps – and only then acknowledges. Returns what is new for the user:
-        [{"chat", "from", "text", "at"} | {"chat", "joined": True} | {"chat", "problem"}]."""
-        waiting = self.server.call("GET", "/v1/messages")["messages"]
+        [{"chat", "from", "text", "at"} | {"chat", "joined": True} | {"chat", "problem"}].
+        [wait] seconds: the server answers as soon as something arrives (the app's standing connection, no push
+        service). Only one fetch at a time per account – the app's listener thread."""
+        path = f"/v1/messages?warten={int(wait)}" if wait else "/v1/messages"
+        waiting = self.server.call("GET", path, timeout=TIMEOUT + wait)["messages"]
         with self.lock:
             news, joined, done = [], 0, []
             for item in waiting:

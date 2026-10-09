@@ -8,14 +8,15 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lichat_server.app import PUSH_TEXT, create_app  # noqa: E402
+from lichat_server.app import create_app  # noqa: E402
 from lichat_server.store import KEEP_UNFETCHED  # noqa: E402
 
-NTFY = "https://ntfy.test/"
 
 
 def b64(data):
@@ -34,17 +35,16 @@ class ApiTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.clock = Clock()
-        self.pushes = []
-        self.app = create_app(self.tmp.name, notifier=self.pushes.append, clock=self.clock, push_hosts=NTFY)
+        self.app = create_app(self.tmp.name, clock=self.clock)
 
     def tearDown(self):
         self.app.store.db.close()
         self.tmp.cleanup()
 
-    def call(self, method, path, body=None, token=None, ip="10.0.0.1"):
+    def call(self, method, path, body=None, token=None, ip="10.0.0.1", query=""):
         raw = json.dumps(body).encode() if body is not None else b""
         environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "CONTENT_LENGTH": str(len(raw)),
-                   "wsgi.input": io.BytesIO(raw), "REMOTE_ADDR": ip}
+                   "wsgi.input": io.BytesIO(raw), "REMOTE_ADDR": ip, "QUERY_STRING": query}
         if token:
             environ["HTTP_AUTHORIZATION"] = "Bearer " + token
         result = {}
@@ -55,10 +55,10 @@ class ApiTest(unittest.TestCase):
         data = b"".join(self.app(environ, start))
         return result["status"], json.loads(data)
 
-    def account(self, name, push=None):
+    def account(self, name):
         invite = self.app.store.create_invite()
         status, data = self.call("POST", "/v1/register", {"invite": invite, "username": name,
-                                                          "identity": b64(b"id-" + name.encode() * 8), "push": push})
+                                                          "identity": b64(b"id-" + name.encode() * 8)})
         self.assertEqual(status, 200, data)
         return data["device"], data["token"]
 
@@ -91,11 +91,13 @@ class ApiTest(unittest.TestCase):
                                                            "identity": b64(b"x" * 32)})
             self.assertEqual(status, 400, name)
 
-    def test_push_only_to_own_ntfy(self):
+    def test_no_push_service_is_ever_stored(self):
+        """Olaf 09.10.: no ntfy, no Google – a push address sent along is ignored, not kept."""
         invite = self.app.store.create_invite()
         status, _ = self.call("POST", "/v1/register", {"invite": invite, "username": "anna",
                                                        "identity": b64(b"x" * 32), "push": "https://fcm.googleapis.com/x"})
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.app.store.db.execute("SELECT push FROM devices").fetchall(), [(None,)])
 
     def test_wrong_token_is_rejected_and_limited(self):
         self.assertEqual(self.call("GET", "/v1/messages")[0], 401)
@@ -176,10 +178,9 @@ class ApiTest(unittest.TestCase):
 
     def test_message_round_trip_and_deleted_after_ack(self):
         _, anna = self.account("anna")
-        bernd_dev, bernd = self.account("bernd", push=NTFY + "bernd-geheim")
+        bernd_dev, bernd = self.account("bernd")
         status, data = self.call("POST", "/v1/messages", {"to": [bernd_dev], "blob": b64(b"\x00mls")}, token=anna)
         self.assertEqual((status, data["delivered"]), (200, [bernd_dev]))
-        self.assertEqual(self.pushes, [NTFY + "bernd-geheim"])
         box = self.call("GET", "/v1/messages", token=bernd)[1]["messages"]
         self.assertEqual([m["blob"] for m in box], [b64(b"\x00mls")])
         self.call("POST", "/v1/messages/ack", {"ids": [box[0]["id"]]}, token=bernd)
@@ -192,8 +193,39 @@ class ApiTest(unittest.TestCase):
         columns = [r[1] for r in self.app.store.db.execute("PRAGMA table_info(messages)")]
         self.assertEqual(columns, ["id", "device", "blob", "received"])
 
-    def test_push_text_has_no_sender_and_no_content(self):
-        self.assertEqual(PUSH_TEXT, "Neue Nachricht")
+    def test_waiting_fetch_wakes_up_when_a_message_arrives(self):
+        """The apps' standing connection: GET ?warten=… answers as soon as something lands, not only after the time."""
+        _, anna = self.account("anna")
+        bernd_dev, bernd = self.account("bernd")
+        got = {}
+
+        def wait():
+            started = time.monotonic()
+            got["box"] = self.call("GET", "/v1/messages", token=bernd, query="warten=20")[1]["messages"]
+            got["seconds"] = time.monotonic() - started
+
+        waiter = threading.Thread(target=wait)
+        waiter.start()
+        time.sleep(0.3)
+        self.call("POST", "/v1/messages", {"to": [bernd_dev], "blob": b64(b"\x00hallo")}, token=anna)
+        waiter.join(5)
+        self.assertEqual([m["blob"] for m in got["box"]], [b64(b"\x00hallo")])
+        self.assertLess(got["seconds"], 3)
+
+    def test_waiting_fetch_ends_empty_after_its_time_and_is_capped(self):
+        _, bernd = self.account("bernd")
+        started = time.monotonic()
+        self.assertEqual(self.call("GET", "/v1/messages", token=bernd, query="warten=1")[1]["messages"], [])
+        self.assertGreaterEqual(time.monotonic() - started, 0.9)
+        self.assertEqual(self.call("GET", "/v1/messages", token=bernd, query="warten=x")[0], 400)
+
+    def test_waiting_fetch_answers_at_once_when_something_is_there(self):
+        _, anna = self.account("anna")
+        bernd_dev, bernd = self.account("bernd")
+        self.call("POST", "/v1/messages", {"to": [bernd_dev], "blob": b64(b"x")}, token=anna)
+        started = time.monotonic()
+        self.assertEqual(len(self.call("GET", "/v1/messages", token=bernd, query="warten=30")[1]["messages"]), 1)
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_ack_cannot_delete_someone_elses_messages(self):
         _, anna = self.account("anna")
