@@ -111,7 +111,7 @@ def main(argv):
             wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
             try:
                 # Receipts (✓✓) and new profile pictures change nothing to answer – keep waiting.
-                news = [n for n in account.fetch(wait=wait) if not n.get("receipt") and not n.get("typing") and not (command == "warten" and n.get("picture"))]
+                news = [n for n in account.fetch(wait=wait) if not n.get("receipt") and not n.get("typing") and not n.get("settings") and not (command == "warten" and n.get("picture"))]
                 pause = 2
             except LiChatError as error:
                 # Server restarting (502), down (5xx) or no network: „warten“ keeps listening (Michelle – else an instance
@@ -126,8 +126,11 @@ def main(argv):
                 break
         for item in news:
             chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
-            if item.get("joined"):
-                print(f"[{chat}] neues Gespräch")
+            if item.get("synced"):
+                print("Verlauf vom anderen Gerät übernommen")
+            elif item.get("joined"):
+                if not account.chats.get(item["chat"], {}).get("intern"):
+                    print(f"[{chat}] neues Gespräch")
             elif item.get("system"):
                 print(f"[{chat}] {item['system']}")
             elif item.get("removed"):
@@ -155,7 +158,7 @@ def main(argv):
         if not news:
             print("nichts Neues")
     elif command == "gespraeche":
-        for cid, chat in account.chats.items():
+        for cid, chat in account.visible_chats().items():
             last = chat["messages"][-1] if chat["messages"] else None
             tail = (f" – {last['text'][:40]}" if last.get("system") else f" – {last['from']}: {last['text'][:40]}") if last else ""
             print(f"{short(bytes.fromhex(cid))}  {account.title(cid)}{tail}")

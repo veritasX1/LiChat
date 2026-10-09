@@ -571,7 +571,7 @@ class Window(Adw.ApplicationWindow):
         def last(cid):
             messages = self.account.chats[cid]["messages"]
             return messages[-1]["at"] if messages else 0
-        return sorted(self.account.chats, key=last, reverse=True)
+        return sorted(self.account.visible_chats(), key=last, reverse=True)   # without my devices' own group
 
     @locked
     def fill_list(self):
