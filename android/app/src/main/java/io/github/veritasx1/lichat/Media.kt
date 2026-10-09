@@ -32,6 +32,11 @@ class Media(private val context: Context) {
         } ?: "Datei"
         val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw LiChatException("Datei nicht lesbar")
         when {
+            mime == "image/gif" || io.github.veritasx1.lichat.core.Gif.isGif(bytes) -> {
+                // A GIF stays a GIF – animated, looping (Michelle 999f37be): only comments, XMP and other extra blocks go.
+                val gif = io.github.veritasx1.lichat.core.Gif.withoutMetadata(bytes)
+                account.sendAttachment(cid, gif, name.substringBeforeLast('.') + ".gif", "image/gif", "bild", preview = Pictures.photo(gif).second)
+            }
             !asFile && mime.startsWith("image/") -> {
                 val (jpeg, preview) = Pictures.photo(bytes)
                 account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview)

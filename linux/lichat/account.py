@@ -109,6 +109,55 @@ MENTION = re.compile(r"(?<![\w@])@([a-z0-9][a-z0-9._-]{1,31})", re.IGNORECASE)
 EVERYONE = ("alle", "all")
 
 
+def gif_without_metadata(data):
+    """A GIF block by block (Michelle 999f37be): frames, colour tables, timing (graphic control) and the loop
+    (NETSCAPE2.0 / ANIMEXTS1.0) stay; comments, XMP and every other application or text block go. Not a GIF: refused."""
+    if data[:6] not in (b"GIF87a", b"GIF89a") or len(data) < 13:
+        raise LiChatError("Kein GIF")
+    out = bytearray(data[:13])
+    flags = data[10]
+    pos = 13
+    if flags & 0x80:                                   # global colour table
+        size = 3 * (2 ** ((flags & 7) + 1))
+        out += data[pos:pos + size]
+        pos += size
+
+    def sub_blocks(at):
+        while True:
+            if at >= len(data):
+                raise LiChatError("GIF unvollständig")
+            length = data[at]
+            at += 1 + length
+            if length == 0:
+                return at
+    while pos < len(data):
+        block = data[pos]
+        if block == 0x3B:                              # trailer
+            out.append(0x3B)
+            return bytes(out)
+        if block == 0x2C:                              # image: descriptor, local colour table, LZW data
+            start = pos
+            local = data[pos + 9]
+            pos += 10
+            if local & 0x80:
+                pos += 3 * (2 ** ((local & 7) + 1))
+            pos = sub_blocks(pos + 1)
+            out += data[start:pos]
+        elif block == 0x21:                            # extension
+            label = data[pos + 1]
+            end = sub_blocks(pos + 2)
+            keep = label == 0xF9                       # graphic control: timing, transparency
+            if label == 0xFF and data[pos + 2] == 11 and data[pos + 3:pos + 14] in (b"NETSCAPE2.0", b"ANIMEXTS1.0"):
+                keep = True                            # the loop
+            if keep:
+                out += data[pos:end]
+            pos = end
+        else:
+            raise LiChatError("GIF beschädigt")
+    out.append(0x3B)
+    return bytes(out)
+
+
 def _pictographic(cp):
     """Roughly Unicode's Extended_Pictographic: the emoji blocks, the symbol ranges (❤ ✅ ‼ ⁉ ™ …), © ®, minus letters."""
     import unicodedata
@@ -1314,7 +1363,12 @@ class Account:
             raise LiChatError("unbekannte Art von Anhang")
         if self.chats[cid].get("removed"):
             raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
-        if kind == "bild":
+        if kind in ("bild", "datei") and (mime == "image/gif" or data[:6] in (b"GIF87a", b"GIF89a")):
+            # A GIF stays a GIF – animated, looping (Michelle 999f37be): only comments, XMP and other extra blocks go.
+            data, mime, kind = gif_without_metadata(data), "image/gif", "bild"
+            name = (name.rsplit(".", 1)[0] or "Bild") + ".gif"
+            preview = self.prepare_photo(data)[1]          # the first frame as the preview
+        elif kind == "bild":
             data, preview = self.prepare_photo(data)
             mime, name = "image/jpeg", (name.rsplit(".", 1)[0] or "Foto") + ".jpg"
         elif kind == "datei" and mime.startswith("image/") and mime not in ("image/gif", "image/svg+xml"):
