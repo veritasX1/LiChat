@@ -158,12 +158,18 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { askBattery() }
     // The same picker for my profile picture and a group's picture (groupPictureFor = that chat).
     var groupPictureFor by remember { mutableStateOf<String?>(null) }
+    var contactPictureFor by remember { mutableStateOf<String?>(null) }   // „Bild ändern“ of a person: only for me
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val acc = account ?: return@rememberLauncherForActivityResult
         val group = groupPictureFor.also { groupPictureFor = null }
+        val person = contactPictureFor.also { contactPictureFor = null }
         if (uri != null) work({
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw LiChatException("Bild nicht lesbar")
-            if (group != null) acc.setGroupPicture(group, Pictures.prepare(bytes)) else acc.setPicture(Pictures.prepare(bytes))
+            when {
+                person != null -> acc.setContactPicture(person, Pictures.prepare(bytes))
+                group != null -> acc.setGroupPicture(group, Pictures.prepare(bytes))
+                else -> acc.setPicture(Pictures.prepare(bytes))
+            }
         }) { _, error -> problem = error; Hub.changed() }
     }
 
@@ -348,6 +354,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         mute = { on -> groupWork { acc.mute(p.cid, on) } },
                         receipts = { on -> groupWork { acc.setReceiptsFor(p.cid, on) } },
                         block = { person, on -> groupWork { acc.block(person, on) } },
+                        contactPicture = { person -> contactPictureFor = person; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        resetContactPicture = { person -> groupWork { acc.setContactPicture(person, null) } },
                         leave = { groupWork { acc.leave(p.cid) }; page = Page.Chat(p.cid) },
                     ))
             }

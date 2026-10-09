@@ -319,6 +319,23 @@ def main():
     shot(window, "04-info-code.png")
     window.info.popdown()
 
+    # Olaf zu 8534fe11: my own picture of Bernd, only for me – shown big on a click, „Zurücksetzen“ removes it again.
+    from PIL import Image
+    own = Path(tempfile.mkdtemp()) / "kontakt.png"
+    Image.new("RGB", (300, 200), (30, 90, 200)).save(own)
+    window.account.set_contact_picture("bernd", own)
+    window.fill_info(window.info)
+    labels = [w.get_label() for w in walk(window.info.get_popover()) if isinstance(w, Gtk.Button)]
+    assert "Bild ändern" in labels and "Zurücksetzen" in labels, labels
+    big = window.show_picture(window.account.picture("bernd"), "bernd")
+    settle(0.3)
+    assert isinstance(big.get_child(), Gtk.Picture)
+    big.close()
+    window.account.set_contact_picture("bernd", None)
+    window.fill_info(window.info)
+    labels = [w.get_label() for w in walk(window.info.get_popover()) if isinstance(w, Gtk.Button)]
+    assert "Zurücksetzen" not in labels and "Bild ändern" in labels
+
     # „Neue Nachricht“ to a group: An: bernd, erna.
     window.start_composing()
     window.to_entry.set_text("bernd, erna")
