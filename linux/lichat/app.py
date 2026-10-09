@@ -13,6 +13,7 @@ window keeps LiChat running in the background (GNOME notifications); it starts a
 
 import json
 import os
+import re
 import queue
 import sys
 import threading
@@ -25,7 +26,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from .account import TYPING_FRESH, Account, LiChatError, short, unb64  # noqa: E402
+from .account import MENTION, TYPING_FRESH, Account, LiChatError, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -395,9 +396,13 @@ class Window(Adw.ApplicationWindow):
         self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"])
         self.input.connect("activate", lambda *_: self.send())
         self.input.connect("changed", self.typed)
+        self.input.connect("changed", self.suggest_mentions)
         self.typing_timer = 0
         line.append(self.input)
         self.input_line = line
+        # „@…“ in a group: the members that fit, as buttons above the input; a click writes „@name “ (card d54175ed).
+        self.suggestions = Gtk.Box(spacing=6, margin_start=16, margin_end=16, margin_top=4, visible=False)
+        self.pane.append(self.suggestions)
         self.pane.append(line)
 
         split = Gtk.Box()
@@ -539,9 +544,11 @@ class Window(Adw.ApplicationWindow):
             if m.get("anhang"):
                 piece = self.attachment_bubble(m["anhang"], mine)
             else:
-                piece = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
+                piece = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+                # „@name“ bold (card d54175ed)
+                piece.set_markup(MENTION.sub(lambda f: f"<b>{f.group(0)}</b>", GLib.markup_escape_text(m["text"])))
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
                 row = Gtk.Box(spacing=6, halign=Gtk.Align.START)
@@ -614,6 +621,25 @@ class Window(Adw.ApplicationWindow):
         if self.current == cid and not self.composing:
             self.show_conversation()
         return False
+
+    def suggest_mentions(self, entry):
+        while (child := self.suggestions.get_first_child()) is not None:
+            self.suggestions.remove(child)
+        cid = self.current
+        found = re.search(r"(?:^|\s)@([\w.-]*)$", entry.get_text())
+        group = cid and not self.composing and len(self.account.chats.get(cid, {}).get("roster", {})) > 2
+        names = self.account.mention_candidates(cid, found.group(1)) if group and found else []
+        for user in names:
+            button = Gtk.Button(label=self.account.display(user), css_classes=["lichat-suggestion"], tooltip_text=f"@{user}")
+            button.connect("clicked", lambda _b, u=user: self.insert_mention(u))
+            self.suggestions.append(button)
+        self.suggestions.set_visible(bool(names))
+
+    def insert_mention(self, user):
+        text = self.input.get_text()
+        self.input.set_text(text[:text.rfind("@")] + f"@{user} ")
+        self.input.grab_focus()
+        self.input.set_position(-1)
 
     def typed(self, entry):
         """Something typed in a conversation: with the switch on, the others see „…“ (rate-limited in the account)."""
@@ -696,7 +722,9 @@ class Window(Adw.ApplicationWindow):
             adding.connect("activate", lambda e: (button.popdown(), self.group_job(
                 lambda a: a.add(cid, [n.strip().lower() for n in e.get_text().replace(";", ",").split(",") if n.strip()]))))
             box.append(adding)
-            mute = Gtk.CheckButton(label="Mitteilungen stummschalten", active=bool(self.account.chats[cid].get("stumm")))
+            # In a group a muted chat still notifies for @me / @alle (iOS, card d54175ed).
+            mute = Gtk.CheckButton(label="Nur bei Erwähnung benachrichtigen" if group else "Mitteilungen stummschalten",
+                                   active=bool(self.account.chats[cid].get("stumm")))
             mute.connect("toggled", lambda c: self.account.mute(cid, c.get_active()))
             box.append(mute)
             if group:
@@ -787,14 +815,17 @@ class Window(Adw.ApplicationWindow):
                 continue
             if self.is_active() and self.get_visible() and item["chat"] == self.current:
                 continue
-            if self.account.chats.get(item["chat"], {}).get("stumm"):
-                continue     # muted (card d45b319a)
+            if self.account.chats.get(item["chat"], {}).get("stumm") and not item.get("mention"):
+                continue     # muted (card d45b319a) – a mention still comes through (d54175ed)
             self.notify(item)
 
     def notify(self, item):
         """A GNOME notification. By default only „Neue Nachricht“ (Michelle S4) – sender and text only when switched on."""
         note = Gio.Notification.new("LiChat")
-        note.set_body(f"{item['from']}: {item['text']}" if self.settings["vorschau"] else "Neue Nachricht")
+        if self.settings["vorschau"]:
+            note.set_body(f"{item['from']} hat dich erwähnt: {item['text']}" if item.get("mention") else f"{item['from']}: {item['text']}")
+        else:
+            note.set_body("Neue Erwähnung" if item.get("mention") else "Neue Nachricht")
         note.set_default_action_and_target("app.oeffnen", GLib.Variant.new_string(item["chat"]))
         self.last_notification = note
         self.get_application().send_notification(f"lichat-{item['chat']}", note)

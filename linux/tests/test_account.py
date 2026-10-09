@@ -120,6 +120,26 @@ class TwoPeople(Base):
 
 
 class Groups(Base):
+    def test_mentions(self):
+        """Card d54175ed: „@name“ means members only, „@alle“ everyone; the receiver works it out from the text, a mention of me
+        is flagged (a notification even when muted); in a chat of two there is nothing to flag."""
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = anna.start(["bernd", "erna"], title="Grillabend")
+        bernd.fetch(); erna.fetch()
+        self.assertEqual(anna.mentioned(cid, "Hi @Bernd, @fremder und @erna."), ["bernd", "erna"])
+        self.assertEqual(anna.mentioned(cid, "@alle bitte melden"), ["anna", "bernd", "erna"])
+        self.assertEqual(anna.mentioned(cid, "mail@bernd.de"), [])
+        self.assertEqual(anna.mention_candidates(cid, "e"), ["erna"])
+        anna.send(cid, "@bernd bringst du Kohle?")
+        self.assertTrue([n for n in bernd.fetch() if n.get("text")][0].get("mention"))
+        self.assertFalse([n for n in erna.fetch() if n.get("text")][0].get("mention"))
+        anna.send(cid, "@alle um 18 Uhr!")
+        self.assertTrue([n for n in erna.fetch() if n.get("text")][0].get("mention"))
+        two = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(two, "@bernd hallo")
+        self.assertNotIn("mention", [n for n in bernd.fetch() if n.get("text")][0])
+
     def test_edit_and_unsend(self):
         """Card 4ceca163, like iOS: edit for 15 minutes and five times („Bearbeitet“ with the earlier versions), call back for
         two minutes (a grey line, quotes of it emptied) – end-to-end, only by the one who wrote it, windows on the sender's clock."""

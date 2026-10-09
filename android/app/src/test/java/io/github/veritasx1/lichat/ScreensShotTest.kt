@@ -124,6 +124,16 @@ httpd.serve_forever()
     }
 
     /** Card 884f7c8a / 0c01f599: Bernd types – „•••“ at the very bottom, in view (the list is anchored at its end). */
+    /** d54175ed: in a group „@“ suggests the members, a tap writes „@name “. */
+    @Test
+    fun mentionSuggestions() {
+        var sent = ""
+        shot("3b-erwaehnen") { ChatScreen(anna, group, 0, null, {}, {}, { text, _ -> sent = text }) }
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("Danke @er")
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("erna erwähnen")).performClick()
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction().and(androidx.compose.ui.test.hasText("Danke @erna "))).assertExists()
+    }
+
     /** 4ceca163: „Bearbeitet“ under a corrected bubble (a tap shows the earlier versions), a grey line for one called back,
      *  „Bearbeiten“ and „Senden widerrufen“ in the menu of a fresh message of mine. */
     @Test

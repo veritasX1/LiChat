@@ -37,6 +37,8 @@ private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
+val MENTION = Regex("(?<![\\w@])@([a-zA-Z0-9][a-zA-Z0-9._-]{1,31})")
+val EVERYONE = setOf("alle", "all")
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
@@ -52,7 +54,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
-                val attachment: JSONObject? = null) {
+                val attachment: JSONObject? = null, val mention: Boolean = false) {
     enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing, Edited }
 }
 
@@ -410,6 +412,26 @@ class Account(val folder: File, private val key: ByteArray) {
     fun mute(cid: String, on: Boolean) = synchronized(lock) { chat(cid).put("stumm", on); save() }
 
     fun muted(cid: String) = chats.optJSONObject(cid)?.optBoolean("stumm") ?: false
+
+    // ------------------------------------------------------------------------------------------ mentions (d54175ed)
+
+    /** The names „@…“ in a text (lower case, without trailing punctuation). */
+    private fun mentionNames(text: String) = MENTION.findAll(text).map { it.groupValues[1].lowercase().trimEnd('.', '_', '-') }.toSet()
+
+    /** Who „@name“ means: members of this conversation only, „@alle“ = everyone – worked out by every receiver from the text. */
+    fun mentioned(cid: String, text: String): List<String> {
+        val names = mentionNames(text)
+        val members = chats.optJSONObject(cid)?.optJSONObject("roster")?.keys()?.asSequence()?.toSet() ?: emptySet()
+        return (if (names.any { it in EVERYONE }) members else names intersect members).sorted()
+    }
+
+    fun mentionsMe(text: String) = mentionNames(text).let { username in it || it.any { n -> n in EVERYONE } }
+
+    /** While typing „@…“ in a group: the members that fit (user or display name), me left out. */
+    fun mentionCandidates(cid: String, typed: String): List<String> {
+        val members = chats.optJSONObject(cid)?.optJSONObject("roster")?.keys()?.asSequence()?.toList() ?: emptyList()
+        return members.filter { it != username && (it.startsWith(typed.lowercase()) || display(it).lowercase().startsWith(typed.lowercase())) }.sorted()
+    }
 
     fun groupPicture(cid: String): ByteArray? = (chats.optJSONObject(cid)?.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { unb64(it) }
 
@@ -982,7 +1004,9 @@ class Account(val folder: File, private val key: ByteArray) {
                         typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
-                        return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at))
+                        // „@ich“ / „@alle“ in a group: a notification even when the chat is muted (iOS)
+                        val mention = chat.getJSONObject("roster").length() > 2 && mentionsMe(text)
+                        return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at, mention = mention))
                     }
                 }
                 return emptyList()

@@ -135,7 +135,8 @@ def main(argv):
             else:
                 quote = item.get("antwort")
                 about = f" (↪ {quote.get('from')}: {quote.get('text', '')[:40]})" if quote else ""
-                print(f"[{chat}] {when(item['at'])} {item['from']}{about}: {item['text']}")
+                mark = " (@dich)" if item.get("mention") else ""
+                print(f"[{chat}] {when(item['at'])} {item['from']}{mark}{about}: {item['text']}")
         if not news:
             print("nichts Neues")
     elif command == "gespraeche":

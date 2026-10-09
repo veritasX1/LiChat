@@ -105,6 +105,10 @@ def short(conversation):
     return conversation.hex()[:8]
 
 
+MENTION = re.compile(r"(?<![\w@])@([a-z0-9][a-z0-9._-]{1,31})", re.IGNORECASE)
+EVERYONE = ("alle", "all")
+
+
 def _pictographic(cp):
     """Roughly Unicode's Extended_Pictographic: the emoji blocks, the symbol ranges (❤ ✅ ‼ ⁉ ™ …), © ®, minus letters."""
     import unicodedata
@@ -651,6 +655,27 @@ class Account:
             else:
                 reactions.pop(self.username, None)
         self._group_message(cid, {"t": "reaktion", "mid": mid, "emoji": emoji})
+
+    # ------------------------------------------------------------------------------------------ mentions (d54175ed)
+
+    def mentioned(self, cid, text):
+        """Who „@name“ in this text means: members of this conversation only, „@alle“ = everyone else. Worked out by every
+        receiver from the text itself – nobody can claim a mention that is not in the message."""
+        names = {name.lower().rstrip("._-") for name in MENTION.findall(text or "")}
+        members = set(self.chats.get(cid, {}).get("roster", {}))
+        if names & set(EVERYONE):
+            return sorted(members)
+        return sorted(names & members)
+
+    def mentions_me(self, cid, text):
+        names = {name.lower().rstrip("._-") for name in MENTION.findall(text or "")}
+        return self.username in names or bool(names & set(EVERYONE))
+
+    def mention_candidates(self, cid, typed):
+        """While typing „@…“ in a group: the members that fit (name or display name), me left out – for the suggestions."""
+        typed = typed.lower()
+        return [u for u in sorted(self.chats.get(cid, {}).get("roster", {}))
+                if u != self.username and (u.startswith(typed) or self.display(u).lower().startswith(typed))]
 
     # ------------------------------------------------------------------------------------------ edit / unsend (4ceca163)
 
@@ -1217,7 +1242,10 @@ class Account:
             self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
-            return [{"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}]
+            news = {"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}
+            if len(chat.get("roster", {})) > 2 and self.mentions_me(cid, message["text"]):
+                news["mention"] = True      # „@ich“ or „@alle“: a notification even when the chat is muted (iOS)
+            return [news]
         return []
 
     def _remember_mid(self, cid, message, data):

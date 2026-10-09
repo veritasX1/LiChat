@@ -223,6 +223,21 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("tippt") })
     }
 
+    /** Card d54175ed: „@name“ members only, „@alle“ everyone, a mention of me is flagged (notifies even when muted). */
+    @Test
+    fun mentions() {
+        val anna = person("anna"); val bernd = person("bernd"); val erna = person("erna")
+        val cid = anna.start(listOf("bernd", "erna"), "Grillabend")
+        bernd.fetch(); erna.fetch()
+        assertEquals(listOf("bernd", "erna"), anna.mentioned(cid, "Hi @Bernd, @fremder und @erna."))
+        assertEquals(listOf("anna", "bernd", "erna"), anna.mentioned(cid, "@alle bitte melden"))
+        assertEquals(emptyList<String>(), anna.mentioned(cid, "mail@bernd.de"))
+        assertEquals(listOf("erna"), anna.mentionCandidates(cid, "e"))
+        anna.send(cid, "@bernd bringst du Kohle?")
+        assertTrue(bernd.fetch().first { it.kind == News.Kind.Text }.mention)
+        assertFalse(erna.fetch().first { it.kind == News.Kind.Text }.mention)
+    }
+
     /** Card 4ceca163, like iOS: edit 15 min / 5×, the earlier versions travel; „Senden widerrufen“ 2 min, quotes emptied. */
     @Test
     fun editAndUnsend() {
