@@ -37,11 +37,62 @@ class Media(private val context: Context) {
                 account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview)
             }
             !asFile && mime.startsWith("video/") -> {
-                val temp = File(context.cacheDir, "video-vorschau").apply { writeBytes(bytes) }
+                // Without the container's metadata (Michelle: an MP4 carries the place ©xyz and the recording time).
+                val clean = clean(bytes, "mp4") ?: throw LiChatException("Video lässt sich nicht ohne Ortsangaben verschicken")
+                val temp = File(context.cacheDir, "video-vorschau").apply { writeBytes(clean) }
                 val preview = try { Pictures.videoPreview(temp) } finally { temp.delete() }
-                account.sendAttachment(cid, bytes, name, mime, "video", preview = preview)
+                account.sendAttachment(cid, clean, name.substringBeforeLast('.') + ".mp4", "video/mp4", "video", preview = preview)
             }
-            else -> account.sendAttachment(cid, bytes, name, mime, if (mime.startsWith("audio/")) "sprache" else "datei")
+            !asFile && mime.startsWith("audio/") -> {
+                val clean = clean(bytes, "m4a") ?: throw LiChatException("Aufnahme lässt sich nicht ohne Metadaten verschicken")
+                account.sendAttachment(cid, clean, name.substringBeforeLast('.') + ".m4a", "audio/mp4", "sprache")
+            }
+            else -> account.sendAttachment(cid, bytes, name, mime, "datei")
+        }
+    }
+
+    /** Copies the audio and video tracks into a fresh MP4 – samples unchanged, nothing else: no place, no user data,
+     *  no camera; only the rotation is kept so the video stands upright. Null when it cannot be read. */
+    fun clean(bytes: ByteArray, suffix: String): ByteArray? {
+        val input = File(context.cacheDir, "bereinigen-ein.$suffix").apply { writeBytes(bytes) }
+        val output = File(context.cacheDir, "bereinigen-aus.$suffix")
+        return try {
+            val extractor = android.media.MediaExtractor().apply { setDataSource(input.absolutePath) }
+            val muxer = android.media.MediaMuxer(output.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val tracks = mutableMapOf<Int, Int>()
+            var buffer = 1 shl 20
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val type = format.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (!type.startsWith("video/") && !type.startsWith("audio/")) continue
+                if (type.startsWith("video/") && format.containsKey(android.media.MediaFormat.KEY_ROTATION))
+                    muxer.setOrientationHint(format.getInteger(android.media.MediaFormat.KEY_ROTATION))
+                if (format.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+                    buffer = maxOf(buffer, format.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+                tracks[i] = muxer.addTrack(format)
+            }
+            if (tracks.isEmpty()) return null
+            muxer.start()
+            val data = java.nio.ByteBuffer.allocate(buffer)
+            val info = android.media.MediaCodec.BufferInfo()
+            for ((source, target) in tracks) {
+                extractor.selectTrack(source)
+                while (true) {
+                    val size = extractor.readSampleData(data, 0)
+                    if (size < 0) break
+                    info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
+                    muxer.writeSampleData(target, data, info)
+                    extractor.advance()
+                }
+                extractor.unselectTrack(source)
+                extractor.seekTo(0, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
+            muxer.stop(); muxer.release(); extractor.release()
+            output.readBytes()
+        } catch (e: Exception) {
+            null
+        } finally {
+            input.delete(); output.delete()
         }
     }
 
