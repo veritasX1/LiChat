@@ -7,6 +7,7 @@ them once fetched. Endpoints (all JSON, blobs base64):
     GET    /v1/users/<name>         directory: devices + identity keys        (signed in)
     POST   /v1/devices              {identity} another own device             -> {device, token}
     DELETE /v1/devices/me           sign this device out, mailbox goes too
+    POST   /v1/devices/me/token     a new token for this device, the old one is void at once -> {token}
     POST   /v1/key-packages         {key_packages: [b64, …]}                  -> {count}
     POST   /v1/key-packages/<name>  claim one package per device of <name> ({device}: only that one) -> {key_packages: [...]}  (10/h per claimer)
     PUT    /v1/key-packages/last-resort {key_package}  kept, handed out when the supply is empty
@@ -158,6 +159,7 @@ class App:
             ("GET", r"/v1/users/(?P<name>[^/]+)", self.user, True),
             ("POST", r"/v1/devices", self.new_device, True),
             ("DELETE", r"/v1/devices/me", self.remove_me, True),
+            ("POST", r"/v1/devices/me/token", lambda env, body, me: {"token": self.store.renew_token(me[0])}, True),
             ("GET", r"/v1/devices", lambda env, body, me: {"devices": self.store.own_devices(me[1])}, True),
             ("DELETE", r"/v1/devices/(?P<device>[0-9a-f]{16})", self.remove_own_device, True),
             ("POST", r"/v1/kopplung", self.link_open, False),

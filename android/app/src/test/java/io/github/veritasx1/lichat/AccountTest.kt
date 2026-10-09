@@ -404,6 +404,11 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(token, again.server.token)
         assertFalse(JSONObject(File(folder, "account.json").readText()).has("token"))
         again.fetch()
+        // Michelle: the old token (still in backups of account.json) was renewed at the first fetch – it is void now
+        assertTrue(again.server.token != token)
+        try { io.github.veritasx1.lichat.core.Server(url, token).call("GET", "/v1/messages"); throw AssertionError("alter Token gilt noch") } catch (e: LiChatException) { assertTrue(e.message!!.contains("(401)")) }
+        assertEquals(again.server.token, Account(folder, File(folder, "key").readBytes()).server.token)
+        again.fetch()
     }
 
     /** Card d54175ed: „@name“ members only, „@alle“ everyone, a mention of me is flagged (notifies even when muted). */

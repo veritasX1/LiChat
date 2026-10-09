@@ -201,6 +201,14 @@ class Store:
             self._forget_device(device)
             return True
 
+    def renew_token(self, device):
+        """A new token for this device – the old one stops working at once (Michelle zu f09a8086: copies of an old
+        account.json must not keep fetching)."""
+        token = secrets.token_urlsafe(32)
+        with self.lock:
+            self.db.execute("UPDATE devices SET token = ? WHERE id = ?", (token_hash(token), device))
+        return token
+
     def device_for_token(self, token):
         """(device_id, username) for a bearer token, or None."""
         row = self.db.execute("SELECT id, username FROM devices WHERE token = ?", (token_hash(token),)).fetchone()

@@ -360,7 +360,8 @@ class Account:
         if token:
             # An account from before 09.10. evening: the token moves out of account.json into token.bin (sealed), no new
             # sign-in (Michelle f09a8086: a copied account.json let someone fetch – and so lose – this device's packets).
-            seal_file(self.folder / "token.bin", self.key, TOKEN_MAGIC, {"token": token})
+            # The old token stays in backups of account.json – it gets replaced by a new one (Michelle, „erneuern“ below).
+            seal_file(self.folder / "token.bin", self.key, TOKEN_MAGIC, {"token": token, "erneuern": True})
             self.info.pop("token")
             write_private(self.folder / "account.json", json.dumps(self.info, indent=1).encode())
         else:
@@ -368,6 +369,22 @@ class Account:
             if not token:
                 raise LiChatError("Anmeldedaten fehlen (token.bin) – dieses Gerät bitte neu koppeln")
         self.server = Server(self.info["server"], token)
+        self._renew_token()
+
+    def _renew_token(self):
+        """After the move out of account.json: a new token from the server, the old one void – copies of the old
+        account.json fetch nothing any more. Offline or an older server: tried again at the next start."""
+        with self.lock:
+            stored = self._unseal("token.bin", TOKEN_MAGIC, {})
+            if not stored.get("erneuern"):
+                self.server.token = stored.get("token") or self.server.token
+                return
+            try:
+                fresh = self.server.call("POST", "/v1/devices/me/token", {})["token"]
+            except (LiChatError, KeyError):
+                return
+            seal_file(self.folder / "token.bin", self.key, TOKEN_MAGIC, {"token": fresh})
+            self.server.token = fresh
 
     # ------------------------------------------------------------------------------------------ setup
 

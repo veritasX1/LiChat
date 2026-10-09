@@ -124,10 +124,18 @@ class TwoPeople(Base):
         info["token"] = token
         (anna.folder / "account.json").write_text(json.dumps(info))
         (anna.folder / "token.bin").unlink()
+        backup = (anna.folder / "account.json").read_text()
         again = Account(anna.folder)
-        self.assertEqual(again.server.token, token)
         self.assertNotIn("token", json.loads((anna.folder / "account.json").read_text()))
-        again.fetch()                                   # still signed in
+        # Michelle: the old token (still in backups of account.json) is renewed – it fetches nothing any more
+        self.assertNotEqual(again.server.token, token)
+        from lichat.account import Server as Client
+        with self.assertRaises(LiChatError) as caught:
+            Client(self.url, token).call("GET", "/v1/messages")
+        self.assertIn("(401)", str(caught.exception))
+        again.fetch()                                   # still signed in, with the new token
+        self.assertEqual(Account(anna.folder).server.token, again.server.token, "beim nächsten Start der neue")
+        self.assertIn('"token"', backup)
 
     def test_wrong_key_does_not_open(self):
         anna = self.person("anna")
@@ -1150,6 +1158,7 @@ class Cli(Base):
         self.assertIn("Einmal-Bild geöffnet", out)
         self.assertIn("Bildschirmfoto vom Einmal-Bild", out)
         self.assertIn("bernd: Danach", out)
+        self.assertIn("(geöffnet von bernd)", self.run_cli("anna", "verlauf", chat)[1], "beim Absender sichtbar")
 
     def test_cli_round_trip(self):
         code, out = self.run_cli("anna", "register", self.url, self.app.store.create_invite(), "anna")
