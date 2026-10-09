@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,6 +55,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -223,6 +227,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
     var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    // Where each bubble is on screen: its menu opens right there, the bubble lifted above the dimmed transcript.
+    val bounds = remember(cid) { mutableMapOf<String, androidx.compose.ui.geometry.Rect>() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val chat = remember(version, cid) { synchronized(account.lock) { JSONObject(account.chat(cid).toString()) } }
@@ -265,7 +271,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         // „•••“ while someone types – it fades a few seconds after the last sign (card 884f7c8a).
         var clock by remember { mutableStateOf(0L) }
         val typing = remember(version, cid, clock) { account.typingNow(cid) }
-        LaunchedEffect(typing) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
+        LaunchedEffect(typing, clock, version) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
         LaunchedEffect(typing.isNotEmpty()) { if (typing.isNotEmpty() && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), state = listState, reverseLayout = true) {
             if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
@@ -300,7 +306,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     // The message this answers, small above the bubble; a tap jumps to it.
                     val target = list.indexOfFirst { it.optString("mid") == quoted.optString("mid") }
                     Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else quoted.optString("from")}: ${quoted.optString("text")}",
+                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else account.display(quoted.optString("from"))}: ${quoted.optString("text")}",
                             style = style(13f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, colors.fill, RoundedCornerShape(12.dp))
                                 .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(list.size - 1 - target + (if (chat.optString("removed").isEmpty()) 0 else 1) + (if (typing.isEmpty()) 0 else 1)) } }
@@ -321,26 +327,17 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             androidx.compose.ui.semantics.CustomAccessibilityAction("Antworten") { replyTo = m; true },
                             androidx.compose.ui.semantics.CustomAccessibilityAction("Reagieren") { menuFor = m; true })
                     }
-                m.optJSONObject("anhang")?.let { info ->
-                    Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                        Box(gestures.combinedClickable(onClick = { actions.open(info) }, onLongClick = { if (mid.isNotEmpty()) menuFor = m })) {
-                            AttachmentBubble(info, mine, actions.playing == info.optString("id")) { actions.open(info) }
-                        }
-                    }
-                    Reactions(m, mine)
-                    if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
-                    return@items
-                }
+                val info = m.optJSONObject("anhang")
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
-                    if (!mine && others.size > 1) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
-                    BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
-                        modifier = gestures.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
-                            .combinedClickable(onClick = {}, onLongClick = { if (mid.isNotEmpty()) menuFor = m })
-                            .padding(horizontal = 12.dp, vertical = 7.dp))
+                    if (!mine && others.size > 1 && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
+                    Reacted(m, account, gestures) {
+                        Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
+                            Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
+                            playing = info != null && actions.playing == info.optString("id"), open = actions.open)
+                    }
                 }
-                Reactions(m, mine)
                 if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             } }
             item { Spacer(Modifier.height(8.dp)) }
@@ -357,7 +354,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(3.dp, 32.dp).background(colors.blue))
                 Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                    BasicText("Antwort an ${if (quoted.optString("from") == account.username) "dich" else quoted.optString("from")}", style = style(13f, 600, colors.blue))
+                    BasicText("Antwort an ${if (quoted.optString("from") == account.username) "dich" else account.display(quoted.optString("from"))}", style = style(13f, 600, colors.blue))
                     BasicText(io.github.veritasx1.lichat.core.describe(quoted), style = style(13f, 400, colors.secondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Box(Modifier.size(36.dp).clip(CircleShape).clickable { replyTo = null }.semantics { contentDescription = "Antwort aufheben" },
@@ -368,7 +365,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
-        MessageMenu(m, account.username, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
+        val mine = m.optString("from") == account.username
+        MessageMenu(m, account, mine, bounds[m.optString("mid")], { Reacted(m, account) { Bubble(m, mine) } }, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
             onReply = { replyTo = m; menuFor = null }, onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.optString("text"))); menuFor = null },
             onClose = { menuFor = null })
     }
@@ -376,41 +374,70 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
 
 val TAPBACKS = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
 
-/** The reactions under a bubble, small at its lower corner (Olaf: „unten rechts“): each emoji once, with a number when
- *  several chose it. */
+/** Words for the tapbacks (Michelle a7d9d987: the accessibility tree says what they are). */
+val TAPBACK_WORDS = mapOf("❤️" to "Herz", "👍" to "Daumen hoch", "👎" to "Daumen runter", "😂" to "Haha", "‼️" to "Ausrufezeichen", "❓" to "Fragezeichen")
+fun tapbackWord(emoji: String) = TAPBACK_WORDS[emoji] ?: emoji
+
+/** A bubble as it is: text, or the attachment. The same in the transcript and lifted above it while its menu is open. */
 @Composable
-fun Reactions(message: JSONObject, mine: Boolean) {
+fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
+           open: (JSONObject) -> Unit = {}) {
     val colors = palette()
-    val reactions = message.optJSONObject("reaktionen") ?: return
-    if (reactions.length() == 0) return
-    val counts = reactions.keys().asSequence().map { reactions.getString(it) }.groupingBy { it }.eachCount()
-    val who = reactions.keys().asSequence().joinToString(", ") { "$it ${reactions.getString(it)}" }
-    Box(Modifier.fillMaxWidth().padding(top = 0.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-        BasicText(counts.entries.joinToString(" ") { (emoji, n) -> if (n > 1) "$emoji $n" else emoji }, style = style(13f, 400, colors.label),
-            modifier = Modifier.padding(horizontal = 8.dp).offset(y = (-6).dp).clip(RoundedCornerShape(12.dp)).background(colors.cell)
-                .border(1.dp, colors.background, RoundedCornerShape(12.dp)).padding(horizontal = 7.dp, vertical = 2.dp)
-                .semantics { contentDescription = "Reaktionen: $who" })
+    val info = m.optJSONObject("anhang")
+    if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing) { open(info) } }
+    else BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
+        modifier = modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+            .then(interact).padding(horizontal = 12.dp, vertical = 7.dp))
+}
+
+/** The bubble with its reactions small at its lower right corner (Olaf: „unten rechts“ – for every bubble, Michelle a7d9d987). */
+@Composable
+fun Reacted(message: JSONObject, account: Account, modifier: Modifier = Modifier, bubble: @Composable () -> Unit) {
+    val reactions = message.optJSONObject("reaktionen")
+    val has = reactions != null && reactions.length() > 0
+    Box(modifier.padding(bottom = if (has) 14.dp else 0.dp)) {
+        bubble()
+        if (has) ReactionBadge(reactions!!, account, Modifier.align(Alignment.BottomEnd).offset(x = 6.dp, y = 14.dp))
     }
 }
 
-/** Long press on a bubble: six tapbacks like iOS, then Antworten / Kopieren and who reacted how. */
+/** Each emoji once, with a number when several chose it. */
 @Composable
-fun MessageMenu(message: JSONObject, me: String, onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit) {
+fun ReactionBadge(reactions: JSONObject, account: Account, modifier: Modifier = Modifier) {
     val colors = palette()
+    val counts = reactions.keys().asSequence().map { reactions.getString(it) }.groupingBy { it }.eachCount()
+    val who = reactions.keys().asSequence().joinToString(", ") {
+        "${if (it == account.username) "Du" else account.display(it)}: ${tapbackWord(reactions.getString(it))}"
+    }
+    BasicText(counts.entries.joinToString(" ") { (emoji, n) -> if (n > 1) "$emoji $n" else emoji }, style = style(13f, 400, colors.label),
+        modifier = modifier.clip(RoundedCornerShape(12.dp)).background(colors.cell)
+            .border(1.dp, colors.background, RoundedCornerShape(12.dp)).padding(horizontal = 7.dp, vertical = 2.dp)
+            .semantics { contentDescription = "Reaktionen – $who" })
+}
+
+/** Long press on a bubble, like iOS: the transcript dims, the bubble stays where it was and is lifted above it, the six
+ *  tapbacks right above it and Antworten / Kopieren / who reacted right below – on the bubble's side (Michelle a7d9d987). */
+@Composable
+fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androidx.compose.ui.geometry.Rect?, bubble: @Composable () -> Unit,
+                onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit) {
+    val colors = palette()
+    val me = account.username
     val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
-    val mine = reactions.optString(me)
-    Box(Modifier.fillMaxSize().background(Color(0x66000000)).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
-        Column(Modifier.padding(32.dp).widthIn(max = 340.dp).clickable(enabled = false) {}) {
-            Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).padding(horizontal = 6.dp, vertical = 4.dp)) {
+    val chosen = reactions.optString(me)
+    var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    Box(Modifier.fillMaxSize().background(Color(0x66000000))
+        .clickable(onClick = onClose).semantics { contentDescription = "Menü schließen" }) {
+        androidx.compose.ui.layout.Layout(content = {
+            Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).clickable(enabled = false) {}.padding(horizontal = 6.dp, vertical = 4.dp)) {
                 TAPBACKS.forEach { emoji ->
                     BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
-                        modifier = Modifier.size(46.dp).clip(CircleShape).background(if (emoji == mine) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
-                            .clickable { onReact(if (emoji == mine) "" else emoji) }.padding(top = 6.dp)
-                            .semantics { contentDescription = if (emoji == mine) "Reaktion $emoji zurücknehmen" else "Mit $emoji reagieren" })
+                        modifier = Modifier.size(46.dp).clip(CircleShape).background(if (emoji == chosen) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
+                            .clickable { onReact(if (emoji == chosen) "" else emoji) }.padding(top = 6.dp)
+                            .semantics { contentDescription = if (emoji == chosen) "Reaktion ${tapbackWord(emoji)} zurücknehmen" else "Mit ${tapbackWord(emoji)} reagieren" })
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
+            Box { bubble() }
+            Column(Modifier.widthIn(min = 200.dp, max = 260.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(enabled = false) {}) {
                 BasicText("Antworten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onReply).padding(14.dp))
                 if (message.optString("text").isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
@@ -418,9 +445,31 @@ fun MessageMenu(message: JSONObject, me: String, onReact: (String) -> Unit, onRe
                 }
                 if (reactions.length() > 0) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
-                    BasicText(reactions.keys().asSequence().joinToString("\n") { "${if (it == me) "Du" else it}  ${reactions.getString(it)}" },
+                    BasicText(reactions.keys().asSequence().joinToString("\n") { "${if (it == me) "Du" else account.display(it)}  ${reactions.getString(it)}" },
                         style = style(15f, 400, colors.secondary), modifier = Modifier.fillMaxWidth().padding(14.dp))
                 }
+            }
+        }, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).onGloballyPositioned { origin = it.positionInWindow() }) { parts, limits ->
+            val loose = limits.copy(minWidth = 0, minHeight = 0)
+            val margin = 12.dp.roundToPx()
+            val gap = 8.dp.roundToPx()
+            val bar = parts[0].measure(loose)
+            val menu = parts[2].measure(loose)
+            val room = (limits.maxHeight - bar.height - menu.height - 2 * gap - 2 * margin).coerceAtLeast(48.dp.roundToPx())
+            val lifted = parts[1].measure(loose.copy(maxHeight = room))
+            layout(limits.maxWidth, limits.maxHeight) {
+                // Where the bubble is in the transcript, in this layout's coordinates (without one: in the middle).
+                val place = at?.translate(-origin.x, -origin.y)
+                val left = (place?.left?.toInt() ?: if (mine) limits.maxWidth - lifted.width - margin else margin)
+                    .coerceIn(0, (limits.maxWidth - lifted.width).coerceAtLeast(0))
+                val lowest = (limits.maxHeight - margin - menu.height - gap - lifted.height)
+                val highest = margin + bar.height + gap
+                val wanted = place?.top?.toInt() ?: ((limits.maxHeight - lifted.height) / 2)
+                val top = wanted.coerceIn(highest, lowest.coerceAtLeast(highest))
+                fun side(width: Int) = (if (mine) left + lifted.width - width else left).coerceIn(margin, (limits.maxWidth - width - margin).coerceAtLeast(margin))
+                bar.place(side(bar.width), top - gap - bar.height)
+                lifted.place(left, top)
+                menu.place(side(menu.width), top + lifted.height + gap)
             }
         }
     }

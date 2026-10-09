@@ -4,6 +4,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsDisplayed
@@ -166,11 +169,22 @@ httpd.serve_forever()
     /** Card a7d9d987: long press shows the tapbacks and Antworten/Kopieren. */
     @Test
     fun messageMenu() {
-        shot("2e-reaktion-menue") {
-            ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> })
-            io.github.veritasx1.lichat.ui.MessageMenu(anna.chat(cid).getJSONArray("messages").getJSONObject(1), "anna", {}, {}, {}, {})
-        }
-        compose.onNodeWithText("Antworten").assertExists()
+        // Michelle a7d9d987: the reaction at the bubble's lower right; a long press opens the menu right at the bubble.
+        shot("2e-reaktion") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        val salad = "Ja, gern! Ich bringe Kartoffelsalat mit."
+        val bubble = compose.onNodeWithText(salad).fetchSemanticsNode().boundsInRoot
+        val badge = compose.onNode(androidx.compose.ui.test.hasContentDescription("Reaktionen – bernd: Herz")).fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue("unten rechts: $badge / $bubble", badge.left > bubble.center.x && badge.right >= bubble.right - 8f && badge.top > bubble.center.y)
+        compose.onNodeWithText(salad).performTouchInput { longClick() }
+        compose.waitForIdle()
+        if (out != null) captureScreenRoboImage("$out/2f-reaktion-menue.png")
+        val lifted = compose.onAllNodesWithText(salad).fetchSemanticsNodes().map { it.boundsInRoot }.filter { it.height > 0f }.minBy { kotlin.math.abs(it.top - bubble.top) + if (it == bubble) 1000f else 0f }
+        val bar = compose.onNode(androidx.compose.ui.test.hasContentDescription("Mit Herz reagieren").or(
+            androidx.compose.ui.test.hasContentDescription("Reaktion Herz zurücknehmen"))).fetchSemanticsNode().boundsInRoot
+        val menu = compose.onNodeWithText("Antworten").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertEquals("die Blase bleibt, wo sie war", bubble.top, lifted.top, 2f)
+        org.junit.Assert.assertTrue("Leiste direkt darüber: $bar / $lifted", bar.bottom <= lifted.top && lifted.top - bar.bottom < 80f)
+        org.junit.Assert.assertTrue("Menü direkt darunter: $menu / $lifted", menu.top >= lifted.bottom && menu.top - lifted.bottom < 120f)
     }
 
     @Test

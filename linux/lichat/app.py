@@ -523,7 +523,7 @@ class Window(Adw.ApplicationWindow):
             if m.get("antwort"):
                 # The message this answers, small above the bubble (Olaf 09.10., card a7d9d987).
                 quoted = m["antwort"]
-                who = "Du" if quoted.get("from") == self.account.username else quoted.get("from", "")
+                who = "Du" if quoted.get("from") == self.account.username else self.account.display(quoted.get("from", ""))
                 self.bubbles.append(Gtk.Label(label=f"↩ {who}: {quoted.get('text', '')}", css_classes=["lichat-quote"], wrap=True,
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
@@ -547,16 +547,22 @@ class Window(Adw.ApplicationWindow):
                     gesture.connect("pressed" if isinstance(gesture, Gtk.GestureClick) else "pressed",
                                     lambda g, *a, msg=m, w=piece: self.message_menu(cid, msg, w))
                     piece.add_controller(gesture)
-            self.bubbles.append(piece)
             reactions = m.get("reaktionen") or {}
             if reactions:
+                # At the bubble's lower right, for mine and theirs (Olaf „unten rechts“, Michelle a7d9d987).
                 counts = {}
                 for emoji in reactions.values():
                     counts[emoji] = counts.get(emoji, 0) + 1
                 badge = Gtk.Label(label=" ".join(f"{e} {n}" if n > 1 else e for e, n in counts.items()), css_classes=["lichat-reactions"],
-                                  halign=Gtk.Align.END if mine else Gtk.Align.START,
-                                  tooltip_text=", ".join(f"{'Du' if u == self.account.username else u} {e}" for u, e in reactions.items()))
-                self.bubbles.append(badge)
+                                  halign=Gtk.Align.END,
+                                  tooltip_text=", ".join(f"{'Du' if u == self.account.username else self.account.display(u)} {e}"
+                                                         for u, e in reactions.items()))
+                column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=piece.get_halign())
+                column.append(piece)
+                column.append(badge)
+                self.bubbles.append(column)
+            else:
+                self.bubbles.append(piece)
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
@@ -832,7 +838,7 @@ class Window(Adw.ApplicationWindow):
     def start_reply(self, message):
         """Answering: a line above the input with the quote, ✕ takes it back."""
         self.reply_to = message
-        who = "dich" if message["from"] == self.account.username else message["from"]
+        who = "dich" if message["from"] == self.account.username else self.account.display(message["from"])
         self.reply_label.set_label(f"Antwort an {who}: {Account.describe(message) or message.get('text', '')}")
         self.reply_line.set_visible(True)
         self.input.grab_focus()
