@@ -64,7 +64,8 @@ def main(argv):
         answer = account.send(cid, " ".join(args[1:]))
         if answer.get("unknown") or answer.get("full"):
             print(f"Nicht zugestellt an: {', '.join(answer.get('unknown', []) + answer.get('full', []))}")
-        print(f"gesendet an {len(answer.get('delivered', []))} Gerät(e)")
+        # gesendet_ms: the moment the server took it – Michelle measures the way to the phone's notification (Z5).
+        print(f"gesendet an {len(answer.get('delivered', []))} Gerät(e) · gesendet_ms={int(time.time() * 1000)}")
     elif command == "abholen":
         news = account.fetch()
         for item in news:
