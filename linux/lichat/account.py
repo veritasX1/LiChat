@@ -78,6 +78,8 @@ KINDS = ("bild", "video", "sprache", "datei")
 TYPING_EVERY = 3     # s between two „tippt“ of mine
 TYPING_FRESH = 6     # s a „tippt“ stays shown after it arrived
 TYPING_LATE = 30     # s after which an arriving „tippt“ is ignored (fetched late; allows for clocks a little apart)
+TYPING_PACE = 3.5    # characters per second with thumbs on a phone (Olaf 09.10.: everyone types as long as the text is)
+TYPING_LONGEST = 180 # s – nobody types longer than this, however long the text
 SUPPLY = 20          # key packages uploaded at the start
 TIMEOUT = 20
 
@@ -679,6 +681,25 @@ class Account:
             targets = self.targets(cid)
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return True
+
+    def type_like_a_person(self, cid, text, sleep=time.sleep):
+        """Olaf 09.10.: everyone in the chat takes as long as a person would to type this text on a phone – short
+        quickly, long slowly – with „…“ for those who see it (both have the switch on). Then the caller sends."""
+        import random
+        seconds = min(TYPING_LONGEST, max(1.5, len(text) / TYPING_PACE)) * random.uniform(0.85, 1.2)
+        waited = 0.0
+        while True:
+            self._typed.pop(cid, None)
+            try:
+                self.typing(cid)
+            except LiChatError:
+                pass        # „…“ is a nicety – the message still goes
+            left = seconds - waited
+            if left <= 0:
+                return seconds
+            step = min(TYPING_EVERY, left)
+            sleep(step)
+            waited += step
 
     def typing_now(self, cid):
         """Who is typing in this chat right now (shown as „…“ under the last bubble)."""
