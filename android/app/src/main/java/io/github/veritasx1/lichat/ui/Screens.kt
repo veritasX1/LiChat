@@ -53,6 +53,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -364,8 +366,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 val who = typing.joinToString(", ") { account.display(it) }
                 Column(Modifier.fillMaxWidth().padding(vertical = 2.dp).semantics(mergeDescendants = true) { contentDescription = "$who tippt" }) {
                     if (isGroup) BasicText(who, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
-                    BasicText("•••", style = style(17f, 700, colors.secondary).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(2f, androidx.compose.ui.unit.TextUnitType.Sp)),
-                        modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(colors.theirs).padding(horizontal = 14.dp, vertical = 7.dp))
+                    TypingBubble()
                 }
             }
             chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
@@ -1259,6 +1260,32 @@ fun Explain(onContinue: () -> Unit, onLater: () -> Unit) {
             Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
             BasicText("Später", style = style(17f, 400, colors.blue).copy(textAlign = TextAlign.Center),
                 modifier = Modifier.fillMaxWidth().clickable(onClick = onLater).padding(12.dp))
+        }
+    }
+}
+
+/** Olaf's template (typing-animation-3x.gif, measured by Michelle, 884f7c8a): a grey capsule, three dots; a wave runs
+ *  left to right – each dot in turn darker (#B0B2B4 → #606060) and ~38 % bigger, peaks at 380/580/760 ms, a cycle of
+ *  1.84 s with a rest. With „Animationen entfernen“ the dots stand still. */
+@Composable
+fun TypingBubble() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val still = remember {
+        runCatching { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
+    }
+    val time = if (still) null else androidx.compose.animation.core.rememberInfiniteTransition(label = "tippt").animateFloat(0f, 1840f,
+        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1840, easing = androidx.compose.animation.core.LinearEasing)), label = "welle")
+    val capsule = if (dark) Color(0xFF3B3B3D) else Color(0xFFECECEC)
+    val rest = if (dark) Color(0xFF7C7C80) else Color(0xFFB0B2B4)
+    val peak = if (dark) Color(0xFFD0D0D4) else Color(0xFF606060)
+    Row(Modifier.clip(RoundedCornerShape(18.dp)).background(capsule).padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf(380f, 580f, 760f).forEach { top ->
+            val t = time?.value ?: 0f
+            val strength = (1f - kotlin.math.abs(t - top) / 200f).coerceIn(0f, 1f)
+            Box(Modifier.size(9.dp).graphicsLayer { scaleX = 1f + 0.38f * strength; scaleY = 1f + 0.38f * strength }
+                .clip(CircleShape).background(androidx.compose.ui.graphics.lerp(rest, peak, strength)))
         }
     }
 }
