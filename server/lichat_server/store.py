@@ -42,7 +42,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS devices (
                 id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES accounts(username) ON DELETE CASCADE,
-                token TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, push TEXT, created REAL NOT NULL);
+                token TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, push TEXT, created REAL NOT NULL);  -- push: unused since 09.10. (no ntfy)
             CREATE TABLE IF NOT EXISTS key_packages (
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL);
@@ -64,7 +64,7 @@ class Store:
 
     # Accounts and devices -----------------------------------------------------------------------
 
-    def register(self, invite, username, identity, push=None):
+    def register(self, invite, username, identity):
         """Creates the account with its first device. Returns (device_id, token) or raises KeyError /
         ValueError. The invitation is used up, also if the name is taken (no guessing with one code)."""
         with self.lock:
@@ -75,18 +75,18 @@ class Store:
             if self.db.execute("SELECT 1 FROM accounts WHERE username = ?", (username,)).fetchone():
                 raise ValueError("taken")
             self.db.execute("INSERT INTO accounts VALUES (?, ?)", (username, self.clock()))
-            return self._add_device(username, identity, push)
+            return self._add_device(username, identity)
 
-    def add_device(self, username, identity, push=None):
+    def add_device(self, username, identity):
         """Another device of an existing account (called by an already signed-in device)."""
         with self.lock:
-            return self._add_device(username, identity, push)
+            return self._add_device(username, identity)
 
-    def _add_device(self, username, identity, push):
+    def _add_device(self, username, identity):
         device = secrets.token_hex(8)
         token = secrets.token_urlsafe(32)
         self.db.execute("INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?)",
-                        (device, username, token_hash(token), identity, push, self.clock()))
+                        (device, username, token_hash(token), identity, None, self.clock()))
         return device, token
 
     def device_for_token(self, token):
@@ -103,10 +103,6 @@ class Store:
         rows = self.db.execute("SELECT id, identity FROM devices WHERE username = ? ORDER BY created",
                                (username,)).fetchall()
         return [{"device": d, "identity": i} for d, i in rows]
-
-    def push_target(self, device):
-        row = self.db.execute("SELECT push FROM devices WHERE id = ?", (device,)).fetchone()
-        return row[0] if row else None
 
     # MLS key packages ---------------------------------------------------------------------------
 

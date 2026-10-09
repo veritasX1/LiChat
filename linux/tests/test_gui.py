@@ -10,7 +10,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from wsgiref.simple_server import WSGIRequestHandler, make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 SCRATCH = tempfile.mkdtemp(prefix="lichat-gui-")
 os.environ["XDG_DATA_HOME"] = os.environ["XDG_CONFIG_HOME"] = os.environ["XDG_CACHE_HOME"] = SCRATCH
@@ -30,6 +31,10 @@ from lichat.account import Account  # noqa: E402
 from lichat_server.app import create_app  # noqa: E402
 
 SHOTS = Path(sys.argv[sys.argv.index("--shots") + 1]) if "--shots" in sys.argv else None
+
+
+class Threading(ThreadingMixIn, WSGIServer):
+    daemon_threads = True   # a waiting fetch must not hold up the others
 
 
 class Quiet(WSGIRequestHandler):
@@ -83,8 +88,8 @@ def texts(widget):
 
 
 def main():
-    server = create_app(str(Path(SCRATCH) / "server"), notifier=lambda url: None, push_hosts="")
-    httpd = make_server("127.0.0.1", 0, server, handler_class=Quiet)
+    server = create_app(str(Path(SCRATCH) / "server"))
+    httpd = make_server("127.0.0.1", 0, server, handler_class=Quiet, server_class=Threading)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{httpd.server_port}"
     people = Path(SCRATCH) / "andere"
@@ -112,11 +117,15 @@ def main():
 
     # Bernd writes to Anna; the list shows it with the blue dot.
     cid = bernd.start(["anna"])
+    sent = time.monotonic()
     bernd.send(cid, "Hallo Anna! Kommst du Samstag zum Grillen?")
-    window.fetch()
     until(lambda: cid in anna.chats and anna.chats[cid]["messages"])
+    assert time.monotonic() - sent < 3, "nicht sofort – die stehende Verbindung wartet nicht"
     settle(0.3)
     assert "bernd" in texts(window.list)
+    # Not the open chat: a notification – by default without sender and text (Michelle S4).
+    until(lambda: getattr(window, "last_notification", None) is not None)
+    assert window.settings["vorschau"] is False
     shot(window, "02-liste-neu.png")
 
     # Open it, answer – the blue bubble, Bernd reads it.
@@ -127,7 +136,6 @@ def main():
     until(lambda: len(anna.chats[cid]["messages"]) == 2)
     assert [n["text"] for n in bernd.fetch()] == ["Ja, gern! Ich bringe Kartoffelsalat mit."]
     bernd.send(cid, "Super, bis dann 🙂")
-    window.fetch()
     until(lambda: len(anna.chats[cid]["messages"]) == 3)
     settle(0.3)
     assert "Super, bis dann 🙂" in texts(window.bubbles)
@@ -152,7 +160,6 @@ def main():
     erna.fetch()
     erna.send(group, "Ich nehme Apfelschorle mit")
     bernd.fetch()
-    window.fetch()
     until(lambda: len(anna.chats[group]["messages"]) == 2)
     settle(0.3)
     assert "3 Personen" in texts(window.title_box)
@@ -174,10 +181,29 @@ def main():
     settle(0.3)
     shot(window, "07-dunkel.png")
 
+    # Closing the window keeps LiChat listening in the background.
+    Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+    window.close()
+    settle(0.3)
+    assert not window.get_visible() and window.listener.running
+    bernd.send(cid, "Noch wach?")
+    until(lambda: anna.chats[cid]["messages"][-1]["text"] == "Noch wach?")
+    window.open_chat(cid)
+    settle(0.3)
+    assert window.get_visible() and "Noch wach?" in texts(window.bubbles)
+
+    # Autostart can be switched off and on again (Michelle Z7).
+    window.activate_action("win.hintergrund", None)
+    settle(0.2)
+    assert window.settings["hintergrund"] is False and not app_module.AUTOSTART.exists()
+    window.activate_action("win.hintergrund", None)
+    settle(0.2)
+    assert app_module.AUTOSTART.exists() and "--hintergrund" in app_module.AUTOSTART.read_text()
+
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 3
-    window.close()
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 4
+    window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")
 

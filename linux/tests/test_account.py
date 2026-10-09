@@ -10,9 +10,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
-from wsgiref.simple_server import WSGIRequestHandler, make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "linux"))
@@ -21,6 +23,10 @@ sys.path.insert(0, str(ROOT / "server"))
 from lichat import account as account_module  # noqa: E402
 from lichat.account import Account, LiChatError  # noqa: E402
 from lichat_server.app import create_app  # noqa: E402
+
+
+class Threading(ThreadingMixIn, WSGIServer):
+    daemon_threads = True   # a waiting fetch must not hold up the others
 
 
 class Quiet(WSGIRequestHandler):
@@ -32,8 +38,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="lichat-test-")
         self.root = Path(self.tmp.name)
-        self.app = create_app(str(self.root / "server"), notifier=lambda url: None, push_hosts="")
-        self.httpd = make_server("127.0.0.1", 0, self.app, handler_class=Quiet)
+        self.app = create_app(str(self.root / "server"))
+        self.httpd = make_server("127.0.0.1", 0, self.app, handler_class=Quiet, server_class=Threading)
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
@@ -85,6 +91,25 @@ class TwoPeople(Base):
                 self.assertNotIn(b"Geheimrezept", path.read_bytes(), name)
                 self.assertNotIn(b"bernd", path.read_bytes() if name in ("state.bin", "chats.bin") else b"", name)
             self.assertEqual(stat.S_IMODE(account.folder.stat().st_mode), 0o700)
+
+    def test_waiting_fetch_brings_the_message_at_once(self):
+        """The app's standing connection (Olaf 09.10.): bernd waits, anna writes – bernd has it within a second."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        got = {}
+
+        def listen():
+            started = time.monotonic()
+            got["news"], got["seconds"] = bernd.fetch(wait=30), time.monotonic() - started
+
+        listener = threading.Thread(target=listen)
+        listener.start()
+        time.sleep(0.5)
+        anna.send(cid, "Bist du da?")
+        listener.join(10)
+        self.assertEqual([n["text"] for n in got["news"]], ["Bist du da?"])
+        self.assertLess(got["seconds"], 2.5)
 
     def test_wrong_key_does_not_open(self):
         anna = self.person("anna")
