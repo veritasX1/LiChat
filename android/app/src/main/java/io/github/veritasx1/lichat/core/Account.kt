@@ -37,6 +37,10 @@ private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
+const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
+const val EDIT_MAX = 5               // … at most five times
+const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+private const val LATE_S = 60L       // slack for clocks a little apart (only the sender's own times are compared)
 const val TYPING_EVERY_MS = 3_000L   // between two „tippt“ of mine
 const val TYPING_FRESH_MS = 6_000L   // a „tippt“ stays shown this long after it arrived
 private const val TYPING_LATE_S = 30 // an older one (fetched late) is ignored
@@ -49,7 +53,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
                 val attachment: JSONObject? = null) {
-    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing }
+    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing, Edited }
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
@@ -61,7 +65,36 @@ fun suggestUsername(first: String, last: String = ""): String {
     return text.replace(Regex("[^a-z0-9._-]+"), ".").trim('.', '_', '-').replace(Regex("\\.{2,}"), ".").take(32)
 }
 
+private fun pictographic(cp: Int) = cp >= 0x1F000 || cp in setOf(0x00A9, 0x00AE, 0x3030, 0x303D, 0x3297, 0x3299, 0x2139) ||
+    (cp in 0x2000..0x2BFF && !Character.isLetterOrDigit(cp) && !Character.isWhitespace(cp) && !Character.isSpaceChar(cp))
+
+/** Exactly one emoji – also as a sequence (👍🏽, 👩‍👩‍👧‍👦, 🇫🇷, 1️⃣, ❤️) – and nothing else (Michelle 09.10.: a reaction must not
+ *  be „Gelesen“ or „OK“, else anyone could fake a status under a bubble). The twin of Python's single_emoji. */
+fun isSingleEmoji(text: String): Boolean {
+    val cps = text.codePoints().toArray()
+    if (cps.isEmpty() || text.length > 16) return false
+    fun joins(cp: Int) = cp == 0xFE0F || cp == 0xFE0E || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F
+    fun regional(cp: Int) = cp in 0x1F1E6..0x1F1FF
+    val first = cps[0]
+    val keycap = (first in 0x30..0x39 || first == 0x23 || first == 0x2A) && cps.size > 1 && (cps[1] == 0xFE0F || cps[1] == 0x20E3)
+    if (!keycap && !pictographic(first)) return false
+    var end = 1
+    if (regional(first)) {
+        if (cps.size < 2 || !regional(cps[1])) return false
+        end = 2
+    }
+    while (end < cps.size) {
+        end += when {
+            joins(cps[end]) -> 1
+            cps[end] == 0x200D && end + 1 < cps.size && pictographic(cps[end + 1]) -> 2
+            else -> return false
+        }
+    }
+    return true
+}
+
 fun describe(message: JSONObject): String {
+    if (message.optBoolean("zurueckgerufen")) return "Nachricht widerrufen"
     val info = message.optJSONObject("anhang") ?: return message.optString("text")
     return when (info.optString("art")) {
         "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"
@@ -405,13 +438,65 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** My reaction on a message (one per person, like iOS tapbacks); "" takes it back. */
     fun react(cid: String, mid: String, emoji: String) {
-        val clean = emoji.trim().take(16)   // any emoji (Olaf: „+“), ZWJ sequences included
+        val clean = emoji.trim()   // any emoji (Olaf: „+“), ZWJ sequences included – but only an emoji
+        if (clean.isNotEmpty() && !isSingleEmoji(clean)) throw LiChatException("Als Reaktion geht genau ein Emoji")
         synchronized(lock) {
             val target = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
             val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
             if (clean.isEmpty()) reactions.remove(username) else reactions.put(username, clean)
         }
         groupMessage(cid, JSONObject().put("t", "reaktion").put("mid", mid).put("emoji", clean), null)
+    }
+
+    // ------------------------------------------------------------------------------------------ edit / unsend (4ceca163)
+
+    fun canEdit(message: JSONObject, now: Long = System.currentTimeMillis() / 1000) =
+        message.optString("from") == username && message.optString("text").isNotEmpty() && !message.optBoolean("zurueckgerufen") &&
+            message.has("mid") && now - message.optLong("at") <= EDIT_WINDOW_S && (message.optJSONArray("bearbeitet")?.length() ?: 0) < EDIT_MAX
+
+    fun canUnsend(message: JSONObject, now: Long = System.currentTimeMillis() / 1000) =
+        message.optString("from") == username && message.has("mid") && !message.optBoolean("zurueckgerufen") &&
+            now - message.optLong("at") <= UNSEND_WINDOW_S
+
+    /** My message, corrected (iOS: 15 minutes, five times) – everyone sees „Bearbeitet“ and the earlier versions. */
+    fun edit(cid: String, mid: String, text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) throw LiChatException("Leere Nachricht – zum Entfernen „Senden widerrufen“")
+        val now = System.currentTimeMillis() / 1000
+        synchronized(lock) {
+            val message = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
+            if (!canEdit(message, now)) throw LiChatException("Bearbeiten geht nur 15 Minuten lang und höchstens fünfmal")
+            applyEdit(message, clean, now)
+            save()
+        }
+        groupMessage(cid, JSONObject().put("t", "bearbeiten").put("mid", mid).put("text", clean).put("at", now), null)
+    }
+
+    /** My message taken back (iOS: two minutes) – for everyone a grey line instead of the bubble. */
+    fun unsend(cid: String, mid: String) {
+        synchronized(lock) {
+            val message = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
+            if (!canUnsend(message)) throw LiChatException("Widerrufen geht nur in den ersten zwei Minuten")
+            applyUnsend(chat(cid), message)
+            save()
+        }
+        groupMessage(cid, JSONObject().put("t", "zurueckrufen").put("mid", mid).put("at", System.currentTimeMillis() / 1000), null)
+    }
+
+    private fun applyEdit(message: JSONObject, text: String, at: Long) {
+        val versions = message.optJSONArray("bearbeitet") ?: JSONArray().also { message.put("bearbeitet", it) }
+        versions.put(JSONObject().put("text", message.optString("text")).put("at", message.optLong("bearbeitet_am", message.optLong("at"))))
+        message.put("text", text).put("bearbeitet_am", at)
+    }
+
+    private fun applyUnsend(chat: JSONObject, message: JSONObject) {
+        for (key in listOf("anhang", "bearbeitet", "bearbeitet_am", "antwort", "reaktionen")) message.remove(key)
+        message.put("text", "").put("zurueckgerufen", true)
+        val list = chat.getJSONArray("messages")
+        for (k in 0 until list.length()) {
+            val quote = list.getJSONObject(k).optJSONObject("antwort") ?: continue
+            if (quote.optString("mid") == message.optString("mid")) quote.put("text", "").put("zurueckgerufen", true)
+        }
     }
 
     private fun newMid() = ByteArray(8).also { SecureRandom().nextBytes(it) }.hex()
@@ -826,9 +911,26 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (raw.isEmpty()) people.remove(sender) else people.put(sender, picture)
                         return listOf(News(cid, News.Kind.Picture, from = sender, received = at))
                     }
+                    "bearbeiten", "zurueckrufen" -> {
+                        // Only the one who wrote it, only in time – on the sender's own clock (message „at“ vs. the edit's).
+                        val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
+                        val sentAt = data.optLong("at")
+                        if (target.optString("from") != sender || target.optBoolean("zurueckgerufen")) return emptyList()
+                        if (data.optString("t") == "bearbeiten") {
+                            val text = data.optString("text").trim()
+                            if (text.isEmpty() || target.optString("text").isEmpty() || sentAt - target.optLong("at") > EDIT_WINDOW_S + LATE_S ||
+                                (target.optJSONArray("bearbeitet")?.length() ?: 0) >= EDIT_MAX) return emptyList()
+                            applyEdit(target, text, sentAt)
+                        } else {
+                            if (sentAt - target.optLong("at") > UNSEND_WINDOW_S + LATE_S) return emptyList()
+                            applyUnsend(chat, target)
+                        }
+                        return listOf(News(cid, News.Kind.Edited, from = sender, received = at))
+                    }
                     "reaktion" -> {
                         val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
-                        val emoji = data.optString("emoji").trim().take(16)
+                        val emoji = data.optString("emoji").trim()
+                        if (emoji.isNotEmpty() && !isSingleEmoji(emoji)) return emptyList()   // no „Gelesen“ dressed up as a reaction
                         val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
                         if (emoji.isEmpty()) reactions.remove(sender) else reactions.put(sender, emoji)
                         return listOf(News(cid, News.Kind.Reaction, from = sender, text = emoji, received = at))

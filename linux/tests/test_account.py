@@ -165,10 +165,30 @@ class Groups(Base):
         gone = next(m for m in bernd.chats[cid]["messages"] if m.get("mid") == oops)
         self.assertTrue(gone["zurueckgerufen"])
         self.assertEqual(gone["text"], "")
-        self.assertEqual(Account.describe(gone), "Nachricht zurückgerufen")
+        self.assertEqual(Account.describe(gone), "Nachricht widerrufen")
         self.assertTrue(bernd.chats[cid]["messages"][-1]["antwort"]["zurueckgerufen"])
         self.assertNotIn("falscher Chat", json.dumps(bernd.chats, ensure_ascii=False))
         self.assertNotIn("falscher Chat", json.dumps(anna.chats, ensure_ascii=False))
+
+    def test_only_an_emoji_is_a_reaction(self):
+        """Michelle 09.10.: „ab“, „x😀“, „Gelesen von allen“ must not appear under a bubble – refused when sending,
+        dropped when receiving (a modified client could still send them)."""
+        from lichat.account import single_emoji
+        for good in ("❤️", "👍", "👍🏽", "👩‍👩‍👧‍👦", "🇫🇷", "1️⃣", "‼️", "❓", "🦄", "✅", "™️"):
+            self.assertTrue(single_emoji(good), good)
+        for bad in ("", "ab", "x😀", "😀x", "😀😀", "Gelesen von allen", "OK", "1", "🇫", " ", "❤️ ", "a\u200d😀"):
+            self.assertFalse(single_emoji(bad), repr(bad))
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Hallo")
+        bernd.fetch()
+        mid = bernd.chats[cid]["messages"][-1]["mid"]
+        with self.assertRaises(LiChatError):
+            bernd.react(cid, mid, "Gelesen")
+        bernd._group_message(cid, {"t": "reaktion", "mid": mid, "emoji": "Gelesen von allen"})
+        anna.fetch()
+        self.assertNotIn("reaktionen", anna.chats[cid]["messages"][-1])
 
     def test_any_emoji_as_reaction(self):
         """Olaf „+“: any emoji, also long ZWJ sequences, travels whole."""
@@ -773,8 +793,8 @@ class Cli(Base):
         self.assertIn("bearbeitet", self.run_cli("bernd", "bearbeiten", chat, "Grillen", "um", "7")[1])
         self.assertIn("bernd hat bearbeitet: Grillen um 7", self.run_cli("anna", "abholen")[1])
         self.assertIn("(bearbeitet)", self.run_cli("anna", "verlauf", chat)[1])
-        self.assertIn("zurückgerufen", self.run_cli("bernd", "zurueckrufen", chat)[1])
-        self.assertIn("bernd hat eine Nachricht zurückgerufen", self.run_cli("anna", "abholen")[1])
+        self.assertIn("widerrufen", self.run_cli("bernd", "widerrufen", chat)[1])
+        self.assertIn("bernd hat eine Nachricht widerrufen", self.run_cli("anna", "abholen")[1])
         # warten: ends as soon as something comes (here: bernd writes while anna waits).
         import threading as _t
         later = _t.Timer(1.5, lambda: self.run_cli("bernd", "senden", chat, "Bist", "du", "da?"))

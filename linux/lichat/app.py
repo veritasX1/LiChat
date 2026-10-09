@@ -378,6 +378,7 @@ class Window(Adw.ApplicationWindow):
         self.notice = Gtk.Label(css_classes=["lichat-notice"], visible=False, margin_bottom=4)
         self.pane.append(self.notice)
         self.reply_to = None
+        self.editing = None
         self.reply_line = Gtk.Box(spacing=8, margin_start=16, margin_end=16, margin_top=4, visible=False, css_classes=["lichat-replying"])
         self.reply_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, css_classes=["lichat-quote"])
         self.reply_line.append(self.reply_label)
@@ -518,13 +519,21 @@ class Window(Adw.ApplicationWindow):
             mine = m["from"] == self.account.username
             if previous is None or m["at"] - previous["at"] > GAP:
                 self.bubbles.append(Gtk.Label(label=when_long(m["at"]), css_classes=["lichat-stamp"]))
+            if m.get("zurueckgerufen"):
+                # Called back (iOS „Senden widerrufen“): a grey line where the bubble was.
+                who = "Du hast" if mine else f"{self.account.display(m['from'])} hat"
+                self.bubbles.append(Gtk.Label(label=f"{who} eine Nachricht widerrufen.", css_classes=["lichat-unsent"],
+                                              halign=Gtk.Align.END if mine else Gtk.Align.START))
+                previous = m
+                continue
             if group and not mine and (previous is None or previous["from"] != m["from"]):
                 self.bubbles.append(Gtk.Label(label=self.account.display(m["from"]), css_classes=["lichat-sender"], xalign=0))
             if m.get("antwort"):
                 # The message this answers, small above the bubble (Olaf 09.10., card a7d9d987).
                 quoted = m["antwort"]
                 who = "Du" if quoted.get("from") == self.account.username else self.account.display(quoted.get("from", ""))
-                self.bubbles.append(Gtk.Label(label=f"↩ {who}: {quoted.get('text', '')}", css_classes=["lichat-quote"], wrap=True,
+                said = "Nachricht widerrufen" if quoted.get("zurueckgerufen") else quoted.get("text", "")
+                self.bubbles.append(Gtk.Label(label=f"↩ {who}: {said}", css_classes=["lichat-quote"], wrap=True,
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
             if m.get("anhang"):
@@ -563,6 +572,18 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(column)
             else:
                 self.bubbles.append(piece)
+            if m.get("bearbeitet"):
+                # „Bearbeitet“ (iOS): a click shows the earlier versions.
+                edited = Gtk.Button(label="Bearbeitet", css_classes=["flat", "lichat-edited"], halign=Gtk.Align.END if mine else Gtk.Align.START,
+                                    tooltip_text="Frühere Versionen zeigen")
+                versions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=10, margin_end=10, margin_top=8, margin_bottom=8)
+                for old in m["bearbeitet"]:
+                    versions.append(Gtk.Label(label=old.get("text", ""), wrap=True, max_width_chars=40, xalign=0, css_classes=["lichat-version"]))
+                versions.append(Gtk.Label(label=m["text"], wrap=True, max_width_chars=40, xalign=0))
+                popover = Gtk.Popover(child=versions)
+                popover.set_parent(edited)
+                edited.connect("clicked", lambda _b, p=popover: p.popup())
+                self.bubbles.append(edited)
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
@@ -718,6 +739,13 @@ class Window(Adw.ApplicationWindow):
                 cid = account.start(names)
                 account.send(cid, text)
                 return cid
+        elif getattr(self, "editing", None):
+            cid, mid = self.current, self.editing["mid"]
+            self.end_reply()
+
+            def job():
+                account.edit(cid, mid, text)
+                return cid
         else:
             cid = self.current
             reply = self.reply_to["mid"] if getattr(self, "reply_to", None) else None
@@ -838,6 +866,14 @@ class Window(Adw.ApplicationWindow):
             copy = Gtk.Button(label="Kopieren", css_classes=["flat"])
             copy.connect("clicked", lambda *_: (popover.popdown(), self.get_clipboard().set(message["text"])))
             box.append(copy)
+        if self.account.can_edit(message):
+            change = Gtk.Button(label="Bearbeiten", css_classes=["flat"])
+            change.connect("clicked", lambda *_: (popover.popdown(), self.start_edit(message)))
+            box.append(change)
+        if self.account.can_unsend(message):
+            back = Gtk.Button(label="Senden widerrufen", css_classes=["flat", "lichat-destructive"])
+            back.connect("clicked", lambda *_: (popover.popdown(), self.unsend(cid, message["mid"])))
+            box.append(back)
         popover.set_parent(widget)
         popover.popup()
         self.open_menu = popover
@@ -846,8 +882,23 @@ class Window(Adw.ApplicationWindow):
         account = self.account
         self.worker.do(lambda: account.react(cid, mid, emoji), lambda _r, error: (self.show_notice(error), self.show_conversation()))
 
+    def start_edit(self, message):
+        """Correcting one of my messages (card 4ceca163): its text in the input line, „Nachricht bearbeiten“ above it."""
+        self.reply_to = None
+        self.editing = message
+        self.reply_label.set_label(f"Nachricht bearbeiten: {message.get('text', '')}")
+        self.reply_line.set_visible(True)
+        self.input.set_text(message.get("text", ""))
+        self.input.grab_focus()
+        self.input.set_position(-1)
+
+    def unsend(self, cid, mid):
+        account = self.account
+        self.worker.do(lambda: account.unsend(cid, mid), lambda _r, error: (self.show_notice(error), self.show_conversation(), self.fill_list()))
+
     def start_reply(self, message):
         """Answering: a line above the input with the quote, ✕ takes it back."""
+        self.editing = None
         self.reply_to = message
         who = "dich" if message["from"] == self.account.username else self.account.display(message["from"])
         self.reply_label.set_label(f"Antwort an {who}: {Account.describe(message) or message.get('text', '')}")
@@ -856,6 +907,7 @@ class Window(Adw.ApplicationWindow):
 
     def end_reply(self):
         self.reply_to = None
+        self.editing = None
         self.reply_line.set_visible(False)
 
     def tick_line(self, cid, message):
