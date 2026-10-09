@@ -12,6 +12,9 @@
     lichat-cli [--profil NAME] mitglieder <gespräch>
     lichat-cli [--profil NAME] code <gespräch>              # Sicherheitscode zum Vergleichen
     lichat-cli [--profil NAME] entfernen <gespräch> <person …>  # aus dem Gespräch nehmen
+    lichat-cli [--profil NAME] hinzufuegen <gespräch> <person …> # in eine Gruppe aufnehmen
+    lichat-cli [--profil NAME] umbenennen <gespräch> <name …>   # Gruppenname (nur Ende-zu-Ende)
+    lichat-cli [--profil NAME] verlassen <gespräch>
     lichat-cli [--profil NAME] datei <gespräch> <pfad>      # Datei/Foto/Video schicken (ohne Metadaten)
     lichat-cli [--profil NAME] anhang <gespräch> <nr> <ziel> # Anhang Nr. (aus „verlauf“) entschlüsselt speichern
     lichat-cli [--profil NAME] bild <datei>|--weg           # Profilbild (512 px, ohne EXIF, nur in den Gesprächen)
@@ -130,6 +133,17 @@ def main(argv):
         cid = account.chat(args[0])
         account.remove(cid, args[1:])
         print(f"{', '.join(args[1:])} aus {short(bytes.fromhex(cid))} entfernt")
+    elif command == "hinzufuegen":
+        if len(args) < 2:
+            raise LiChatError("hinzufuegen <gespräch> <person …>")
+        account.add(account.chat(args[0]), args[1:])
+        print(f"{', '.join(args[1:])} hinzugefügt")
+    elif command == "umbenennen":
+        account.rename(account.chat(args[0]), " ".join(args[1:]))
+        print("Gruppenname gesetzt")
+    elif command == "verlassen":
+        account.leave(account.chat(args[0] if args else ""))
+        print("Unterhaltung verlassen")
     elif command == "datei":
         import mimetypes
         if len(args) != 2:

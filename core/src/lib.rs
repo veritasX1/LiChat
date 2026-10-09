@@ -216,6 +216,20 @@ impl Device {
         Ok(commit)
     }
 
+    /// Adds devices whose key packages were claimed (and checked against the directory by the app): the commit goes to
+    /// everyone already in the conversation, the welcome to the new devices (card d45b319a).
+    pub fn add_members(&mut self, conversation: &[u8], key_packages: &[Vec<u8>]) -> Result<Started, Error> {
+        let mut checked = Vec::new();
+        for bytes in key_packages {
+            let incoming = KeyPackageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;
+            checked.push(incoming.validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(|e| Error::InvalidKeyPackage(format!("{e:?}")))?);
+        }
+        let group = self.conversations.get_mut(conversation).ok_or(Error::UnknownConversation)?;
+        let (commit, welcome, _info) = group.add_members(&self.provider, &self.signer, &checked).map_err(mls)?;
+        group.merge_pending_commit(&self.provider).map_err(mls)?;
+        Ok(Started { conversation: commit.tls_serialize_detached().map_err(mls)?, welcome: welcome.tls_serialize_detached().map_err(mls)? })
+    }
+
     /// Removes these people (every device of theirs) from the conversation; the commit goes to everyone who was in it,
     /// the removed devices included – they learn it and can read nothing that follows.
     pub fn remove_members(&mut self, conversation: &[u8], identities: &[String]) -> Result<Vec<u8>, Error> {

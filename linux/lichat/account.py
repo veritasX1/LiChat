@@ -167,6 +167,7 @@ class Account:
         self.profiles = self._unseal("profile.bin", PROFILE_MAGIC, {"me": None, "people": {}})
         self._owe_picture = set()   # chats that learn my picture once their roster is known
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
+        self._owe_removal = {}      # chat → people who left and whose devices I take out of the MLS group
         self.server = Server(self.info["server"], self.info["token"])
 
     # ------------------------------------------------------------------------------------------ setup
@@ -248,19 +249,8 @@ class Account:
         others = sorted({u for u in usernames if u != self.username})
         if not others:
             raise LiChatError("Mit wem? Mindestens eine andere Person")
-        roster, packages = {self.username: [self.device_id]}, []
-        for user in others:
-            listed = self.directory(user)
-            claimed = self.server.call("POST", f"/v1/key-packages/{urllib.parse.quote(user)}", {})["key_packages"]
-            if not claimed:
-                raise LiChatError(f"{user} hat gerade keinen Schlüssel frei")
-            for item in claimed:
-                package = unb64(item["key_package"])
-                owner, key = lichat_core.Device.key_package_owner(package)
-                if owner != user or listed.get(item["device"]) != bytes(key):
-                    raise LiChatError(f"Key-Package passt nicht zu {user} – Gespräch nicht begonnen")
-                roster.setdefault(user, []).append(item["device"])
-                packages.append(package)
+        roster, packages = self._claim(others)
+        roster[self.username] = [self.device_id]
         with self.lock:
             conversation, welcome = self.device.start_conversation(packages)
             conversation = bytes(conversation)
@@ -276,6 +266,98 @@ class Account:
         for packet in packets:
             self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return cid
+
+    def _claim(self, users):
+        """One key package per device of each user – each checked against the directory (name and identity key)."""
+        roster, packages = {}, []
+        for user in users:
+            listed = self.directory(user)
+            claimed = self.server.call("POST", f"/v1/key-packages/{urllib.parse.quote(user)}", {})["key_packages"]
+            if not claimed:
+                raise LiChatError(f"{user} hat gerade keinen Schlüssel frei")
+            for item in claimed:
+                package = unb64(item["key_package"])
+                owner, key = lichat_core.Device.key_package_owner(package)
+                if owner != user or listed.get(item["device"]) != bytes(key):
+                    raise LiChatError(f"Key-Package passt nicht zu {user} – nichts geändert")
+                roster.setdefault(user, []).append(item["device"])
+                packages.append(package)
+        return roster, packages
+
+    # ------------------------------------------------------------------------------------------ groups (card d45b319a)
+
+    def add(self, cid, usernames):
+        """Adds people to a conversation: the commit to everyone so far, the welcome to the new devices, then the new
+        roster (with the group's name and picture) to all. Newcomers read only what comes after (MLS)."""
+        chat = self.chats[cid]
+        if chat.get("removed"):
+            raise LiChatError("Du bist nicht mehr in diesem Gespräch")
+        new = sorted({u for u in usernames if u != self.username and u not in chat["roster"]})
+        if not new:
+            raise LiChatError("Wen hinzufügen? Die Person ist schon dabei")
+        added, packages = self._claim(new)
+        with self.lock:
+            before = self.targets(cid)
+            commit, welcome = self.device.add_members(bytes.fromhex(cid), packages)
+            chat["roster"].update(added)
+            for name in new:
+                self._system(chat, f"Du hast {name} hinzugefügt.")
+            payloads = [{"t": "roster", "devices": chat["roster"], "title": chat.get("title", "")}]
+            if chat.get("bild"):
+                payloads.append({"t": "gruppenbild", "bild": chat["bild"]})
+            if self.profiles["me"]:
+                payloads.append({"t": "profile", "bild": self.profiles["me"]})
+            packets = [self.device.encrypt(bytes.fromhex(cid), self._payload(p)) for p in payloads]
+            self.save()
+            everyone = self.targets(cid)
+        self.server.call("POST", "/v1/messages", {"to": before, "blob": b64(MLS + bytes(commit))})
+        self.server.call("POST", "/v1/messages", {"to": sorted(set(everyone) - set(before)), "blob": b64(WELCOME + bytes(welcome))})
+        for packet in packets:
+            self.server.call("POST", "/v1/messages", {"to": everyone, "blob": b64(MLS + bytes(packet))})
+
+    def _group_message(self, cid, payload, line=None):
+        chat = self.chats[cid]
+        if chat.get("removed"):
+            raise LiChatError("Du bist nicht mehr in diesem Gespräch")
+        with self.lock:
+            if line:
+                self._system(chat, line)
+            packet = self.device.encrypt(bytes.fromhex(cid), self._payload(payload))
+            self.save()
+            targets = self.targets(cid)
+        self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    def rename(self, cid, title):
+        """The group's name – only inside the conversation, never on the server."""
+        title = str(title).strip()[:80]
+        self.chats[cid]["title"] = title
+        self._group_message(cid, {"t": "titel", "titel": title},
+                            f"Du hast die Gruppe „{title}“ genannt." if title else "Du hast den Gruppennamen entfernt.")
+
+    def set_group_picture(self, cid, path):
+        """The group's picture (512 px, without EXIF) – end-to-end like everything else; None removes it."""
+        picture = b64(self.prepare_picture(path)) if path else ""
+        self.chats[cid]["bild"] = picture or None
+        self._group_message(cid, {"t": "gruppenbild", "bild": picture},
+                            "Du hast das Gruppenbild geändert." if picture else "Du hast das Gruppenbild entfernt.")
+
+    def leave(self, cid):
+        """Leaving: the others are told and the first of them takes this device out of the MLS group; here the
+        conversation stays readable, nothing more can be written."""
+        self._group_message(cid, {"t": "verlassen"}, "Du hast die Unterhaltung verlassen.")
+        with self.lock:
+            self.chats[cid]["removed"] = self.username
+            self.save()
+
+    def mute(self, cid, on):
+        """Stummschalten: no notifications for this conversation (only on this device)."""
+        with self.lock:
+            self.chats[cid]["stumm"] = bool(on)
+            self.save()
+
+    def group_picture(self, cid):
+        value = self.chats.get(cid, {}).get("bild")
+        return unb64(value) if value else None
 
     # ------------------------------------------------------------------------------------------ profile pictures
 
@@ -584,6 +666,16 @@ class Account:
                 packages = self.device.key_packages(joined)
                 self.save()
             self.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
+        if self._owe_removal:
+            owed, self._owe_removal = self._owe_removal, {}
+            for cid, names in owed.items():
+                with self.lock:
+                    targets = self.targets(cid)
+                    commit = self.device.remove_members(bytes.fromhex(cid), sorted(names))
+                    self.save()
+                # The one who left gets the commit too (and forgets the group); the roster no longer names them.
+                left = [d for name in names for d in self.directory(name)] if names else []
+                self.server.call("POST", "/v1/messages", {"to": sorted(set(targets) | set(left)), "blob": b64(MLS + bytes(commit))})
         if self._owe_delivered:
             # „zugestellt“ for what just arrived (always on – only „gelesen“ can be switched off).
             owed, self._owe_delivered = self._owe_delivered, {}
@@ -606,13 +698,15 @@ class Account:
         cid = bytes(received["conversation"]).hex()
         chat = self.chats.setdefault(cid, {"title": "", "roster": {}, "messages": []})
         if received["kind"] == "removed":
+            if chat.get("removed") == self.username:
+                return []      # I left myself – the commit only confirms it
             chat["removed"] = received["sender"]
             return [{"chat": cid, "removed": received["sender"]}]
         if received["kind"] != "message":
             # Keys or members changed: whoever is no longer in the group gets no more packets – and everyone still in it
             # reads who took whom out, like Messages (Michelle 31ec7628).
             members = set(self.members(cid))
-            gone = sorted(u for u in chat["roster"] if u not in members)
+            gone = sorted(u for u in chat["roster"] if u not in members and not chat.get("removed"))
             chat["roster"] = {u: d for u, d in chat["roster"].items() if u in members}
             news = []
             for name in gone:
@@ -629,11 +723,41 @@ class Account:
             # Only names that really are in the MLS group may get packets (a member cannot add a stranger's device).
             if set(devices) != set(self.members(cid)) or not all(isinstance(v, list) for v in devices.values()):
                 return [{"chat": cid, "problem": f"Teilnehmerliste von {sender} passt nicht zur Gruppe – nicht übernommen"}]
+            known = set(chat["roster"])
+            news = []
+            if known:    # not the first roster after joining: say who came in, like Messages
+                for name in sorted(set(devices) - known):
+                    line = self._system(chat, f"{sender} hat {name} hinzugefügt." if name != self.username else f"{sender} hat dich hinzugefügt.")
+                    news.append({"chat": cid, "system": line["text"]})
             chat["roster"] = devices
             chat["title"] = str(data.get("title") or chat["title"])
             if self.profiles["me"] and sender != self.username:
                 self._owe_picture.add(cid)
-            return []
+            return news
+        if data.get("t") == "titel":
+            title = str(data.get("titel") or "")[:80]
+            chat["title"] = title
+            line = self._system(chat, f"{sender} hat die Gruppe „{title}“ genannt." if title else f"{sender} hat den Gruppennamen entfernt.")
+            return [{"chat": cid, "system": line["text"]}]
+        if data.get("t") == "gruppenbild":
+            picture = str(data.get("bild") or "")
+            try:
+                raw = unb64(picture) if picture else b""
+            except ValueError:
+                raw = b"?"
+            if raw and (len(raw) > PICTURE_MAX or not raw.startswith(b"\xff\xd8\xff")):
+                return [{"chat": cid, "problem": f"Gruppenbild von {sender} nicht übernommen"}]
+            chat["bild"] = picture or None
+            line = self._system(chat, f"{sender} hat das Gruppenbild geändert." if picture else f"{sender} hat das Gruppenbild entfernt.")
+            return [{"chat": cid, "system": line["text"]}]
+        if data.get("t") == "verlassen":
+            # No more packets for the one who left; the first remaining member (by name) takes the device out of the group.
+            chat["roster"].pop(sender, None)
+            line = self._system(chat, f"{sender} hat die Unterhaltung verlassen.")
+            remaining = sorted(chat["roster"])
+            if remaining and remaining[0] == self.username and sender in self.members(cid):
+                self._owe_removal.setdefault(cid, set()).add(sender)
+            return [{"chat": cid, "system": line["text"]}]
         if data.get("t") == "profile":
             picture = data.get("bild") or ""
             try:

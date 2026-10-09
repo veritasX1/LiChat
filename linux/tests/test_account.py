@@ -382,6 +382,53 @@ class Remove(Base):
         self.assertEqual(erna.chats[cid]["removed"], "anna")   # history stays, the conversation is closed
 
 
+class GroupLife(Base):
+    """Card d45b319a: add, rename, picture, leave – end to end, with a grey line for everyone."""
+
+    def test_add_rename_picture_leave(self):
+        anna, bernd, erna, otto = self.person("anna"), self.person("bernd"), self.person("erna"), self.person("otto")
+        cid = anna.start(["bernd"], title="Grillen")
+        bernd.fetch()
+        anna.send(cid, "vor Erna")
+        anna.add(cid, ["erna"])
+        self.assertEqual(sorted(anna.members(cid)), ["anna", "bernd", "erna"])
+        news = [n for n in erna.fetch() if n.get("joined") or "text" in n]
+        self.assertTrue(news[0]["joined"])
+        self.assertEqual(erna.title(cid), "Grillen")
+        self.assertNotIn("vor Erna", [m["text"] for m in erna.chats[cid]["messages"]], "keine alte Geschichte")
+        self.assertIn({"chat": cid, "system": "anna hat erna hinzugefügt."}, bernd.fetch())
+        erna.send(cid, "Hallo zusammen")
+        self.assertIn("Hallo zusammen", [n.get("text") for n in bernd.fetch()])
+        # Name and picture only end to end.
+        anna.rename(cid, "Grillabend Samstag")
+        anna.set_group_picture(cid, test_image(self.root / "gruppe.jpg"))
+        for other in (bernd, erna):
+            lines = [n.get("system") for n in other.fetch()]
+            self.assertIn("anna hat die Gruppe „Grillabend Samstag“ genannt.", lines)
+            self.assertIn("anna hat das Gruppenbild geändert.", lines)
+            self.assertEqual(other.title(cid), "Grillabend Samstag")
+            self.assertIsNotNone(other.group_picture(cid))
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(b"Grillabend", server_files)
+        # Erna leaves: the others are told, the first of them (anna) takes her device out.
+        erna.leave(cid)
+        with self.assertRaises(LiChatError):
+            erna.send(cid, "noch da?")
+        self.assertIn("erna hat die Unterhaltung verlassen.", [n.get("system") for n in anna.fetch()])
+        self.assertIn("erna hat die Unterhaltung verlassen.", [n.get("system") for n in bernd.fetch()])
+        bernd.fetch()
+        self.assertEqual(sorted(bernd.members(cid)), ["anna", "bernd"])
+        self.assertEqual(erna.fetch(), [], "die Bestätigung des Rauswurfs zeigt nichts mehr an")
+        bernd.send(cid, "ohne Erna")
+        self.assertEqual(erna.fetch(), [])
+        # Otto joins later; mute is only local.
+        bernd.add(cid, ["otto"])
+        otto.fetch()
+        self.assertEqual(sorted(otto.members(cid)), ["anna", "bernd", "otto"])
+        anna.mute(cid, True)
+        self.assertTrue(self.reopen(anna).chats[cid]["stumm"])
+
+
 class Supply(Base):
     def test_last_resort_keeps_a_device_reachable(self):
         account_module.SUPPLY, before = 1, account_module.SUPPLY
