@@ -109,6 +109,9 @@ def main():
     shot(window, "01-anmelden.png")
     window.f_server.set_text(url)
     window.f_invite.set_text(server.store.create_invite())
+    window.f_first.set_text("Anna")
+    window.f_last.set_text("Beispiel")
+    assert window.f_name.get_text() == "anna.beispiel", window.f_name.get_text()   # suggested from the name
     window.f_name.set_text("anna")
     window.sign_in()
     until(lambda: getattr(window, "list", None) is not None)
@@ -119,6 +122,8 @@ def main():
     window.explained.force_close()
     assert window.settings["erklaert"] and window.settings["hintergrund"]
     anna = window.account
+
+    assert anna.display("anna") == "Anna Beispiel"
 
     # Bernd writes to Anna; the list shows it with the blue dot.
     cid = bernd.start(["anna"])
@@ -132,6 +137,9 @@ def main():
     until(lambda: getattr(window, "last_notification", None) is not None)
     assert window.settings["vorschau"] is False
     shot(window, "02-liste-neu.png")
+
+    bernd.fetch()
+    assert bernd.display("anna") == "Anna Beispiel", "Anzeigename Ende-zu-Ende bei Bernd"
 
     # Open it, answer – the blue bubble, Bernd reads it.
     window.list.select_row(window.list.get_row_at_index(0))

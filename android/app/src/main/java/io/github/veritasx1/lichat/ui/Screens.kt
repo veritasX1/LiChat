@@ -263,7 +263,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 }
                 val mine = m.optString("from") == account.username
                 if (!mine && others.size > 1 && previous?.optString("from") != m.optString("from"))
-                    BasicText(m.optString("from"), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                    BasicText(account.display(m.optString("from")), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
                 m.optJSONObject("antwort")?.let { quoted ->
                     // The message this answers, small above the bubble; a tap jumps to it.
                     val target = list.indexOfFirst { it.optString("mid") == quoted.optString("mid") }
@@ -626,7 +626,7 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
             members.forEachIndexed { i, member ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Avatar(member, account.picture(member), 32.dp)
-                    BasicText(if (member == account.username) "$member (ich)" else member, style = style(17f, 400, colors.label),
+                    BasicText(account.display(member) + if (member == account.username) " (ich)" else "", style = style(17f, 400, colors.label),
                         modifier = Modifier.weight(1f).padding(start = 12.dp))
                     // In a group someone can be taken out (test plan S2).
                     if (members.size > 2 && member != account.username && active) TextButton("Entfernen", colors.red) { onRemove(member) }
@@ -680,7 +680,7 @@ fun Section(header: String?, footer: String? = null, content: @Composable () -> 
 @Composable
 fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, onPreview: (Boolean) -> Unit, onPicture: () -> Unit,
                    onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {},
-                   receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}) {
+                   receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> }) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -691,9 +691,22 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             Row(Modifier.fillMaxWidth().clickable(onClick = onPicture).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(account.username, account.picture(account.username), 56.dp)
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                    BasicText(account.username, style = style(20f, 600, colors.label))
+                    BasicText(account.display(account.username), style = style(20f, 600, colors.label))
                     BasicText("Profilbild wählen", style = style(15f, 400, colors.blue))
                 }
+            }
+        }
+        val myName = account.profiles.optJSONObject("name")
+        var first by remember { mutableStateOf(myName?.optString("vorname") ?: "") }
+        var last by remember { mutableStateOf(myName?.optString("nachname") ?: "") }
+        Section("NAME", footer = "So sehen dich deine Gesprächspartner – nur Ende-zu-Ende. Dein Benutzername bleibt „${account.username}“.") {
+            listOf(Triple("Vorname", first) { v: String -> first = v }, Triple("Nachname", last) { v: String -> last = v }).forEachIndexed { i, (label, value, set) ->
+                BasicTextField(value, set, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { onName(first, last) }),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = label },
+                    decorationBox = { inner -> Box { if (value.isEmpty()) BasicText(label, style = style(17f, 400, colors.tertiary)); inner() } })
+                if (i == 0) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             }
         }
         Section("MITTEILUNGEN", footer = if (notifying) "Aus: Die Mitteilung sagt nur „Neue Nachricht“. An: Absender und Text stehen auch auf dem Sperrbildschirm."
@@ -751,11 +764,16 @@ fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
 // ---------------------------------------------------------------------------------------------- sign in
 
 @Composable
-fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, String) -> Unit) {
+fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, String, String, String) -> Unit) {
     val colors = palette()
     var server by remember { mutableStateOf("https://") }
     var invite by remember { mutableStateOf("") }
+    // Name as people write it (Olaf 09.10.: capitals, spaces); the user name is made from it and can be changed.
+    var first by remember { mutableStateOf("") }
+    var last by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+    var nameTouched by remember { mutableStateOf(false) }
+    if (!nameTouched) name = io.github.veritasx1.lichat.core.suggestUsername(first, last)
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.ime))
         .verticalScroll(rememberScrollState()).padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         AppIcon(88.dp)
@@ -763,19 +781,22 @@ fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, Stri
         BasicText("Mit der Einladung deines Servers. Alles, was du schreibst, ist Ende-zu-Ende verschlüsselt.", style = style(15f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp, vertical = 10.dp))
         Section(null) {
             listOf(Triple("Server", server) { v: String -> server = v }, Triple("Einladung", invite) { v: String -> invite = v },
-                Triple("Benutzername", name) { v: String -> name = v.lowercase() }).forEachIndexed { i, (label, value, set) ->
+                Triple("Vorname", first) { v: String -> first = v }, Triple("Nachname", last) { v: String -> last = v },
+                Triple("Benutzername", name) { v: String -> name = io.github.veritasx1.lichat.core.suggestUsername(v); nameTouched = true }).forEachIndexed { i, (label, value, set) ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     BasicText(label, style = style(17f, 400, colors.label), modifier = Modifier.width(120.dp))
                     BasicTextField(value, set, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                         modifier = Modifier.weight(1f).semantics { contentDescription = label })
                 }
-                if (i < 2) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                if (i < 4) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             }
         }
+        BasicText("Der Benutzername ist deine Kennung zum Finden (klein, ohne Leerzeichen). Deinen Namen sehen nur deine Gesprächspartner.",
+            style = style(13f, 400, colors.secondary), modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 6.dp))
         if (problem != null) BasicText(problem, style = style(13f, 400, colors.red).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))
         val ready = !busy && server.length > 8 && invite.isNotBlank() && name.isNotBlank()
         Box(Modifier.padding(16.dp).fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(if (ready) colors.blue else colors.fill)
-            .clickable(enabled = ready, role = Role.Button) { onSignIn(server, invite.trim(), name.trim()) }, contentAlignment = Alignment.Center) {
+            .clickable(enabled = ready, role = Role.Button) { onSignIn(server, invite.trim(), name.trim(), first.trim(), last.trim()) }, contentAlignment = Alignment.Center) {
             BasicText(if (busy) "Anmelden …" else "Anmelden", style = style(17f, 600, if (ready) Color.White else colors.tertiary))
         }
     }

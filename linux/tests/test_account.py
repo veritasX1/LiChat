@@ -388,6 +388,26 @@ class RepliesAndReactions(Base):
         self.assertNotIn(b"Kommst du", server_files)
 
 
+class DisplayNames(Base):
+    """Olaf 09.10.: „Olaf Winkler“ with capitals and a space – end to end; the user name stays the handle."""
+
+    def test_name_travels_end_to_end(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        anna.set_name("Anna", "Müller-Lüdenscheidt")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        self.assertEqual(bernd.display("anna"), "Anna Müller-Lüdenscheidt")
+        self.assertEqual(bernd.title(cid), "Anna Müller-Lüdenscheidt")
+        bernd.set_name("Bernd", "")
+        anna.fetch()
+        self.assertEqual(anna.title(cid), "Bernd")
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn("Lüdenscheidt".encode(), server_files)
+        self.assertEqual(Account.suggest_username("Olaf", "Winkler"), "olaf.winkler")
+        self.assertEqual(Account.suggest_username("Jean-Marie", "Lefèvre"), "jean-marie.lefevre")
+        self.assertEqual(Account.suggest_username("Jürgen Groß"), "juergen.gross")
+
+
 class Remove(Base):
     def test_removed_member_reads_nothing_after(self):
         """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""

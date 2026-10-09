@@ -192,7 +192,7 @@ httpd.serve_forever()
     }
 
     @Test
-    fun setup() = shot("7-anmelden") { SetupScreen(false, null) { _, _, _ -> } }
+    fun setup() = shot("7-anmelden") { SetupScreen(false, null) { _, _, _, _, _ -> } }
 
     @Test
     fun explain() = shot("8-erklaerung") { ChatList(anna, 0, emptyMap(), null, false, {}, {}, {}, {}); Explain({}, {}) }

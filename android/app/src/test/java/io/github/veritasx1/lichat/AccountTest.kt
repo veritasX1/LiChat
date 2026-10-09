@@ -323,5 +323,23 @@ a.react("$cid", asked["mid"], "👍")
         anna.react(cid, answer.getString("mid"), "❤️")
         assertTrue(cli("bernd", "abholen").contains("anna reagiert ❤️"))
     }
+
+    /** Olaf 09.10.: „Olaf Winkler“ with capitals and a space – end to end, phone and Ubuntu; the user name stays the handle. */
+    @Test
+    fun displayNames() {
+        val anna = person("anna")
+        assertTrue(cli("bernd", "register", url, invites.removeFirst(), "bernd").contains("Angemeldet"))
+        anna.setName("Anna", "Müller")
+        val cid = anna.start(listOf("bernd"))
+        cli("bernd", "abholen")
+        assertTrue(cli("bernd", "name", "Bernd", "Groß").contains("Bernd Groß"))
+        anna.fetch()
+        assertEquals("Bernd Groß", anna.display("bernd"))
+        assertEquals("Bernd Groß", anna.title(cid))
+        assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.UTF_8).contains("Müller") })
+        assertEquals("olaf.winkler", io.github.veritasx1.lichat.core.suggestUsername("Olaf", "Winkler"))
+        assertEquals("juergen.gross", io.github.veritasx1.lichat.core.suggestUsername("Jürgen Groß"))
+        assertEquals("jean-marie.lefevre", io.github.veritasx1.lichat.core.suggestUsername("Jean-Marie", "Lefèvre"))
+    }
 }
 

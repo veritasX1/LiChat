@@ -32,6 +32,9 @@ Replies and reactions (Olaf 09.10.: swipe to answer, long press for an emoji): a
     "antwort": {"mid", "from", "text"}   – the message it answers, with a short quote (also only end-to-end)
 and {"t": "reaktion", "mid", "emoji"} sets the sender's one reaction on a message ("" removes it).
 
+Display names (Olaf 09.10.: „groß und Kleinschreibung … vor und Nachnamen“): {"t": "name", "vorname", "nachname"}
+travels like the picture, only inside the conversations; the user name stays the lower-case handle on the server.
+
 Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
 <JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
@@ -316,6 +319,8 @@ class Account:
             packets = [self.device.encrypt(conversation, hello)]
             if self.profiles["me"]:
                 packets.append(self.device.encrypt(conversation, self._payload({"t": "profile", "bild": self.profiles["me"]})))
+            if self.profiles.get("name"):
+                packets.append(self.device.encrypt(conversation, self._payload({"t": "name", **self.profiles["name"]})))
             self.save()
             targets = self.targets(cid)
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(WELCOME + bytes(welcome))})
@@ -363,6 +368,8 @@ class Account:
                 payloads.append({"t": "gruppenbild", "bild": chat["bild"]})
             if self.profiles["me"]:
                 payloads.append({"t": "profile", "bild": self.profiles["me"]})
+            if self.profiles.get("name"):
+                payloads.append({"t": "name", **self.profiles["name"]})
             packets = [self.device.encrypt(bytes.fromhex(cid), self._payload(p)) for p in payloads]
             self.save()
             everyone = self.targets(cid)
@@ -442,6 +449,41 @@ class Account:
         for targets, packet in sends:
             if targets:
                 self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    def display(self, username):
+        """What people see: „Vorname Nachname“ when that person told us (end to end), else the user name."""
+        if username == self.username:
+            mine = self.profiles.get("name") or {}
+        else:
+            mine = (self.profiles.get("names") or {}).get(username) or {}
+        full = " ".join(x for x in (mine.get("vorname", ""), mine.get("nachname", "")) if x).strip()
+        return full or username
+
+    def set_name(self, first, last):
+        """My first and last name – any letters, upper and lower case, spaces – sent end-to-end into every conversation."""
+        first, last = str(first).strip()[:40], str(last).strip()[:40]
+        sends = []
+        with self.lock:
+            self.profiles["name"] = {"vorname": first, "nachname": last}
+            for cid in self.chats:
+                if self.chats[cid].get("removed"):
+                    continue
+                sends.append((self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "name", "vorname": first, "nachname": last}))))
+            self.save()
+        for targets, packet in sends:
+            if targets:
+                self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    @staticmethod
+    def suggest_username(first, last=""):
+        """„Olaf Winkler“ → „olaf.winkler“: what the server accepts, made from the name instead of refusing input."""
+        import unicodedata
+        text = f"{first} {last}".strip().lower()
+        for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+            text = text.replace(a, b)
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+        text = re.sub(r"[^a-z0-9._-]+", ".", text).strip("._-")
+        return re.sub(r"\.{2,}", ".", text)[:32]
 
     def picture(self, username):
         """The JPEG bytes of [username]'s picture (mine too), or None."""
@@ -770,8 +812,12 @@ class Account:
             # Joined a conversation: the others get my picture once I know who they are (the roster).
             with self.lock:
                 owed, self._owe_picture = self._owe_picture, set()
-                sends = [(self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "profile", "bild": self.profiles["me"]})))
-                         for cid in owed if self.profiles["me"]]
+                sends = []
+                for cid in owed:
+                    if self.profiles["me"]:
+                        sends.append((self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "profile", "bild": self.profiles["me"]}))))
+                    if self.profiles.get("name"):
+                        sends.append((self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "name", **self.profiles["name"]}))))
                 self.save()
             for targets, packet in sends:
                 self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
@@ -814,7 +860,7 @@ class Account:
                     news.append({"chat": cid, "system": line["text"]})
             chat["roster"] = devices
             chat["title"] = str(data.get("title") or chat["title"])
-            if self.profiles["me"] and sender != self.username:
+            if (self.profiles["me"] or self.profiles.get("name")) and sender != self.username:
                 self._owe_picture.add(cid)
             return news
         if data.get("t") == "titel":
@@ -841,6 +887,14 @@ class Account:
             if remaining and remaining[0] == self.username and sender in self.members(cid):
                 self._owe_removal.setdefault(cid, set()).add(sender)
             return [{"chat": cid, "system": line["text"]}]
+        if data.get("t") == "name":
+            first, last = str(data.get("vorname") or "").strip()[:40], str(data.get("nachname") or "").strip()[:40]
+            names = self.profiles.setdefault("names", {})
+            if first or last:
+                names[sender] = {"vorname": first, "nachname": last}
+            else:
+                names.pop(sender, None)
+            return [{"chat": cid, "picture": sender}]     # like a new picture: shown, nothing to answer
         if data.get("t") == "profile":
             picture = data.get("bild") or ""
             try:
@@ -864,7 +918,7 @@ class Account:
                 reactions[sender] = emoji
             else:
                 reactions.pop(sender, None)
-            return [{"chat": cid, "reaction": emoji, "from": sender}]
+            return [{"chat": cid, "reaction": emoji, "from": sender, "target": (self.describe(target) or target.get("text", ""))[:60]}]
         if data.get("t") == "quittung":
             kind = data.get("art")
             mids = {str(m) for m in (data.get("mids") or []) if isinstance(m, str)}
@@ -896,7 +950,7 @@ class Account:
                 message["antwort"] = {"mid": answer["mid"], "from": str(answer.get("from", ""))[:40], "text": str(answer.get("text", ""))[:120]}
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
-            return [{"chat": cid, **message}]
+            return [{"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}]
         return []
 
     def _remember_mid(self, cid, message, data):
@@ -910,4 +964,4 @@ class Account:
         if chat.get("title"):
             return chat["title"]
         names = [u for u in chat["roster"] if u != self.username] or [u for u in self.members(cid) if u != self.username]
-        return ", ".join(sorted(names)) or "(leer)"
+        return ", ".join(sorted(self.display(u) for u in names)) or "(leer)"
