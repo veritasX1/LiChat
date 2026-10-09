@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
+import io.github.veritasx1.lichat.ui.AttachmentActions
 import io.github.veritasx1.lichat.ui.ChatList
 import io.github.veritasx1.lichat.ui.ChatScreen
 import io.github.veritasx1.lichat.ui.Details
@@ -263,6 +264,69 @@ httpd.serve_forever()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Bild")).performClick()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Foto, tippen zum Schließen")).assertIsDisplayed()
         anna.setContactPicture("bernd", null)
+    }
+
+    private fun testJpeg(color: Int, w: Int = 400, h: Int = 300) = java.io.ByteArrayOutputStream().also { out ->
+        android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888).apply {
+            eraseColor(color)
+            android.graphics.Canvas(this).drawCircle(w / 2f, h / 2f, h / 3f, android.graphics.Paint().apply { this.color = 0xFFFFFFFF.toInt() })
+        }.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out) }.toByteArray()
+
+    /** fe9f2029 + f9e3f055: a one-time picture shows no preview, a tap asks to open it; a secret one is pixelated until tapped. */
+    @Test
+    fun onceAndSecretBubbles() {
+        val photo = testJpeg(0xFF3366CC.toInt())
+        bernd.sendAttachment(cid, photo, "geheim.jpg", "image/jpeg", "bild", preview = photo, secret = true)
+        bernd.sendAttachment(cid, photo, "einmal.jpg", "image/jpeg", "bild", once = true)
+        anna.fetch()
+        var opened = ""
+        shot("2f-einmal-geheim") { ChatScreen(anna, cid, 1, null, {}, {}, { _, _ -> }, AttachmentActions(openOnce = { opened = it })) }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Foto, Einmal-Ansicht, Tippen zum Ansehen")).performClick()
+        org.junit.Assert.assertTrue(opened.isNotEmpty())
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).assertDoesNotExist()
+        io.github.veritasx1.lichat.ui.SecretShown.ids.clear()
+    }
+
+    @Test
+    fun photoSendSheet() {
+        var chosen: Pair<Boolean, Boolean>? = null
+        shot("2g-foto-senden") { io.github.veritasx1.lichat.ui.PhotoSendSheet(testJpeg(0xFF34A853.toInt()), {}) { o, s -> chosen = o to s } }
+        compose.onNodeWithText("Einmal-Ansicht").performClick()
+        compose.onNodeWithText("Senden").performClick()
+        org.junit.Assert.assertEquals(true to false, chosen)
+    }
+
+    @Test
+    fun onceViewer() = shot("2h-einmal-ansicht") { io.github.veritasx1.lichat.ui.OnceViewer(testJpeg(0xFFCC3333.toInt()), false, {}) {} }
+
+    /** 43358d35: Fotos, Links, Dokumente in the info – never one-time pictures. */
+    @Test
+    fun detailsMedia() {
+        val photo = testJpeg(0xFFFF9500.toInt())
+        bernd.sendAttachment(cid, photo, "a.jpg", "image/jpeg", "bild", preview = photo)
+        bernd.sendAttachment(cid, photo, "b.jpg", "image/jpeg", "bild", preview = photo, secret = true)
+        bernd.sendAttachment(cid, photo, "c.jpg", "image/jpeg", "bild", once = true)
+        bernd.send(cid, "Hier der Plan: https://www.lisoftware.de/lichat")
+        bernd.sendAttachment(cid, byteArrayOf(1, 2, 3), "Einkaufsliste.pdf", "application/pdf", "datei")
+        anna.fetch()
+        var link = ""
+        shot("4d-info-medien") { Details(anna, cid, 1, {}, {}, io.github.veritasx1.lichat.ui.GroupActions(openLink = { link = it })) }
+        compose.onNodeWithText("FOTOS").performScrollTo().assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild")).assertExists()
+        compose.onNodeWithText("Einkaufsliste.pdf", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("www.lisoftware.de/lichat").performScrollTo().performClick()
+        org.junit.Assert.assertEquals("https://www.lisoftware.de/lichat", link)
+    }
+
+    /** Olaf zu 884f7c8a: „schreibt …“ with the blue wave in place of the preview line in the list. */
+    @Test
+    fun listTyping() {
+        anna.typingIndicator = true; bernd.typingIndicator = true
+        org.junit.Assert.assertTrue(bernd.typing(cid))
+        anna.fetch()
+        shot("1c-liste-schreibt") { ChatList(anna, 1, emptyMap(), null, false, {}, {}, {}, {}) }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("schreibt …")).assertExists()
     }
 
     @Test

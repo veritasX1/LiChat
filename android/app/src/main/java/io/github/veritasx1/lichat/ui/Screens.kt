@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -59,6 +60,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -157,6 +159,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
     var filter by remember { mutableStateOf("alle") }
     var choosingFilter by remember { mutableStateOf(false) }
     var rowMenu by remember { mutableStateOf<String?>(null) }
+    var typingClock by remember { mutableStateOf(0L) }     // „schreibt …“ in the list ends 6 s after the last sign
     val pinned = remember(version, filter) { if (filter == "alle") synchronized(account.lock) { account.pinned() } else emptyList() }
     val all = remember(version, filter) {
         synchronized(account.lock) {
@@ -240,6 +243,20 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                             BasicText(title, style = style(17f, 600, colors.label), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                             last?.let { BasicText(whenShort(it.optLong("at")), style = style(15f, 400, colors.secondary)) }
                             GlyphIcon(Glyph.Chevron, colors.tertiary, 14.dp, Modifier.padding(start = 4.dp))
+                        }
+                        // Olaf zu 884f7c8a: while someone types, a small blue wave with „schreibt …“ replaces the preview
+                        val typists = remember(version, cid, typingClock) { account.typingNow(cid) }
+                        LaunchedEffect(typists, typingClock, version) {
+                            if (typists.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); typingClock++ }
+                        }
+                        if (typists.isNotEmpty()) {
+                            val group = account.members(cid).size > 2 || account.chat(cid).optString("title").isNotEmpty()
+                            ListTyping(when {
+                                !group -> "schreibt …"
+                                typists.size == 1 -> "${account.display(typists[0])} schreibt …"
+                                else -> "${typists.size} Personen schreiben …"
+                            })
+                            return@Column
                         }
                         val preview = when {
                             last == null -> "Noch keine Nachrichten"
@@ -554,7 +571,8 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
     val colors = palette()
     val info = m.optJSONObject("anhang")
     if (info != null) Box(modifier.then(interact)) {
-        AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {}) { open(info) }
+        if (info.optBoolean("einmal")) OnceBubble(m, mine) { actions?.openOnce?.invoke(m.optString("mid")) }
+        else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {}) { open(info) }
     }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
@@ -741,7 +759,113 @@ class AttachmentActions(
     val seek: (Float) -> Unit = {},
     /** The attachment's bytes (downloaded once, kept sealed on the phone) – for photos sharp in the bubble (ed0686a1). */
     val load: ((JSONObject) -> ByteArray)? = null,
+    /** A one-time picture tapped (its mid): opened once, full screen, then gone (fe9f2029). */
+    val openOnce: (String) -> Unit = {},
 )
+
+/** Secret pictures (f9e3f055) tapped open while the app runs – everywhere else they stay pixelated. */
+object SecretShown {
+    val ids = androidx.compose.runtime.mutableStateListOf<String>()
+}
+
+/** Pixelated here, from the picture itself: 14 blocks on the short side (f9e3f055). */
+fun pixelated(bitmap: androidx.compose.ui.graphics.ImageBitmap): androidx.compose.ui.graphics.ImageBitmap {
+    val source = bitmap.asAndroidBitmap()
+    val block = (minOf(source.width, source.height) / 14).coerceAtLeast(1)
+    val small = android.graphics.Bitmap.createScaledBitmap(source, (source.width / block).coerceAtLeast(1), (source.height / block).coerceAtLeast(1), true)
+    return android.graphics.Bitmap.createScaledBitmap(small, source.width, source.height, false).asImageBitmap()
+}
+
+/** A one-time picture's state, the same words as Account.onceState – worked out from the message alone. */
+fun onceState(m: JSONObject, mine: Boolean, nowS: Long = System.currentTimeMillis() / 1000): String = when {
+    mine -> "eigen"
+    m.has("geoeffnet") -> "geoeffnet"
+    nowS - m.optLong("at") > io.github.veritasx1.lichat.core.ONCE_DAYS * 86400L -> "abgelaufen"
+    else -> "neu"
+}
+
+/** A one-time picture in the chat: never a preview, only what it is and where it stands (fe9f2029). */
+@Composable
+fun OnceBubble(m: JSONObject, mine: Boolean, onOpen: () -> Unit) {
+    val colors = palette()
+    val state = onceState(m, mine)
+    val note = when (state) {
+        "eigen" -> if ((m.optJSONObject("geoeffnet_von")?.length() ?: 0) > 0) "Geöffnet" else "Einmal-Ansicht"
+        "neu" -> "Tippen zum Ansehen"
+        "geoeffnet" -> "Geöffnet"
+        else -> "Abgelaufen"
+    }
+    val active = state == "neu"
+    val foreground = if (mine) Color.White else if (active) colors.label else colors.secondary
+    Row(Modifier.clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+        .clickable(enabled = active, onClick = onOpen).semantics { contentDescription = "Foto, Einmal-Ansicht, $note" }
+        .padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(22.dp).border(2.dp, if (active) colors.blue.takeIf { !mine } ?: Color.White else foreground, CircleShape),
+            contentAlignment = Alignment.Center) { BasicText("1", style = style(12f, 700, if (active && !mine) colors.blue else foreground)) }
+        Column(Modifier.padding(start = 10.dp)) {
+            BasicText("Foto", style = style(16f, 600, foreground))
+            BasicText(note, style = style(13f, 400, if (mine) Color.White.copy(alpha = 0.85f) else colors.secondary))
+        }
+    }
+}
+
+/** A one-time picture full screen (fe9f2029): no screenshot (FLAG_SECURE also hides it in the app overview); Android 14+
+ *  reports an attempt, which puts a fixed line into the chat. Closing it – „Fertig“, back, tap – and it is gone. */
+@Composable
+fun OnceViewer(bytes: ByteArray, secret: Boolean, onScreenshot: () -> Unit, onClose: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? android.app.Activity
+    val bitmap = remember(bytes) { FullImages.decode(bytes, 2048) }
+    var hidden by remember(bytes) { mutableStateOf(secret) }
+    androidx.compose.runtime.DisposableEffect(activity) {
+        activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        val callback = if (android.os.Build.VERSION.SDK_INT >= 34 && activity != null)
+            android.app.Activity.ScreenCaptureCallback { onScreenshot() }.also { activity.registerScreenCaptureCallback(activity.mainExecutor, it) } else null
+        onDispose {
+            if (android.os.Build.VERSION.SDK_INT >= 34 && callback != null) activity?.unregisterScreenCaptureCallback(callback as android.app.Activity.ScreenCaptureCallback)
+            activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable { if (hidden) hidden = false else onClose() }
+        .semantics { contentDescription = "Einmal-Bild, tippen zum Schließen" }, contentAlignment = Alignment.Center) {
+        if (bitmap != null) Image(if (hidden) pixelated(bitmap) else bitmap, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        Column(Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.statusBars).padding(top = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            BasicText("Einmal-Ansicht", style = style(15f, 600, Color.White))
+            BasicText(if (hidden) "Tippen zum Aufdecken" else "Nach dem Schließen ist das Foto weg", style = style(13f, 400, Color.White.copy(alpha = 0.75f)))
+        }
+        Box(Modifier.align(Alignment.TopEnd).windowInsetsPadding(WindowInsets.statusBars).padding(8.dp)) { TextButton("Fertig", Color.White, 600, onClick = onClose) }
+    }
+}
+
+/** Before a photo leaves (fe9f2029, f9e3f055): normal, as a one-time picture, pixelated – or both. */
+@Composable
+fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onSend: (once: Boolean, secret: Boolean) -> Unit) {
+    val colors = palette()
+    var once by remember { mutableStateOf(false) }
+    var secret by remember { mutableStateOf(false) }
+    val bitmap = remember(bytes) { bytes?.let { FullImages.decode(it, 600) } }
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars)) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) { TextButton("Abbrechen", colors.blue, onClick = onCancel) }
+            BasicText("Foto", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Senden", colors.blue, 600) { onSend(once, secret) } }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+            if (bitmap != null) Image(if (secret) pixelated(bitmap) else bitmap, contentDescription = "Foto", contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxWidth().aspectRatio(bitmap.width / bitmap.height.coerceAtLeast(1).toFloat()).clip(RoundedCornerShape(12.dp)))
+        }
+        Section(null, footer = "Ein Einmal-Bild lässt sich genau einmal ansehen, dann ist es überall weg – Bildschirmfotos sind gesperrt. Verpixelt zeigt erst ein Tippen das Foto.") {
+            SwitchRow("Einmal-Ansicht", once) { once = it }
+            Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(0.5.dp).background(colors.separator))
+            SwitchRow("Verpixeln", secret) { secret = it }
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
 
 /** Photos in the bubbles at display size (Olaf ed0686a1: the 320 px preview blown up was blurry): decoded once, kept
  *  here while the app runs (24 photos), the small preview shows until then. */
@@ -874,7 +998,8 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
             }?.also { FullImages.cache.put(id, it) }
         }
     }
-    val preview = full ?: small
+    val hidden = info.optBoolean("geheim") && id !in SecretShown.ids
+    val preview = if (hidden) remember(id, small) { small?.let { pixelated(it) } } else full ?: small
     // An animated GIF runs in the bubble like in Messages (Michelle 999f37be) – still with „Animationen entfernen“.
     val gifBytes by androidx.compose.runtime.produceState<ByteArray?>(null, id) {
         if (info.optString("mime") == "image/gif" && load != null && android.os.Build.VERSION.SDK_INT >= 28)
@@ -884,10 +1009,15 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
     if ((kind == "bild" || kind == "video") && preview != null) {
         val width = 220.dp
         val height = width * (preview.height.toFloat() / preview.width.coerceAtLeast(1)).coerceIn(0.4f, 1.6f)
-        Box(Modifier.size(width, height).clip(RoundedCornerShape(18.dp)).clickable(onClick = onOpen).semantics { contentDescription = label },
-            contentAlignment = Alignment.Center) {
+        Box(Modifier.size(width, height).clip(RoundedCornerShape(18.dp)).clickable { if (hidden) SecretShown.ids.add(id) else onOpen() }
+            .semantics { contentDescription = if (hidden) "Geheimbild, tippen zum Aufdecken" else label }, contentAlignment = Alignment.Center) {
             val bytes = gifBytes
-            if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) GifView(bytes, Modifier.fillMaxSize())
+            if (hidden) {
+                Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                BasicText("Geheimbild", style = style(15f, 600, Color.White), modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
+            }
+            else if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) GifView(bytes, Modifier.fillMaxSize())
             else Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             if (kind == "video") Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
                 GlyphIcon(Glyph.Play, Color.White, 24.dp)
@@ -1088,6 +1218,7 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
                     modifier = Modifier.fillMaxWidth().clickable(onClick = group.leave).padding(16.dp))
             }
         }
+        MediaSections(account, cid, version, group)
         if (code.isNotEmpty()) Section("SICHERHEITSCODE", footer = "Vergleicht den Code auf allen Geräten – gleich heißt: niemand liest mit.") {
             BasicText(code.split(" ").chunked(4).joinToString("\n") { it.joinToString("  ") }, style = style(20f, 500, colors.label).copy(textAlign = TextAlign.Center), modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = "Sicherheitscode $code" })
         }
@@ -1106,7 +1237,63 @@ class GroupActions(
     val block: ((String, Boolean) -> Unit)? = null,
     val contactPicture: (String) -> Unit = {},
     val resetContactPicture: (String) -> Unit = {},
+    val openAttachment: (JSONObject) -> Unit = {},
+    val openLink: (String) -> Unit = {},
 )
+
+/** Fotos, Links, Dokumente, Sprachnachrichten of this chat in the info, like the iPhone (43358d35): sent and received,
+ *  newest first; one-time pictures never, secret ones only pixelated. A section shows only when it has something. */
+@Composable
+fun MediaSections(account: Account, cid: String, version: Int, group: GroupActions) {
+    val colors = palette()
+    val media = remember(cid, version) { runCatching { account.media(cid) }.getOrNull() } ?: return
+    var allPhotos by remember(cid) { mutableStateOf(false) }
+    val date = java.text.SimpleDateFormat("dd.MM.yyyy", Locale.GERMANY)
+    fun who(m: JSONObject) = if (m.optString("from") == account.username) "Du" else account.display(m.optString("from"))
+    fun line(m: JSONObject) = "${who(m)} · ${date.format(java.util.Date(m.optLong("at") * 1000))}"
+    if (media.photos.isNotEmpty()) Section("FOTOS") {
+        val shown = if (allPhotos) media.photos else media.photos.take(8)
+        shown.chunked(4).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(1.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                row.forEach { m ->
+                    val info = m.getJSONObject("anhang")
+                    val bitmap = remember(info.optString("id")) {
+                        info.optString("vorschau").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
+                            ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+                            ?.let { if (info.optBoolean("geheim")) pixelated(it) else it }
+                    }
+                    Box(Modifier.weight(1f).aspectRatio(1f).background(colors.fill).clickable { group.openAttachment(info) }
+                        .semantics { contentDescription = if (info.optBoolean("geheim")) "Geheimbild" else if (info.optString("art") == "video") "Video" else "Foto" },
+                        contentAlignment = Alignment.Center) {
+                        if (bitmap != null) Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        if (info.optString("art") == "video") GlyphIcon(Glyph.Play, Color.White, 20.dp)
+                    }
+                }
+                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+        if (media.photos.size > 8) BasicText(if (allPhotos) "Weniger zeigen" else "Alle ${media.photos.size} zeigen", style = style(17f, 400, colors.blue),
+            modifier = Modifier.fillMaxWidth().clickable { allPhotos = !allPhotos }.padding(horizontal = 16.dp, vertical = 11.dp))
+    }
+    @Composable
+    fun rows(header: String, items: List<Pair<String, JSONObject>>, open: (Int) -> Unit) {
+        if (items.isEmpty()) return
+        Section(header) {
+            items.take(20).forEachIndexed { index, (title, m) ->
+                if (index > 0) Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(0.5.dp).background(colors.separator))
+                Column(Modifier.fillMaxWidth().clickable { open(index) }.padding(horizontal = 16.dp, vertical = 9.dp)) {
+                    BasicText(title, style = style(17f, 400, colors.label), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    BasicText(line(m), style = style(13f, 400, colors.secondary))
+                }
+            }
+        }
+    }
+    rows("LINKS", media.links.map { (url, m) -> url.removePrefix("https://").removePrefix("http://") to m }) { group.openLink(media.links[it].first) }
+    rows("DOKUMENTE", media.documents.map { it.getJSONObject("anhang").let { a -> "${a.optString("name")} · ${sizeText(a.optLong("groesse"))}" } to it }) {
+        group.openAttachment(media.documents[it].getJSONObject("anhang")) }
+    rows("SPRACHNACHRICHTEN", media.voice.map { m -> m.getJSONObject("anhang").optDouble("dauer", 0.0).toInt().let { "Sprachnachricht · ${it / 60}:${"%02d".format(it % 60)}" } to m }) {
+        group.openAttachment(media.voice[it].getJSONObject("anhang")) }
+}
 
 @Composable
 fun Section(header: String?, footer: String? = null, content: @Composable () -> Unit) {
@@ -1396,6 +1583,33 @@ fun TypingBubble(group: Boolean = false, label: String = "") {
                 }
             }
         }
+    }
+}
+
+/** „schreibt …“ in the chat list: three small dots in the accent blue as a wave (breathing with „Animationen entfernen“). */
+@Composable
+fun ListTyping(label: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val colors = palette()
+    val still = remember {
+        runCatching { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
+    }
+    var time by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        if (!TypingAnimation.running) return@LaunchedEffect
+        val start = androidx.compose.runtime.withFrameMillis { it }
+        while (true) androidx.compose.runtime.withFrameMillis { time = ((it - start) % 1840).toFloat() }
+    }
+    Row(Modifier.semantics(mergeDescendants = true) { contentDescription = label }, verticalAlignment = Alignment.CenterVertically) {
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf(380f, 580f, 760f).forEach { top ->
+                val power = if (still) 0.5f - 0.5f * kotlin.math.cos(2 * Math.PI.toFloat() * time / 1840f) else (1f - kotlin.math.abs(time - top) / 200f).coerceIn(0f, 1f)
+                val lift = if (still) 0f else -3f * power
+                Box(Modifier.size(6.dp).graphicsLayer { translationY = lift * density }.clip(CircleShape)
+                    .background(colors.blue.copy(alpha = 0.45f + 0.55f * power)))
+            }
+        }
+        BasicText(label, style = style(15f, 400, colors.blue), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 7.dp))
     }
 }
 

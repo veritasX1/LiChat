@@ -180,7 +180,16 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         if (uri == null) return
         work({ media.send(acc, cid, uri, asFile) }) { _, error -> problem = error; Hub.changed() }
     }
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { sendFile(it, false) }
+    // A photo first asks how it leaves (fe9f2029, f9e3f055); videos go at once.
+    var pendingPhoto by remember { mutableStateOf<Pair<Uri, ByteArray?>?>(null) }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null && context.contentResolver.getType(uri)?.startsWith("image/") == true)
+            pendingPhoto = uri to runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+        else sendFile(uri, false)
+    }
+    // A one-time picture open now: chat, mid, bytes (only in memory) and whether it is also secret.
+    var oncePhoto by remember { mutableStateOf<Triple<String, String, ByteArray>?>(null) }
+    var onceSecret by remember { mutableStateOf(false) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendFile(it, true) }
     fun startRecording() {
         if (media.startRecording()) {
@@ -200,6 +209,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     }
     val actions = AttachmentActions(
         load = { info -> account?.openAttachment(info) ?: throw LiChatException("kein Konto") },
+        openOnce = { mid ->
+            val acc = account; val cid = chatId()
+            if (acc != null && cid != null) work({ acc.openOnce(cid, mid) }) { bytes, error ->
+                problem = error
+                if (bytes != null) { onceSecret = acc.findMessage(cid, mid)?.optJSONObject("anhang")?.optBoolean("geheim") == true; oncePhoto = Triple(cid, mid, bytes) }
+                Hub.changed()
+            }
+        },
         plus = { sheet = true },
         micStart = {
             if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -354,6 +371,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         mute = { on -> groupWork { acc.mute(p.cid, on) } },
                         receipts = { on -> groupWork { acc.setReceiptsFor(p.cid, on) } },
                         block = { person, on -> groupWork { acc.block(person, on) } },
+                        openAttachment = { info -> actions.open(info) },
+                        openLink = { url -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } },
                         contactPicture = { person -> contactPictureFor = person; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         resetContactPicture = { person -> groupWork { acc.setContactPicture(person, null) } },
                         leave = { groupWork { acc.leave(p.cid) }; page = Page.Chat(p.cid) },
@@ -384,6 +403,18 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
             onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
         photo?.let { bytes -> BackHandler { photo = null }; PhotoViewer(bytes) { photo = null } }
+        pendingPhoto?.let { (uri, bytes) ->
+            io.github.veritasx1.lichat.ui.PhotoSendSheet(bytes, onCancel = { pendingPhoto = null }) { once, secret ->
+                pendingPhoto = null
+                val acc = account; val cid = chatId()
+                if (acc != null && cid != null) work({ media.send(acc, cid, uri, false, once, secret) }) { _, error -> problem = error; Hub.changed() }
+            }
+        }
+        oncePhoto?.let { (cid, mid, bytes) ->
+            io.github.veritasx1.lichat.ui.OnceViewer(bytes, onceSecret, onScreenshot = {
+                account?.let { acc -> work({ acc.reportScreenshot(cid, mid) }) { _, error -> problem = error; Hub.changed() } }
+            }) { oncePhoto = null }
+        }
         if (scanning) io.github.veritasx1.lichat.ui.QrScanner { text ->
             scanning = false
             val acc = account

@@ -24,7 +24,7 @@ class Media(private val context: Context) {
     private val recordFile get() = File(context.cacheDir, "aufnahme.m4a")
 
     /** A picked photo, video or file → prepared and sent. Photos without EXIF and smaller; [asFile]: unchanged as a file. */
-    fun send(account: Account, cid: String, uri: Uri, asFile: Boolean) {
+    fun send(account: Account, cid: String, uri: Uri, asFile: Boolean, once: Boolean = false, secret: Boolean = false) {
         val resolver = context.contentResolver
         val mime = resolver.getType(uri) ?: "application/octet-stream"
         val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
@@ -35,11 +35,11 @@ class Media(private val context: Context) {
             mime == "image/gif" || io.github.veritasx1.lichat.core.Gif.isGif(bytes) -> {
                 // A GIF stays a GIF – animated, looping (Michelle 999f37be): only comments, XMP and other extra blocks go.
                 val gif = io.github.veritasx1.lichat.core.Gif.withoutMetadata(bytes)
-                account.sendAttachment(cid, gif, name.substringBeforeLast('.') + ".gif", "image/gif", "bild", preview = Pictures.photo(gif).second)
+                account.sendAttachment(cid, gif, name.substringBeforeLast('.') + ".gif", "image/gif", "bild", preview = Pictures.photo(gif).second, once = once, secret = secret)
             }
             !asFile && mime.startsWith("image/") -> {
                 val (jpeg, preview) = Pictures.photo(bytes)
-                account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview)
+                account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview, once = once, secret = secret)
             }
             !asFile && mime.startsWith("video/") -> {
                 // Without the container's metadata (Michelle: an MP4 carries the place ©xyz and the recording time).

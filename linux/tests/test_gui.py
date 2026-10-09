@@ -295,6 +295,8 @@ def main():
     ok, bounds = window.bubbles.get_last_child().compute_bounds(window.scroller)
     assert ok and bounds.get_y() + bounds.get_height() <= window.scroller.get_height(), (bounds.get_y(), bounds.get_height(), window.scroller.get_height())
     shot(window, "03e-tippt.png")
+    # … and in the left column the blue wave with „schreibt …“ instead of the preview (Olaf zu 884f7c8a)
+    assert "schreibt …" in " ".join(texts(window.list)), texts(window.list)
 
     # Reading further up, a new message does not pull the view away: „↓ Neue Nachricht“ appears, a click goes to the end.
     window.scroller.get_vadjustment().set_value(0)

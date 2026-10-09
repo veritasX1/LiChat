@@ -28,6 +28,8 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-list > row:selected .lichat-preview, .lichat-list > row:selected .lichat-time { color: rgba(255, 255, 255, 0.85); }
 .lichat-name { font-weight: 600; font-size: 13px; }
 .lichat-preview { font-size: 13px; color: rgba(60, 60, 67, 0.6); }
+.lichat-preview.lichat-list-typing { color: #007aff; }
+.lichat-list > row:selected .lichat-list-typing { color: white; }
 .lichat-time { font-size: 12px; color: rgba(60, 60, 67, 0.6); }
 .lichat-dark .lichat-preview, .lichat-dark .lichat-time { color: rgba(235, 235, 245, 0.6); }
 .lichat-unread { background-color: #0a7aff; border-radius: 999px; min-width: 9px; min-height: 9px; }

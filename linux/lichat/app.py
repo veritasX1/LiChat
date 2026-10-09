@@ -195,6 +195,30 @@ def typing_dots(dark=False, group=False):
     return area
 
 
+def list_typing(label):
+    """„schreibt …“ in the left column (Olaf zu 884f7c8a): three small dots in the accent blue as a wave, breathing when
+    GNOME's animations are off; it stands in for the preview line."""
+    row = Gtk.Box(spacing=6)
+    area = Gtk.DrawingArea(content_width=26, content_height=14, valign=Gtk.Align.CENTER)
+    moving = Gtk.Settings.get_default().get_property("gtk-enable-animations")
+    start = GLib.get_monotonic_time()
+
+    def draw(_area, cr, _w, h):
+        t = ((GLib.get_monotonic_time() - start) / 1000) % 1840
+        selected = (row_of := area.get_ancestor(Gtk.ListBoxRow)) is not None and row_of.is_selected()
+        for i, top in enumerate((380, 580, 760)):
+            strength = max(0.0, 1 - abs(t - top) / 200) if moving else 0.5 - 0.5 * math.cos(2 * math.pi * t / 1840)
+            cr.set_source_rgba(*((1.0, 1.0, 1.0) if selected else (0.0, 0.48, 1.0)), 0.45 + 0.55 * strength)
+            cr.arc(4 + i * 9, h / 2 - (3 * strength if moving else 0), 3, 0, 2 * math.pi)
+            cr.fill()
+    area.set_draw_func(draw)
+    area.add_tick_callback(lambda widget, _clock: (widget.queue_draw(), True)[1])
+    row.append(area)
+    row.append(Gtk.Label(label=label, css_classes=["lichat-preview", "lichat-list-typing"], xalign=0, ellipsize=Pango.EllipsizeMode.END))
+    row.update_property([Gtk.AccessibleProperty.LABEL], [label])
+    return row
+
+
 def typing_label(names):
     """„Anna schreibt …“, „Anna und Bernd schreiben …“, „Anna, Bernd und Erna schreiben …“"""
     if not names:
@@ -867,8 +891,16 @@ class Window(Adw.ApplicationWindow):
             text.append(head)
             preview = (last["text"] if last.get("system") else ("Du: " if last["from"] == self.account.username else "") + Account.describe(last)) \
                 if last else "Noch keine Nachrichten"
-            text.append(Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
-                                  ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
+            typists = self.account.typing_now(cid)
+            if typists:
+                group = len(self.account.members(cid)) > 2 or bool(chat.get("title"))
+                text.append(list_typing("schreibt …" if not group else f"{self.account.display(typists[0])} schreibt …"
+                                        if len(typists) == 1 else f"{len(typists)} Personen schreiben …"))
+                if not getattr(self, "list_typing_timer", 0):
+                    self.list_typing_timer = GLib.timeout_add(TYPING_FRESH * 1000 + 100, self.list_typing_over)
+            else:
+                text.append(Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
+                                      ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
             box.append(text)
             row.set_child(box)
             self.add_row_menu(row, cid)
@@ -876,6 +908,11 @@ class Window(Adw.ApplicationWindow):
             if cid == self.current:
                 self.list.select_row(row)
         self.filling = False
+
+    def list_typing_over(self):
+        self.list_typing_timer = 0
+        self.fill_list()          # the preview comes back (or the wave stays while it is still fresh)
+        return False
 
     def on_row(self, listbox, row):
         if getattr(self, "filling", False) or row is None:

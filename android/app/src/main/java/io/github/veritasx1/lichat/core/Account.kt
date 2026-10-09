@@ -39,6 +39,10 @@ private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
 private val HISTORY_MAGIC = "LICHATV1".toByteArray()
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
+const val ONCE_DAYS = 14      // an unopened one-time picture lapses (fe9f2029; the server deletes it too)
+
+/** The info's overview (43358d35), newest first: one-time pictures never, secret ones carry „geheim“. */
+data class Media(val photos: List<JSONObject>, val links: List<Pair<String, JSONObject>>, val documents: List<JSONObject>, val voice: List<JSONObject>)
 private const val TIMEOUT_S = 20
 val MENTION = Regex("(?<![\\w@])@([a-zA-Z0-9][a-zA-Z0-9._-]{1,31})")
 val EVERYONE = setOf("alle", "all")
@@ -102,6 +106,7 @@ fun isSingleEmoji(text: String): Boolean {
 fun describe(message: JSONObject): String {
     if (message.optBoolean("zurueckgerufen")) return "Nachricht widerrufen"
     val info = message.optJSONObject("anhang") ?: return message.optString("text")
+    if (info.optBoolean("einmal")) return "Foto · Einmal-Ansicht"
     return when (info.optString("art")) {
         "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"
         else -> "Datei: " + info.optString("name")
@@ -1107,8 +1112,9 @@ class Account(val folder: File, private val key: ByteArray) {
     /** Encrypts [data] with its own key, uploads the encrypted bytes, announces it end-to-end. Photos come already
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
-                       preview: ByteArray? = null): JSONObject {
+                       preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
+        if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
         if (data.size > ATTACHMENT_MAX) throw LiChatException("Anhang zu groß (höchstens 100 MB)")
         val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -1117,12 +1123,14 @@ class Account(val folder: File, private val key: ByteArray) {
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
         cipher.updateAAD(ATTACHMENT_MAGIC)
         val sealed = nonce + cipher.doFinal(data)
-        val id = JSONObject(String(server.raw("PUT", "/v1/anhaenge", sealed))).getString("id")
+        val people = members(cid).count { it != username }.coerceAtLeast(1)
+        val id = JSONObject(String(server.raw("PUT", if (once) "/v1/anhaenge?einmal=$people" else "/v1/anhaenge", sealed))).getString("id")
         val info = JSONObject().put("id", id).put("schluessel", b64(key)).put("sha256", sha256(sealed)).put("name", name.take(200))
             .put("mime", mime.take(100)).put("groesse", data.size).put("art", kind)
         durationS?.let { info.put("dauer", Math.round(it * 10) / 10.0) }
-        preview?.let { info.put("vorschau", b64(it)) }
-        keepSealed(id, sealed)
+        if (once) info.put("einmal", true)            // no preview, nothing kept – the sender cannot open it either
+        else { preview?.let { info.put("vorschau", b64(it)) }; keepSealed(id, sealed) }
+        if (secret) info.put("geheim", true)
         val at = System.currentTimeMillis() / 1000
         val message = JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info).put("mid", newMid()).put("status", "wartet")
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
@@ -1147,6 +1155,59 @@ class Account(val folder: File, private val key: ByteArray) {
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(unb64(info.getString("schluessel")), "AES"), GCMParameterSpec(128, sealed, 0, 12))
         cipher.updateAAD(ATTACHMENT_MAGIC)
         return cipher.doFinal(sealed, 12, sealed.size - 12)
+    }
+
+    /** A one-time picture: "eigen" (I sent it), "neu", "geoeffnet" or "abgelaufen" (14 days unopened); else null. */
+    fun onceState(message: JSONObject, nowS: Long = System.currentTimeMillis() / 1000): String? {
+        if (message.optJSONObject("anhang")?.optBoolean("einmal") != true) return null
+        return when {
+            message.optString("from") == username -> "eigen"
+            message.has("geoeffnet") -> "geoeffnet"
+            nowS - message.optLong("at") > ONCE_DAYS * 86400L -> "abgelaufen"
+            else -> "neu"
+        }
+    }
+
+    /** The one-time picture's bytes – only in memory, once: then marked opened here, my other devices drop it, the sender
+     *  sees „Geöffnet“, and the server deletes it when every other person has opened it. */
+    fun openOnce(cid: String, mid: String): ByteArray {
+        val message = findMessage(cid, mid)
+        if (message == null || onceState(message) != "neu") throw LiChatException("Dieses Einmal-Bild lässt sich nicht mehr öffnen")
+        val info = message.getJSONObject("anhang")
+        val sealed = try { server.raw("GET", "/v1/anhaenge/${info.getString("id")}") } catch (e: LiChatException) {
+            if (e.message?.let { "(404)" in it || "(410)" in it } != true) throw e        // offline: try again later
+            synchronized(lock) { message.put("geoeffnet", System.currentTimeMillis() / 1000); save() }
+            throw LiChatException("Dieses Einmal-Bild ist nicht mehr da")
+        }
+        if (sha256(sealed) != info.getString("sha256")) throw LiChatException("Anhang beschädigt oder verändert")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(unb64(info.getString("schluessel")), "AES"), GCMParameterSpec(128, sealed, 0, 12))
+        cipher.updateAAD(ATTACHMENT_MAGIC)
+        val data = cipher.doFinal(sealed, 12, sealed.size - 12)
+        synchronized(lock) { message.put("geoeffnet", System.currentTimeMillis() / 1000); save() }
+        runCatching { server.call("POST", "/v1/anhaenge/${info.getString("id")}/gesehen", JSONObject()) }   // lapses after 14 days anyway
+        groupMessage(cid, JSONObject().put("t", "einmal_geoeffnet").put("mid", mid), null)
+        return data
+    }
+
+    /** The phone saw a screenshot while a one-time picture was open: a fixed line for everyone in the chat. */
+    fun reportScreenshot(cid: String, mid: String) =
+        groupMessage(cid, JSONObject().put("t", "bildschirmfoto").put("mid", mid), "Du hast ein Bildschirmfoto vom Einmal-Bild gemacht.")
+
+    fun media(cid: String): Media {
+        val photos = mutableListOf<JSONObject>(); val links = mutableListOf<Pair<String, JSONObject>>()
+        val documents = mutableListOf<JSONObject>(); val voice = mutableListOf<JSONObject>()
+        val list = chat(cid).getJSONArray("messages")
+        for (k in list.length() - 1 downTo 0) {
+            val m = list.getJSONObject(k)
+            if (m.optBoolean("system") || m.optBoolean("zurueckgerufen") || m.optBoolean("geloescht")) continue
+            val info = m.optJSONObject("anhang")
+            if (info != null) {
+                if (info.optBoolean("einmal")) continue
+                when (info.optString("art")) { "bild", "video" -> photos.add(m); "sprache" -> voice.add(m); else -> documents.add(m) }
+            } else findLinks(m.optString("text")).filter { it.target.startsWith("http://") || it.target.startsWith("https://") }.forEach { links.add(it.target to m) }
+        }
+        return Media(photos, links, documents, voice)
     }
 
     // ------------------------------------------------------------------------------------------ profile pictures
@@ -1470,6 +1531,20 @@ class Account(val folder: File, private val key: ByteArray) {
                         }
                         return listOf(News(cid, News.Kind.Edited, from = sender, received = at))
                     }
+                    "einmal_geoeffnet" -> {
+                        val target = findMessage(cid, data.optString("mid"))?.takeIf { it.optJSONObject("anhang")?.optBoolean("einmal") == true } ?: return emptyList()
+                        if (sender == username) {          // opened on another of my devices: gone here too
+                            target.put("geoeffnet", System.currentTimeMillis() / 1000)
+                            File(File(folder, "anhaenge"), target.getJSONObject("anhang").optString("id")).delete()
+                        } else if (target.optString("from") == username)
+                            (target.optJSONObject("geoeffnet_von") ?: JSONObject().also { target.put("geoeffnet_von", it) }).put(sender, System.currentTimeMillis() / 1000)
+                        return listOf(News(cid, News.Kind.Settings))
+                    }
+                    "bildschirmfoto" -> {
+                        val text = (if (sender == username) "Du hast" else "${display(sender)} hat") + " ein Bildschirmfoto vom Einmal-Bild gemacht."
+                        system(chat, text)
+                        return listOf(News(cid, News.Kind.System, text = text, received = at))
+                    }
                     "reaktion" -> {
                         val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
                         val emoji = data.optString("emoji").trim()
@@ -1507,6 +1582,8 @@ class Account(val folder: File, private val key: ByteArray) {
                             info.optString("vorschau").length <= 64 * 1024
                         if (!good) return listOf(News(cid, News.Kind.Problem, text = "Anhang von $sender unvollständig – nicht übernommen"))
                         info.put("name", info.optString("name", "Datei").take(200).replace('/', '_'))
+                        for (flag in listOf("einmal", "geheim")) if (data.optBoolean(flag) && info.optString("art") == "bild") info.put(flag, true)
+                        if (info.optBoolean("einmal")) info.remove("vorschau")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", "").put("at", sent).put("anhang", info)
                         typingSeen[cid]?.remove(sender)

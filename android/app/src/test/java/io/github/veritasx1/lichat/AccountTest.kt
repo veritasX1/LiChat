@@ -293,6 +293,47 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(cli("anna3", "abholen").contains("Ohne Tablet"))
     }
 
+    /** fe9f2029 + f9e3f055 + 43358d35: a one-time picture from Ubuntu (CLI), opened once on the phone, then gone – also on
+     *  the server; secret pictures keep their flag; the overview never lists one-time pictures. */
+    @Test
+    fun oncePictureSecretAndMedia() {
+        val anna = person("anna"); val erna = person("erna")
+        assertTrue(cli("bernd", "register", url, invites.removeFirst(), "bernd").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd", "erna"))
+        cli("bernd", "abholen"); erna.fetch()
+        val photo = File(root, "einmal.png")
+        ProcessBuilder("python3", "-c", "import sys; from PIL import Image; Image.new('RGB', (64, 48), (200, 60, 60)).save(sys.argv[1])", photo.absolutePath).start().waitFor()
+        assertTrue(cli("bernd", "datei", cid.take(8), photo.absolutePath, "--einmal").contains("Einmal-Ansicht"))
+        val news = anna.fetch().filter { it.attachment != null }
+        assertEquals("Foto · Einmal-Ansicht", news.single().text)
+        assertFalse(news.single().attachment!!.has("vorschau"))
+        val message = anna.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }
+        assertEquals("neu", anna.onceState(message))
+        assertEquals("abgelaufen", anna.onceState(message, System.currentTimeMillis() / 1000 + 15 * 86400))
+        val mid = message.getString("mid")
+        assertTrue(anna.openOnce(cid, mid).size > 100)
+        assertEquals("geoeffnet", anna.onceState(message))
+        try { anna.openOnce(cid, mid); throw AssertionError("nur einmal") } catch (e: LiChatException) { }
+        assertTrue(cli("bernd", "anhang", cid.take(8), "1", root.absolutePath).contains("nur auf dem Handy"))
+        erna.fetch()
+        erna.openOnce(cid, mid)
+        val id = message.getJSONObject("anhang").getString("id")
+        assertFalse("vom Server gelöscht", File(root, "server/anhaenge/$id").exists())
+        anna.reportScreenshot(cid, mid)
+        assertTrue(erna.fetch().any { it.text == "anna hat ein Bildschirmfoto vom Einmal-Bild gemacht." })
+        // secret + overview
+        anna.sendAttachment(cid, byteArrayOf(1, 2, 3), "geheim.jpg", "image/jpeg", "bild", preview = byteArrayOf(4, 5), secret = true)
+        anna.send(cid, "Plan auf https://example.org/plan.")
+        anna.sendAttachment(cid, byteArrayOf(9), "Plan.pdf", "application/pdf", "datei")
+        erna.fetch()
+        val media = erna.media(cid)
+        assertEquals(1, media.photos.size)
+        assertTrue(media.photos[0].getJSONObject("anhang").optBoolean("geheim"))
+        assertEquals(listOf("https://example.org/plan"), media.links.map { it.first })
+        assertEquals(listOf("Plan.pdf"), media.documents.map { it.getJSONObject("anhang").getString("name") })
+        try { anna.sendAttachment(cid, byteArrayOf(1), "a.pdf", "application/pdf", "datei", once = true); throw AssertionError("nur Fotos") } catch (e: LiChatException) { }
+    }
+
     /** Michelle's Mac points: unread marker + „als ungelesen“, receipts per chat, blocking + filters, „Zuletzt gelöscht“. */
     @Test
     fun macPoints() {
