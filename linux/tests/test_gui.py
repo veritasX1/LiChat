@@ -213,6 +213,14 @@ def main():
     assert not window.reply_line.get_visible()
     shot(window, "03d-antwort-reaktion.png")
 
+    # „+“ (a7d9d987): the message menu offers GTK's emoji chooser; a picked emoji is my reaction.
+    window.message_menu(cid, prima, window.bubbles.get_last_child())
+    settle(0.2)
+    chooser = next(w for w in walk(window.open_menu) if isinstance(w, Gtk.MenuButton)).get_popover()
+    assert isinstance(chooser, Gtk.EmojiChooser)
+    chooser.emit("emoji-picked", "🦄")
+    until(lambda: any((m.get("reaktionen") or {}).get("anna") == "🦄" for m in anna.chats[cid]["messages"]))
+
     # „… tippt“ (card 884f7c8a): off by default; with both switched on Bernd's typing shows as a grey „•••“ bubble.
     assert not window.lookup_action("tippanzeige").get_state().get_boolean()
     window.lookup_action("tippanzeige").change_state(GLib.Variant.new_boolean(True))

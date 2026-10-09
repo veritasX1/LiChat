@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertIsOff
@@ -123,6 +124,18 @@ httpd.serve_forever()
     }
 
     /** Card 884f7c8a / 0c01f599: Bernd types – „•••“ at the very bottom, in view (the list is anchored at its end). */
+    /** „+“ (a7d9d987): the keyboard opens, the first emoji typed is the reaction. */
+    @Test
+    fun anyEmoji() {
+        var reacted = ""
+        val m = anna.chat(cid).getJSONArray("messages").getJSONObject(1)
+        shot("2g-plus") { io.github.veritasx1.lichat.ui.MessageMenu(m, anna, true, null, {}, { reacted = it }, {}, {}, {}) }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Anderes Emoji")).performClick()
+        compose.onNodeWithText("Emoji wählen:").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("🦄")
+        org.junit.Assert.assertEquals("🦄", reacted)
+    }
+
     @Test
     fun typing() {
         anna.typingIndicator = true; bernd.typingIndicator = true

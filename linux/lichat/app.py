@@ -819,6 +819,17 @@ class Window(Adw.ApplicationWindow):
                                 tooltip_text="Zurücknehmen" if emoji == mine else "Reagieren")
             button.connect("clicked", lambda _b, e=emoji: (popover.popdown(), self.react(cid, message["mid"], "" if e == mine else e)))
             row.append(button)
+        if mine and mine not in self.TAPBACKS:
+            # My own emoji from „+“ – shown chosen, a click takes it back.
+            chosen = Gtk.Button(label=mine, css_classes=["flat", "lichat-tapback", "lichat-tapback-on"], tooltip_text="Zurücknehmen")
+            chosen.connect("clicked", lambda *_: (popover.popdown(), self.react(cid, message["mid"], "")))
+            row.append(chosen)
+        # „+“: any emoji (Olaf 09.10., card a7d9d987) – GTK's own emoji chooser, like the Mac's.
+        more = Gtk.MenuButton(label="+", css_classes=["flat", "lichat-tapback"], tooltip_text="Anderes Emoji")
+        chooser = Gtk.EmojiChooser()
+        chooser.connect("emoji-picked", lambda _c, e: (popover.popdown(), self.react(cid, message["mid"], e)))
+        more.set_popover(chooser)
+        row.append(more)
         box.append(row)
         answer = Gtk.Button(label="Antworten", css_classes=["flat"])
         answer.connect("clicked", lambda *_: (popover.popdown(), self.start_reply(message)))
