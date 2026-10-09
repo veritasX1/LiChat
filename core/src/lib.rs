@@ -77,6 +77,8 @@ pub enum Received {
     Message { conversation: Vec<u8>, sender: String, payload: Vec<u8> },
     /// Someone changed the conversation's keys or members; nothing to show, the epoch moved on.
     Changed { conversation: Vec<u8> },
+    /// This device was removed from the conversation (test plan S2): it is forgotten here, nothing more can be read.
+    Removed { conversation: Vec<u8>, by: String },
 }
 
 /// A new conversation: the bytes for the other devices' mailboxes.
@@ -214,6 +216,29 @@ impl Device {
         Ok(commit)
     }
 
+    /// Removes these people (every device of theirs) from the conversation; the commit goes to everyone who was in it,
+    /// the removed devices included – they learn it and can read nothing that follows.
+    pub fn remove_members(&mut self, conversation: &[u8], identities: &[String]) -> Result<Vec<u8>, Error> {
+        let group = self.conversations.get_mut(conversation).ok_or(Error::UnknownConversation)?;
+        let own = group.own_leaf_index();
+        let leaves: Vec<LeafNodeIndex> = group
+            .members()
+            .filter(|m| m.index != own)
+            .filter(|m| {
+                BasicCredential::try_from(m.credential.clone())
+                    .map(|c| identities.iter().any(|i| i.as_bytes() == c.identity()))
+                    .unwrap_or(false)
+            })
+            .map(|m| m.index)
+            .collect();
+        if leaves.is_empty() {
+            return Err(Error::Malformed("niemand davon ist im Gespräch".into()));
+        }
+        let (commit, _welcome, _info) = group.remove_members(&self.provider, &self.signer, &leaves).map_err(mls)?;
+        group.merge_pending_commit(&self.provider).map_err(mls)?;
+        commit.tls_serialize_detached().map_err(mls)
+    }
+
     /// Handles one message from the mailbox (application message or commit of a conversation this device is in).
     pub fn receive(&mut self, bytes: &[u8]) -> Result<Received, Error> {
         let message = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;
@@ -229,7 +254,13 @@ impl Device {
                 Ok(Received::Message { conversation, sender, payload: message.into_bytes() })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
+                let removed = staged.self_removed();
                 group.merge_staged_commit(&self.provider, *staged).map_err(mls)?;
+                if removed {
+                    let _ = group.delete(self.provider.storage());
+                    self.conversations.remove(&conversation);
+                    return Ok(Received::Removed { conversation, by: sender });
+                }
                 Ok(Received::Changed { conversation })
             }
             _ => Ok(Received::Changed { conversation }),

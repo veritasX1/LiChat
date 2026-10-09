@@ -147,3 +147,29 @@ fn last_resort_and_owner() {
     let b = erna.start_conversation(&once).unwrap();
     assert!(bernd.join(&b.welcome).is_err(), "gewöhnliches Key-Package zweimal benutzt");
 }
+
+#[test]
+fn remove_a_member() {
+    let mut anna = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let mut erna = Device::new("erna").unwrap();
+    let mut supply = bernd.key_packages(1).unwrap();
+    supply.extend(erna.key_packages(1).unwrap());
+    let started = anna.start_conversation(&supply).unwrap();
+    let cid = started.conversation.clone();
+    bernd.join(&started.welcome).unwrap();
+    erna.join(&started.welcome).unwrap();
+
+    let commit = anna.remove_members(&cid, &["erna".to_string()]).unwrap();
+    assert_eq!(anna.members(&cid).unwrap(), vec!["anna", "bernd"]);
+    assert_eq!(bernd.receive(&commit).unwrap(), Received::Changed { conversation: cid.clone() });
+    assert_eq!(bernd.members(&cid).unwrap(), vec!["anna", "bernd"]);
+    assert_eq!(erna.receive(&commit).unwrap(), Received::Removed { conversation: cid.clone(), by: "anna".into() });
+    assert!(erna.conversations().is_empty());
+
+    // What follows is for Anna and Bernd only – Erna cannot read it any more.
+    let after = anna.encrypt(&cid, b"ohne Erna").unwrap();
+    assert!(matches!(bernd.receive(&after).unwrap(), Received::Message { payload, .. } if payload == b"ohne Erna"));
+    assert!(erna.receive(&after).is_err());
+    assert!(anna.remove_members(&cid, &["niemand".to_string()]).is_err());
+}

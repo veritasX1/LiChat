@@ -284,6 +284,8 @@ class Account:
         text = text.strip()
         if not text:
             raise LiChatError("Leere Nachricht")
+        if self.chats[cid].get("removed"):
+            raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
         at = int(time.time())
         with self.lock:
             packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "text", "text": text, "at": at}))
@@ -293,10 +295,27 @@ class Account:
         answer = self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return answer
 
+    def remove(self, cid, usernames):
+        """Takes these people out of the conversation (test plan S2). The commit reaches everyone who was in it – the
+        removed devices learn it and can read nothing after it."""
+        names = sorted({u for u in usernames if u != self.username})
+        with self.lock:
+            targets = self.targets(cid)
+            commit = self.device.remove_members(bytes.fromhex(cid), names)
+            roster = self.chats[cid]["roster"]
+            for name in names:
+                roster.pop(name, None)
+            self.save()
+        self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(commit))})
+
     def members(self, cid):
+        if self.chats.get(cid, {}).get("removed"):
+            return [self.username]
         return list(self.device.members(bytes.fromhex(cid)))
 
     def safety_code(self, cid):
+        if self.chats.get(cid, {}).get("removed"):
+            return ""
         """Groups of five digits, the same on every member's device (compare in person or by phone)."""
         raw = bytes(self.device.safety_code(bytes.fromhex(cid)))
         return " ".join(f"{int.from_bytes(raw[i:i + 4], 'big') % 100000:05d}" for i in range(0, len(raw) - 3, 4))
@@ -353,7 +372,13 @@ class Account:
     def _take(self, received):
         cid = bytes(received["conversation"]).hex()
         chat = self.chats.setdefault(cid, {"title": "", "roster": {}, "messages": []})
+        if received["kind"] == "removed":
+            chat["removed"] = received["sender"]
+            return [{"chat": cid, "removed": received["sender"]}]
         if received["kind"] != "message":
+            # Keys or members changed: whoever is no longer in the group gets no more packets.
+            members = set(self.members(cid))
+            chat["roster"] = {u: d for u, d in chat["roster"].items() if u in members}
             return []
         sender = received["sender"]
         try:

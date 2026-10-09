@@ -54,6 +54,7 @@ pub struct Owner {
 pub enum Incoming {
     Message { conversation: Vec<u8>, sender: String, payload: Vec<u8> },
     Changed { conversation: Vec<u8> },
+    Removed { conversation: Vec<u8>, by: String },
 }
 
 #[derive(uniffi::Object)]
@@ -121,7 +122,12 @@ impl Device {
         self.with(|d| d.receive(&data)).map(|r| match r {
             Received::Message { conversation, sender, payload } => Incoming::Message { conversation, sender, payload },
             Received::Changed { conversation } => Incoming::Changed { conversation },
+            Received::Removed { conversation, by } => Incoming::Removed { conversation, by },
         })
+    }
+
+    pub fn remove_members(&self, conversation: Vec<u8>, identities: Vec<String>) -> Result<Vec<u8>, CoreError> {
+        self.with(|d| d.remove_members(&conversation, &identities))
     }
 
     pub fn members(&self, conversation: Vec<u8>) -> Result<Vec<String>, CoreError> {

@@ -447,6 +447,11 @@ class Window(Adw.ApplicationWindow):
             self.bubbles.append(bubble)
             previous = m
         self.seen[cid] = len(chat["messages"])
+        if chat.get("removed"):
+            # Taken out of the group: the history stays readable, nothing more can be written.
+            self.bubbles.append(Gtk.Label(label=f"{chat['removed']} hat dich aus dem Gespräch entfernt.", css_classes=["lichat-stamp"]))
+            self.input_line.set_visible(False)
+            self.info.set_visible(False)
         GLib.idle_add(self.scroll_down)
 
     def scroll_down(self):
@@ -459,10 +464,16 @@ class Window(Adw.ApplicationWindow):
         cid = self.current
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
         box.append(Gtk.Label(label=self.account.title(cid), css_classes=["lichat-title"]))
-        for name in self.account.members(cid):
+        members = self.account.members(cid)
+        for name in members:
             row = Gtk.Box(spacing=8)
             row.append(avatar(name, 24, self.account.picture(name)))
-            row.append(Gtk.Label(label=name + (" (ich)" if name == self.account.username else ""), xalign=0))
+            row.append(Gtk.Label(label=name + (" (ich)" if name == self.account.username else ""), xalign=0, hexpand=True))
+            # In a group, someone can be taken out (test plan S2); a conversation of two is simply left alone.
+            if len(members) > 2 and name != self.account.username:
+                out = Gtk.Button(label="Entfernen", css_classes=["flat", "lichat-remove"])
+                out.connect("clicked", lambda _b, who=name: (button.popdown(), self.remove_member(cid, who)))
+                row.append(out)
             box.append(row)
         box.append(Gtk.Label(label="Sicherheitscode", css_classes=["lichat-subtitle"], xalign=0, margin_top=8))
         code = self.account.safety_code(cid).split()
@@ -578,6 +589,16 @@ class Window(Adw.ApplicationWindow):
         self.set_setting("erklaert", True)
         if response == "aus":
             self.activate_action("win.hintergrund", None)
+
+    def remove_member(self, cid, name):
+        account = self.account
+
+        def done(_result, error):
+            self.show_notice(error)
+            self.fill_list()
+            self.show_conversation()
+
+        self.worker.do(lambda: account.remove(cid, [name]), done)
 
     def choose_picture(self):
         dialog = Gtk.FileDialog(title="Profilbild wählen")

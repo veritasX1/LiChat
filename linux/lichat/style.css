@@ -51,6 +51,7 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-empty { font-size: 15px; color: rgba(60, 60, 67, 0.45); }
 .lichat-dark .lichat-empty { color: rgba(235, 235, 245, 0.45); }
 .lichat-notice { font-size: 11px; color: #ff3b30; }
+.lichat-remove { color: #ff3b30; font-size: 12px; min-height: 22px; padding: 0 6px; }
 
 /* ---------- input ---------- */
 .lichat-input { border-radius: 16px; min-height: 30px; border: 1px solid rgba(60, 60, 67, 0.25); background-color: #ffffff; box-shadow: none; padding: 0 10px; }
