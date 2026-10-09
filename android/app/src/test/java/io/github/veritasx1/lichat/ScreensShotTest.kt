@@ -72,7 +72,10 @@ httpd.serve_forever()
         anna.fetch()
         anna.send(cid, "Ja, gern! Ich bringe Kartoffelsalat mit.")
         bernd.fetch()
-        bernd.send(cid, "Super, bis dann 🙂")
+        bernd.fetch()
+        val salad = bernd.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }.getString("mid")
+        bernd.send(cid, "Super, bis dann 🙂", replyTo = salad)
+        bernd.react(cid, salad, "❤️")
         bernd.sendAttachment(cid, ByteArray(48_000), "Einladung.pdf", "application/pdf", "datei")
         bernd.sendAttachment(cid, byteArrayOf(0), "Sprachnachricht.m4a", "audio/mp4", "sprache", durationS = 7.0)
         val picture = android.graphics.Bitmap.createBitmap(1200, 900, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF4FA36B.toInt()) }
@@ -119,33 +122,43 @@ httpd.serve_forever()
 
     @Test
     fun chat() {
-        shot("2-gespraech") { ChatScreen(anna, cid, 0, null, {}, {}, {}) }
+        shot("2-gespraech") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
         compose.onNodeWithText("Super, bis dann 🙂").assertExists()
     }
 
     /** Card 9780f3a0 / b7a191c4: attachments in the bubbles, ⊕ and 🎤 in the empty input line, recording, the ⊕ sheet. */
     @Test
     fun attachments() = shot("2b-anhaenge") {
-        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
+        ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
     }
 
     @Test
     fun recordingVoice() = shot("2c-aufnahme") {
-        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}, recording = 4))
+        ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}, recording = 4))
     }
 
     @Test
     fun attachmentSheet() = shot("2d-anhang-blatt") {
-        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
+        ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
         io.github.veritasx1.lichat.ui.AttachmentSheet({}, {}, {})
     }
 
+    /** Card a7d9d987: long press shows the tapbacks and Antworten/Kopieren. */
     @Test
-    fun chatDark() = shot("2-gespraech-dunkel", dark = true) { ChatScreen(anna, cid, 0, null, {}, {}, {}) }
+    fun messageMenu() {
+        shot("2e-reaktion-menue") {
+            ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> })
+            io.github.veritasx1.lichat.ui.MessageMenu(anna.chat(cid).getJSONArray("messages").getJSONObject(1), "anna", {}, {}, {}, {})
+        }
+        compose.onNodeWithText("Antworten").assertExists()
+    }
+
+    @Test
+    fun chatDark() = shot("2-gespraech-dunkel", dark = true) { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
 
     @Test
     fun groupChat() {
-        shot("3-gruppe") { ChatScreen(anna, group, 0, null, {}, {}, {}) }
+        shot("3-gruppe") { ChatScreen(anna, group, 0, null, {}, {}, { _, _ -> }) }
         compose.onNodeWithText("erna").assertExists()
     }
 

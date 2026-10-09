@@ -83,7 +83,7 @@ def main(argv):
             wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
             try:
                 # Receipts (✓✓) and new profile pictures change nothing to answer – keep waiting.
-                news = [n for n in account.fetch(wait=wait) if not n.get("receipt") and not (command == "warten" and n.get("picture"))]
+                news = [n for n in account.fetch(wait=wait) if not n.get("receipt") and not (command == "warten" and (n.get("picture") or "reaction" in n))]
                 pause = 2
             except LiChatError as error:
                 # Server restarting (502), down (5xx) or no network: „warten“ keeps listening (Michelle – else an instance
@@ -104,6 +104,8 @@ def main(argv):
                 print(f"[{chat}] {item['system']}")
             elif item.get("removed"):
                 print(f"[{chat}] {item['removed']} hat dich aus dem Gespräch entfernt")
+            elif "reaction" in item:
+                print(f"[{chat}] {item['from']} reagiert {item['reaction'] or '(zurückgenommen)'}")
             elif item.get("picture"):
                 print(f"[{chat}] neues Profilbild von {item['picture']}")
             elif item.get("problem"):

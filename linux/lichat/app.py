@@ -338,6 +338,14 @@ class Window(Adw.ApplicationWindow):
         self.pane.append(self.scroller)
         self.notice = Gtk.Label(css_classes=["lichat-notice"], visible=False, margin_bottom=4)
         self.pane.append(self.notice)
+        self.reply_to = None
+        self.reply_line = Gtk.Box(spacing=8, margin_start=16, margin_end=16, margin_top=4, visible=False, css_classes=["lichat-replying"])
+        self.reply_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, css_classes=["lichat-quote"])
+        self.reply_line.append(self.reply_label)
+        cancel = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat", "circular"], tooltip_text="Antwort aufheben")
+        cancel.connect("clicked", lambda *_: self.end_reply())
+        self.reply_line.append(cancel)
+        self.pane.append(self.reply_line)
         line = Gtk.Box(spacing=8, margin_start=16, margin_end=16, margin_bottom=12, margin_top=4)
         # ⊕ like Messages on the Mac: a photo, a video, a voice recording or any file (card 9780f3a0).
         attach = Gtk.Button(icon_name="list-add-symbolic", css_classes=["lichat-tool", "lichat-attach"], tooltip_text="Anhang …",
@@ -459,6 +467,13 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(Gtk.Label(label=when_long(m["at"]), css_classes=["lichat-stamp"]))
             if group and not mine and (previous is None or previous["from"] != m["from"]):
                 self.bubbles.append(Gtk.Label(label=m["from"], css_classes=["lichat-sender"], xalign=0))
+            if m.get("antwort"):
+                # The message this answers, small above the bubble (Olaf 09.10., card a7d9d987).
+                quoted = m["antwort"]
+                who = "Du" if quoted.get("from") == self.account.username else quoted.get("from", "")
+                self.bubbles.append(Gtk.Label(label=f"↩ {who}: {quoted.get('text', '')}", css_classes=["lichat-quote"], wrap=True,
+                                              max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
+                                              halign=Gtk.Align.END if mine else Gtk.Align.START))
             if m.get("anhang"):
                 piece = self.attachment_bubble(m["anhang"], mine)
             else:
@@ -473,7 +488,22 @@ class Window(Adw.ApplicationWindow):
                 row.append(face)
                 row.append(piece)
                 piece = row
+            if m.get("mid"):
+                # Right click (or a long press on a touch screen): tapbacks, Antworten, Kopieren – like Messages on the Mac.
+                for gesture in (Gtk.GestureClick(button=3), Gtk.GestureLongPress()):
+                    gesture.connect("pressed" if isinstance(gesture, Gtk.GestureClick) else "pressed",
+                                    lambda g, *a, msg=m, w=piece: self.message_menu(cid, msg, w))
+                    piece.add_controller(gesture)
             self.bubbles.append(piece)
+            reactions = m.get("reaktionen") or {}
+            if reactions:
+                counts = {}
+                for emoji in reactions.values():
+                    counts[emoji] = counts.get(emoji, 0) + 1
+                badge = Gtk.Label(label=" ".join(f"{e} {n}" if n > 1 else e for e, n in counts.items()), css_classes=["lichat-reactions"],
+                                  halign=Gtk.Align.END if mine else Gtk.Align.START,
+                                  tooltip_text=", ".join(f"{'Du' if u == self.account.username else u} {e}" for u, e in reactions.items()))
+                self.bubbles.append(badge)
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
@@ -572,9 +602,11 @@ class Window(Adw.ApplicationWindow):
                 return cid
         else:
             cid = self.current
+            reply = self.reply_to["mid"] if getattr(self, "reply_to", None) else None
+            self.end_reply()
 
             def job():
-                account.send(cid, text)
+                account.send(cid, text, reply_to=reply)
                 return cid
 
         self.input.set_sensitive(False)
@@ -656,6 +688,46 @@ class Window(Adw.ApplicationWindow):
             self.activate_action("win.hintergrund", None)
 
     # ------------------------------------------------------------------------------------------ ticks (card db70d358)
+
+    TAPBACKS = ("❤️", "👍", "👎", "😂", "‼️", "❓")
+
+    def message_menu(self, cid, message, widget):
+        mine = (message.get("reaktionen") or {}).get(self.account.username, "")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=8, margin_end=8, margin_top=8, margin_bottom=8)
+        row = Gtk.Box(spacing=2)
+        popover = Gtk.Popover(child=box, has_arrow=True)
+        for emoji in self.TAPBACKS:
+            button = Gtk.Button(label=emoji, css_classes=["flat", "lichat-tapback"] + (["lichat-tapback-on"] if emoji == mine else []),
+                                tooltip_text="Zurücknehmen" if emoji == mine else "Reagieren")
+            button.connect("clicked", lambda _b, e=emoji: (popover.popdown(), self.react(cid, message["mid"], "" if e == mine else e)))
+            row.append(button)
+        box.append(row)
+        answer = Gtk.Button(label="Antworten", css_classes=["flat"])
+        answer.connect("clicked", lambda *_: (popover.popdown(), self.start_reply(message)))
+        box.append(answer)
+        if message.get("text"):
+            copy = Gtk.Button(label="Kopieren", css_classes=["flat"])
+            copy.connect("clicked", lambda *_: (popover.popdown(), self.get_clipboard().set(message["text"])))
+            box.append(copy)
+        popover.set_parent(widget)
+        popover.popup()
+        self.open_menu = popover
+
+    def react(self, cid, mid, emoji):
+        account = self.account
+        self.worker.do(lambda: account.react(cid, mid, emoji), lambda _r, error: (self.show_notice(error), self.show_conversation()))
+
+    def start_reply(self, message):
+        """Answering: a line above the input with the quote, ✕ takes it back."""
+        self.reply_to = message
+        who = "dich" if message["from"] == self.account.username else message["from"]
+        self.reply_label.set_label(f"Antwort an {who}: {Account.describe(message) or message.get('text', '')}")
+        self.reply_line.set_visible(True)
+        self.input.grab_focus()
+
+    def end_reply(self):
+        self.reply_to = None
+        self.reply_line.set_visible(False)
 
     def tick_line(self, cid, message):
         """Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with

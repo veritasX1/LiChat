@@ -186,6 +186,25 @@ def main():
         [w.get_parent().get_tooltip_text() for w in marks]
     shot(window, "03c-haken.png")
 
+    # Replies and reactions (card a7d9d987): Bernd answers Anna's message and reacts; Anna answers back from the menu.
+    asked = [m for m in bernd.chats[cid]["messages"] if m.get("text") == "Ja, gern! Ich bringe Kartoffelsalat mit."][0]
+    bernd.send(cid, "Prima!", reply_to=asked["mid"])
+    bernd.react(cid, asked["mid"], "❤️")
+    until(lambda: any(m.get("antwort") for m in anna.chats[cid]["messages"]))
+    until(lambda: any(m.get("reaktionen") for m in anna.chats[cid]["messages"]))
+    window.show_conversation()
+    settle(0.3)
+    assert any("↩ Du: Ja, gern!" in (t or "") for t in texts(window.bubbles))
+    assert "❤️" in texts(window.bubbles)
+    prima = [m for m in anna.chats[cid]["messages"] if m.get("text") == "Prima!"][0]
+    window.start_reply(prima)
+    window.input.set_text("Freut mich")
+    window.send()
+    until(lambda: any(m.get("text") == "Freut mich" for m in anna.chats[cid]["messages"]))
+    assert [m for m in anna.chats[cid]["messages"] if m.get("text") == "Freut mich"][0]["antwort"]["mid"] == prima["mid"]
+    assert not window.reply_line.get_visible()
+    shot(window, "03d-antwort-reaktion.png")
+
     # The safety code in the info popover equals Bernd's.
     window.fill_info(window.info)
     window.info.popup()
@@ -271,7 +290,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 6
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 8
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

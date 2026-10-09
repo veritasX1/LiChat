@@ -291,5 +291,37 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(error!!.message!!.contains("502"))
         page.close()
     }
+
+    /** Card a7d9d987: a reply carries its quote, a reaction is one per person – phone and Ubuntu understand each other. */
+    @Test
+    fun repliesAndReactionsAcrossPlatforms() {
+        val anna = person("anna")
+        assertTrue(cli("bernd", "register", url, invites.removeFirst(), "bernd").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd"))
+        cli("bernd", "abholen")
+        anna.send(cid, "Kommst du Samstag?")
+        cli("bernd", "abholen")
+        val script = """
+import sys
+sys.path.insert(0, "${File(repo, "linux").absolutePath}")
+from lichat.account import Account, default_folder
+a = Account(default_folder("bernd"))
+asked = [m for m in a.chats["$cid"]["messages"] if m.get("text") == "Kommst du Samstag?"][0]
+a.send("$cid", "Ja!", reply_to=asked["mid"])
+a.react("$cid", asked["mid"], "👍")
+"""
+        val process = ProcessBuilder("python3", "-c", script).redirectErrorStream(true)
+            .apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath }.start()
+        val out = process.inputStream.bufferedReader().readText()
+        assertEquals(out, 0, process.waitFor())
+        anna.fetch()
+        val list = anna.chat(cid).getJSONArray("messages")
+        val answer = (0 until list.length()).map { list.getJSONObject(it) }.first { it.optString("text") == "Ja!" }
+        assertEquals("Kommst du Samstag?", answer.getJSONObject("antwort").getString("text"))
+        val asked = (0 until list.length()).map { list.getJSONObject(it) }.first { it.optString("text") == "Kommst du Samstag?" }
+        assertEquals("👍", asked.getJSONObject("reaktionen").getString("bernd"))
+        anna.react(cid, answer.getString("mid"), "❤️")
+        assertTrue(cli("bernd", "abholen").contains("anna reagiert ❤️"))
+    }
 }
 
