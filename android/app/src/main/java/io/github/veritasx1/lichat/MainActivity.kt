@@ -219,10 +219,13 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
         if (acc == null) {
-            SetupScreen(busy, problem) { server, invite, name ->
+            SetupScreen(busy, problem) { server, invite, name, first, last ->
                 busy = true
                 problem = null
-                work({ Account.register(Hub.folder(context), server, invite, name, vault.create(Hub.folder(context))) }) { created, error ->
+                work({
+                    Account.register(Hub.folder(context), server, invite, name, vault.create(Hub.folder(context)))
+                        .also { if (first.isNotEmpty() || last.isNotEmpty()) it.setName(first, last) }
+                }) { created, error ->
                     busy = false
                     problem = error
                     if (created != null) {
@@ -280,7 +283,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onPicture = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onUnrestrict = { askBattery() }, onBack = { page = Page.List }, notifying = notifying,
                     onNotifications = { openNotificationSettings() }, receipts = receipts,
-                    onReceipts = { on -> receipts = on; work({ acc.readReceipts = on }) { _, _ -> Hub.changed() } })
+                    onReceipts = { on -> receipts = on; work({ acc.readReceipts = on }) { _, _ -> Hub.changed() } },
+                    onName = { first, last -> work({ acc.setName(first, last) }) { _, error -> problem = error; Hub.changed() } })
             }
         }
         if (sheet) AttachmentSheet(

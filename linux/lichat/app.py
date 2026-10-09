@@ -232,12 +232,26 @@ class Window(Adw.ApplicationWindow):
                              wrap=True, justify=Gtk.Justification.CENTER, css_classes=["lichat-subtitle"], margin_bottom=8))
         self.f_server = Gtk.Entry(placeholder_text="Server (https://…)", css_classes=["lichat-field"])
         self.f_invite = Gtk.Entry(placeholder_text="Einladung", css_classes=["lichat-field"])
-        self.f_name = Gtk.Entry(placeholder_text="Benutzername (a–z, 0–9)", css_classes=["lichat-field"])
-        for entry in (self.f_server, self.f_invite, self.f_name):
+        # Name as people write it (Olaf: capitals, spaces) – the user name is made from it, and can still be changed.
+        self.f_first = Gtk.Entry(placeholder_text="Vorname", css_classes=["lichat-field"])
+        self.f_last = Gtk.Entry(placeholder_text="Nachname (freiwillig)", css_classes=["lichat-field"])
+        self.f_name = Gtk.Entry(placeholder_text="Benutzername", css_classes=["lichat-field"])
+        self.name_touched = False
+
+        def suggest(*_):
+            if not self.name_touched:
+                self.f_name.set_text(Account.suggest_username(self.f_first.get_text(), self.f_last.get_text()))
+        self.f_first.connect("changed", suggest)
+        self.f_last.connect("changed", suggest)
+        self.f_name.connect("changed", lambda e: setattr(self, "name_touched", self.name_touched or (
+            e.has_focus() and e.get_text() != Account.suggest_username(self.f_first.get_text(), self.f_last.get_text()))))
+        for entry in (self.f_server, self.f_invite, self.f_first, self.f_last, self.f_name):
             box.append(entry)
             entry.connect("activate", lambda *_: self.sign_in())
         self.setup_note = Gtk.Label(css_classes=["lichat-notice"], wrap=True, justify=Gtk.Justification.CENTER,
                                     label=getattr(self, "problem", ""))
+        box.append(Gtk.Label(label="Der Benutzername ist deine Kennung zum Finden (klein, ohne Leerzeichen). Deinen Namen sehen nur deine Gesprächspartner.",
+                             wrap=True, max_width_chars=44, css_classes=["lichat-subtitle"], xalign=0))
         box.append(self.setup_note)
         self.setup_button = Gtk.Button(label="Anmelden", css_classes=["lichat-blue"], halign=Gtk.Align.END)
         self.setup_button.connect("clicked", lambda *_: self.sign_in())
@@ -248,7 +262,9 @@ class Window(Adw.ApplicationWindow):
         self.get_content().add_top_bar(Adw.HeaderBar(show_title=False, css_classes=["lichat-bar"]))
 
     def sign_in(self):
-        server, invite, name = self.f_server.get_text().strip(), self.f_invite.get_text().strip(), self.f_name.get_text().strip()
+        server, invite = self.f_server.get_text().strip(), self.f_invite.get_text().strip()
+        name = Account.suggest_username(self.f_name.get_text()) or Account.suggest_username(self.f_first.get_text(), self.f_last.get_text())
+        first, last = self.f_first.get_text().strip(), self.f_last.get_text().strip()
         if not (server and invite and name):
             self.setup_note.set_label("Bitte alle drei Felder ausfüllen.")
             return
@@ -258,7 +274,10 @@ class Window(Adw.ApplicationWindow):
 
         def job():
             key = store.create(folder) if store else None
-            return Account.register(folder, server, invite, name, key)
+            account = Account.register(folder, server, invite, name, key)
+            if first or last:
+                account.set_name(first, last)
+            return account
 
         def done(account, error):
             self.setup_button.set_sensitive(True)
@@ -285,6 +304,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Im Hintergrund empfangen und beim Anmelden starten", "win.hintergrund")
         menu.append("Absender und Text in Mitteilungen zeigen", "win.vorschau")
         menu.append("Lesebestätigungen senden", "win.lesebestaetigungen")
+        menu.append("Name ändern …", "win.name")
         menu.append("Profilbild wählen …", "win.bild")
         menu.append("LiChat beenden", "win.beenden")
         for name in ("hintergrund", "vorschau"):
@@ -295,6 +315,9 @@ class Window(Adw.ApplicationWindow):
         receipts = Gio.SimpleAction.new_stateful("lesebestaetigungen", None, GLib.Variant.new_boolean(self.account.read_receipts))
         receipts.connect("change-state", self.on_receipts)
         self.add_action(receipts)
+        name_action = Gio.SimpleAction.new("name", None)
+        name_action.connect("activate", lambda *_: self.edit_name())
+        self.add_action(name_action)
         picture_action = Gio.SimpleAction.new("bild", None)
         picture_action.connect("activate", lambda *_: self.choose_picture())
         self.add_action(picture_action)
@@ -466,7 +489,7 @@ class Window(Adw.ApplicationWindow):
             if previous is None or m["at"] - previous["at"] > GAP:
                 self.bubbles.append(Gtk.Label(label=when_long(m["at"]), css_classes=["lichat-stamp"]))
             if group and not mine and (previous is None or previous["from"] != m["from"]):
-                self.bubbles.append(Gtk.Label(label=m["from"], css_classes=["lichat-sender"], xalign=0))
+                self.bubbles.append(Gtk.Label(label=self.account.display(m["from"]), css_classes=["lichat-sender"], xalign=0))
             if m.get("antwort"):
                 # The message this answers, small above the bubble (Olaf 09.10., card a7d9d987).
                 quoted = m["antwort"]
@@ -545,7 +568,8 @@ class Window(Adw.ApplicationWindow):
         for name in members:
             row = Gtk.Box(spacing=8)
             row.append(avatar(name, 24, self.account.picture(name)))
-            row.append(Gtk.Label(label=name + (" (ich)" if name == self.account.username else ""), xalign=0, hexpand=True))
+            row.append(Gtk.Label(label=self.account.display(name) + (" (ich)" if name == self.account.username else ""),
+                                 tooltip_text=name, xalign=0, hexpand=True))
             # In a group, someone can be taken out (test plan S2); a conversation of two is simply left alone.
             if len(members) > 2 and name != self.account.username:
                 out = Gtk.Button(label="Entfernen", css_classes=["flat", "lichat-remove"])
@@ -902,6 +926,29 @@ class Window(Adw.ApplicationWindow):
         action.set_state(value)
         account = self.account
         self.worker.do(lambda: account.set_read_receipts(value.get_boolean()), lambda *_: self.show_conversation())
+
+    def edit_name(self):
+        """Vorname and Nachname as they should be shown – sent end-to-end into every conversation."""
+        mine = self.account.profiles.get("name") or {}
+        dialog = Adw.AlertDialog(heading="Dein Name", body=f"So sehen dich deine Gesprächspartner. Dein Benutzername bleibt „{self.account.username}“.")
+        fields = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        first = Gtk.Entry(text=mine.get("vorname", ""), placeholder_text="Vorname")
+        last = Gtk.Entry(text=mine.get("nachname", ""), placeholder_text="Nachname")
+        fields.append(first)
+        fields.append(last)
+        dialog.set_extra_child(fields)
+        dialog.add_response("abbrechen", "Abbrechen")
+        dialog.add_response("sichern", "Sichern")
+        dialog.set_response_appearance("sichern", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("sichern")
+        account = self.account
+
+        def chosen(_d, response):
+            if response == "sichern":
+                self.worker.do(lambda: account.set_name(first.get_text(), last.get_text()), lambda *_: self.fill_list())
+        dialog.connect("response", chosen)
+        dialog.present(self)
+        self.name_dialog = dialog
 
     def choose_picture(self, cid=None):
         self.picture_for = cid      # None: my profile picture; a chat: that group's picture

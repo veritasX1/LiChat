@@ -50,6 +50,14 @@ data class News(val chat: String?, val kind: Kind, val from: String = "", val te
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
+/** „Erika Mustermann“ → „erika.mustermann“: a user name the server accepts, made from the name instead of refusing input. */
+fun suggestUsername(first: String, last: String = ""): String {
+    var text = "$first $last".trim().lowercase()
+    listOf("ä" to "ae", "ö" to "oe", "ü" to "ue", "ß" to "ss").forEach { (a, b) -> text = text.replace(a, b) }
+    text = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKD).replace(Regex("[^\\p{ASCII}]"), "")
+    return text.replace(Regex("[^a-z0-9._-]+"), ".").trim('.', '_', '-').replace(Regex("\\.{2,}"), ".").take(32)
+}
+
 fun describe(message: JSONObject): String {
     val info = message.optJSONObject("anhang") ?: return message.optString("text")
     return when (info.optString("art")) {
@@ -255,6 +263,7 @@ class Account(val folder: File, private val key: ByteArray) {
             profiles.optString("me").takeIf { profiles.get("me") != JSONObject.NULL && it.isNotEmpty() }?.let { me ->
                 packets.add(device.encrypt(started.conversation, payload(JSONObject().put("t", "profile").put("bild", me))))
             }
+            profiles.optJSONObject("name")?.let { packets.add(device.encrypt(started.conversation, payload(JSONObject(it.toString()).put("t", "name")))) }
             save()
             targets = targets(cid)
         }
@@ -314,6 +323,7 @@ class Account(val folder: File, private val key: ByteArray) {
             val payloads = mutableListOf(JSONObject().put("t", "roster").put("devices", roster).put("title", chat.optString("title")))
             (chat.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "gruppenbild").put("bild", it)) }
             (profiles.opt("me") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "profile").put("bild", it)) }
+            profiles.optJSONObject("name")?.let { payloads.add(JSONObject(it.toString()).put("t", "name")) }
             payloads.forEach { packets.add(device.encrypt(cid.unhex(), payload(it))) }
             save()
             everyone = targets(cid)
@@ -512,7 +522,7 @@ class Account(val folder: File, private val key: ByteArray) {
         chat.optString("title").takeIf { it.isNotEmpty() }?.let { return it }
         val roster = chat.getJSONObject("roster").keys().asSequence().toList()
         val names = roster.filter { it != username }.ifEmpty { runCatching { members(cid).filter { it != username } }.getOrDefault(emptyList()) }
-        return names.sorted().joinToString(", ").ifEmpty { "(leer)" }
+        return names.map { display(it) }.sorted().joinToString(", ").ifEmpty { "(leer)" }
     }
 
     fun others(cid: String): List<String> = chat(cid).getJSONObject("roster").keys().asSequence().filter { it != username }.toList()
@@ -565,6 +575,27 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     // ------------------------------------------------------------------------------------------ profile pictures
+
+    /** What people see (Olaf 09.10.): „Vorname Nachname“ when that person told us end-to-end, else the user name. */
+    fun display(user: String): String {
+        val name = if (user == username) profiles.optJSONObject("name") else profiles.optJSONObject("names")?.optJSONObject(user)
+        return listOfNotNull(name?.optString("vorname"), name?.optString("nachname")).filter { it.isNotBlank() }.joinToString(" ").ifBlank { user }
+    }
+
+    /** My first and last name – capitals, spaces, umlauts – sent end-to-end into every conversation. */
+    fun setName(first: String, last: String) {
+        val name = JSONObject().put("vorname", first.trim().take(40)).put("nachname", last.trim().take(40))
+        val sends = mutableListOf<Pair<List<String>, ByteArray>>()
+        synchronized(lock) {
+            profiles.put("name", name)
+            for (cid in chats.keys()) {
+                if (chat(cid).optString("removed").isNotEmpty()) continue
+                sends.add(targets(cid) to device.encrypt(cid.unhex(), payload(JSONObject(name.toString()).put("t", "name"))))
+            }
+            save()
+        }
+        sends.filter { it.first.isNotEmpty() }.forEach { (targets, packet) -> post(targets, byteArrayOf(MLS) + packet) }
+    }
 
     fun picture(user: String): ByteArray? {
         val value = if (user == username) profiles.opt("me") else profiles.getJSONObject("people").opt(user)
@@ -642,9 +673,12 @@ class Account(val folder: File, private val key: ByteArray) {
         if (owePicture.isNotEmpty()) {
             val sends = synchronized(lock) {
                 val me = profiles.opt("me") as? String
+                val name = profiles.optJSONObject("name")
                 val owed = owePicture.toList().also { owePicture.clear() }
-                if (me.isNullOrEmpty()) emptyList() else owed.map { cid ->
-                    targets(cid) to device.encrypt(cid.unhex(), payload(JSONObject().put("t", "profile").put("bild", me)))
+                owed.flatMap { cid ->
+                    listOfNotNull(
+                        me?.takeIf { it.isNotEmpty() }?.let { targets(cid) to device.encrypt(cid.unhex(), payload(JSONObject().put("t", "profile").put("bild", it))) },
+                        name?.let { targets(cid) to device.encrypt(cid.unhex(), payload(JSONObject(it.toString()).put("t", "name"))) })
                 }.also { save() }
             }
             sends.forEach { (targets, packet) -> post(targets, byteArrayOf(MLS) + packet) }
@@ -708,7 +742,7 @@ class Account(val folder: File, private val key: ByteArray) {
                         }
                         chat.put("roster", devices)
                         data.optString("title").takeIf { it.isNotEmpty() }?.let { chat.put("title", it) }
-                        if (profiles.opt("me") is String && sender != username) owePicture.add(cid)
+                        if ((profiles.opt("me") is String || profiles.has("name")) && sender != username) owePicture.add(cid)
                         return lines
                     }
                     "titel" -> {
@@ -736,6 +770,13 @@ class Account(val folder: File, private val key: ByteArray) {
                         val remaining = chat.getJSONObject("roster").keys().asSequence().sorted().toList()
                         if (remaining.firstOrNull() == username && sender in members(cid)) oweRemoval.getOrPut(cid) { mutableSetOf() }.add(sender)
                         return listOf(News(cid, News.Kind.System, text = text, received = at))
+                    }
+                    "name" -> {
+                        val first = data.optString("vorname").trim().take(40)
+                        val last = data.optString("nachname").trim().take(40)
+                        val names = profiles.optJSONObject("names") ?: JSONObject().also { profiles.put("names", it) }
+                        if (first.isEmpty() && last.isEmpty()) names.remove(sender) else names.put(sender, JSONObject().put("vorname", first).put("nachname", last))
+                        return listOf(News(cid, News.Kind.Picture, from = sender, received = at))
                     }
                     "profile" -> {
                         val picture = data.optString("bild")
