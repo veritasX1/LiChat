@@ -184,9 +184,11 @@ class LiChatService : Service() {
                 Hub.problem.value = null
                 pause = 2_000L
                 if (news.isNotEmpty()) handle(account, news)
-            } catch (e: LiChatException) {
+            } catch (e: Exception) {
+                // Whatever goes wrong here – a server restart, no network, a broken answer – the connection waits and
+                // tries again; it never takes the app down (Michelle 09.10.: „wird wiederholt beendet“).
                 setConnected(false)
-                Hub.problem.value = e.message
+                Hub.problem.value = (e as? LiChatException)?.message ?: "Verbindung unterbrochen – neuer Versuch"
                 synchronized(wake) {
                     if (!networkCame) wake.wait(pause)
                     if (networkCame) { networkCame = false; pause = 1_000L } else pause = minOf(pause * 2, 60_000L)

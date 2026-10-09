@@ -270,5 +270,26 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(anna.fetch().any { it.text == "bernd hat die Gruppe „Verein“ genannt." })
         assertEquals("Verein", anna.title(cid))
     }
+
+    /** Michelle 09.10.: nginx answered a server restart with an HTML 502 page – the app crashed („wird wiederholt beendet“). */
+    @Test
+    fun htmlErrorPageIsAServerError() {
+        val anna = person("anna")
+        val page = java.net.ServerSocket(0)
+        Thread {
+            repeat(2) {
+                page.accept().use { socket ->
+                    socket.getInputStream().bufferedReader().let { r -> while (r.readLine()?.isNotEmpty() == true) { } }
+                    socket.getOutputStream().write(("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\nContent-Length: 46\r\nConnection: close\r\n\r\n" +
+                        "<html><body><h1>502 Bad Gateway</h1></body></html>".take(46)).toByteArray())
+                }
+            }
+        }.start()
+        val broken = io.github.veritasx1.lichat.core.Server("http://127.0.0.1:${page.localPort}", anna.info.getString("token"))
+        val error = try { broken.call("GET", "/v1/messages"); null } catch (e: LiChatException) { e }
+        assertNotNull("eine LiChatException statt eines Absturzes", error)
+        assertTrue(error!!.message!!.contains("502"))
+        page.close()
+    }
 }
 
