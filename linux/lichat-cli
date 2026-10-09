@@ -82,8 +82,8 @@ def main(argv):
         while True:
             wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
             try:
-                # Receipts (✓✓) only move the ticks – nothing to show, keep waiting.
-                news = [n for n in account.fetch(wait=wait) if not n.get("receipt")]
+                # Receipts (✓✓) and new profile pictures change nothing to answer – keep waiting.
+                news = [n for n in account.fetch(wait=wait) if not n.get("receipt") and not (command == "warten" and n.get("picture"))]
                 pause = 2
             except LiChatError as error:
                 # Server restarting (502), down (5xx) or no network: „warten“ keeps listening (Michelle – else an instance
