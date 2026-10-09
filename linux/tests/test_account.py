@@ -217,7 +217,11 @@ class Attachments(Base):
         # A file goes unchanged, back the other way; voice keeps its duration.
         document = os.urandom(200_000)
         bernd.send_attachment(cid, document, "Plan.pdf", "application/pdf", "datei")
-        bernd.send_attachment(cid, b"\x00\x01aac", "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=3.4)
+        import subprocess
+        voice = self.root / "stimme.m4a"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=3", "-c:a", "aac",
+                        "-metadata", "creation_time=2026-10-01T12:00:00Z", str(voice)], check=True)
+        bernd.send_attachment(cid, voice.read_bytes(), "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=3.4)
         news = anna.fetch()
         self.assertEqual([n["text"] for n in news], ["Datei: Plan.pdf", "Sprachnachricht"])
         self.assertEqual(anna.open_attachment(news[0]["anhang"]), document)
@@ -231,6 +235,31 @@ class Attachments(Base):
         again = self.reopen(bernd)
         mine = [m for m in again.chats[cid]["messages"] if m.get("anhang", {}).get("name") == "Plan.pdf"][0]
         self.assertEqual(again.open_attachment(mine["anhang"]), document)
+
+    def test_video_leaves_without_place_and_time(self):
+        """Michelle: an MP4 carries the place (©xyz) and the recording time – both must be gone, the picture must stay."""
+        import subprocess
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        video = self.root / "test.mov"     # QuickTime, like a phone: here ffmpeg writes the place as ©xyz
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-shortest", "-c:v", "libx264", "-c:a", "aac",
+                        "-metadata", "location=+52.5200+013.4050/", "-metadata", "creation_time=2026-10-01T12:00:00Z",
+                        "-metadata", "title=Geheimer Ort", str(video)], check=True)
+        raw = video.read_bytes()
+        self.assertIn(b"+52.5200", raw)
+        anna.send_attachment(cid, raw, "urlaub.mov", "video/quicktime", "video")
+        info = bernd.fetch()[0]["anhang"]
+        self.assertEqual((info["name"], info["mime"]), ("urlaub.mp4", "video/mp4"))
+        got = bernd.open_attachment(info)
+        for secret in (b"+52.5200", b"Geheimer Ort", b"2026-10-01"):
+            self.assertNotIn(secret, got)
+        out = self.root / "empfangen.mp4"
+        out.write_bytes(got)
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(out)],
+                               capture_output=True, text=True).stdout.split()
+        self.assertEqual(sorted(probe), ["audio", "video"], "Bild und Ton bleiben")
 
     def test_changed_attachment_is_refused(self):
         anna, bernd = self.person("anna"), self.person("bernd")

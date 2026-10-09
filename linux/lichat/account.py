@@ -363,6 +363,25 @@ class Account:
             preview.save(small, "JPEG", quality=70)
         return out.getvalue(), small.getvalue()
 
+    @staticmethod
+    def clean_media(data, suffix):
+        """The tracks copied unchanged into a fresh MP4 – no place, no times, no user data (ffmpeg, no re-encoding)."""
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="lichat-") as folder:
+            source, target = Path(folder) / f"ein.{suffix}", Path(folder) / f"aus.{suffix}"
+            source.write_bytes(data)
+            try:
+                result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v?", "-map", "0:a?",
+                                         "-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy",
+                                         "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+                                         "-movflags", "+faststart", str(target)], capture_output=True, timeout=300)
+            except (OSError, subprocess.TimeoutExpired):
+                raise LiChatError("Zum Bereinigen von Videos und Aufnahmen fehlt ffmpeg") from None
+            if result.returncode != 0 or not target.exists():
+                raise LiChatError("Video/Aufnahme lässt sich nicht ohne Metadaten verschicken")
+            return target.read_bytes()
+
     def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat."""
         if kind not in KINDS:
@@ -372,6 +391,10 @@ class Account:
         if kind == "bild":
             data, preview = self.prepare_photo(data)
             mime, name = "image/jpeg", (name.rsplit(".", 1)[0] or "Foto") + ".jpg"
+        elif kind in ("video", "sprache"):
+            # Without the container's metadata: an MP4 carries the place (©xyz) and the time of recording (Michelle).
+            data = self.clean_media(data, "mp4" if kind == "video" else "m4a")
+            mime, name = ("video/mp4", name.rsplit(".", 1)[0] + ".mp4") if kind == "video" else ("audio/mp4", name.rsplit(".", 1)[0] + ".m4a")
         if len(data) > ATTACHMENT_MAX:
             raise LiChatError("Anhang zu groß (höchstens 100 MB)")
         key, nonce = os.urandom(32), os.urandom(12)
