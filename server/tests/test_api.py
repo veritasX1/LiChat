@@ -90,13 +90,18 @@ class ApiTest(unittest.TestCase):
         _, bernd = self.account("bernd")
         self.assertEqual(self.call("POST", "/v1/kopplung/annehmen", {"code": code}, token=bernd)[0], 404, "schon vergeben")
         self.assertEqual(self.call("GET", f"/v1/kopplung/{code}"), (200, {"username": "anna"}))
-        status, signed = self.call("POST", f"/v1/kopplung/{code}/geraet", {"identity": b64(b"neu" * 12), "name": "Ubuntu"})
+        status, signed = self.call("POST", f"/v1/kopplung/{code}/geraet", {"identity": b64(b"neu" * 12), "name": "Anna Laptop"})
         self.assertEqual(status, 200)
         self.assertEqual(signed["username"], "anna")
         self.assertEqual(self.call("POST", f"/v1/kopplung/{code}/geraet", {"identity": b64(b"zwei" * 12)})[0], 409, "nur einmal")
         self.assertEqual(self.call("GET", f"/v1/kopplung/{code}")[1], {"username": "anna", "device": signed["device"]})
         directory = self.call("GET", "/v1/users/anna", token=bernd)[1]["devices"]
-        self.assertEqual([(d["device"], d["name"]) for d in directory], [(anna_device, ""), (signed["device"], "Ubuntu")])
+        self.assertEqual([d["device"] for d in directory], [anna_device, signed["device"]])
+        own = self.call("GET", "/v1/devices", token=anna)[1]["devices"]
+        self.assertEqual([d["device"] for d in own], [anna_device, signed["device"]])
+        # Michelle: no device name in plain text on the server – not in the answers, not in the database
+        dump = "\n".join(self.app.store.db.iterdump())
+        self.assertNotIn("Anna Laptop", dump)
         # claim only the new device's package
         self.call("POST", "/v1/key-packages", {"key_packages": [b64(b"kp-neu")]}, token=signed["token"])
         self.call("POST", "/v1/key-packages", {"key_packages": [b64(b"kp-alt")]}, token=anna)
@@ -105,7 +110,12 @@ class ApiTest(unittest.TestCase):
         # sign it out from the first device; not someone else's, not oneself this way
         self.assertEqual(self.call("DELETE", f"/v1/devices/{signed['device']}", token=bernd)[0], 404)
         self.assertEqual(self.call("DELETE", f"/v1/devices/{anna_device}", token=anna)[0], 400)
+        self.call("POST", "/v1/messages", {"to": [signed["device"]], "blob": b64(b"M" + b"x" * 40)}, token=bernd)
+        self.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(b"lr")}, token=signed["token"])
         self.assertEqual(self.call("DELETE", f"/v1/devices/{signed['device']}", token=anna)[0], 200)
+        # Michelle: everything of the signed-out device is gone at once – mailbox, key packages, last resort
+        for table in ("messages", "key_packages", "last_resort"):
+            self.assertEqual(self.app.store.db.execute(f"SELECT COUNT(*) FROM {table} WHERE device = ?", (signed["device"],)).fetchone()[0], 0, table)
         self.assertEqual(self.call("GET", "/v1/messages", token=signed["token"])[0], 401)
         # expiry and guessing
         late = self.call("POST", "/v1/kopplung", ip="10.0.0.9")[1]["code"]
@@ -204,8 +214,8 @@ class ApiTest(unittest.TestCase):
         db.commit()
         db.close()
         store = create_app(old).store
-        self.assertEqual([r[1] for r in store.db.execute("PRAGMA table_info(devices)")], ["id", "username", "token", "identity", "created", "name"])
-        self.assertEqual(store.devices("anna"), [{"device": "0123456789abcdef", "identity": "i", "name": ""}])
+        self.assertEqual([r[1] for r in store.db.execute("PRAGMA table_info(devices)")], ["id", "username", "token", "identity", "created"])
+        self.assertEqual(store.devices("anna"), [{"device": "0123456789abcdef", "identity": "i"}])
         store.db.close()
 
     def test_wrong_token_is_rejected_and_limited(self):
@@ -220,7 +230,7 @@ class ApiTest(unittest.TestCase):
         self.account("bernd")
         status, data = self.call("GET", "/v1/users/bernd", token=anna)
         self.assertEqual(status, 200)
-        self.assertEqual(set(data["devices"][0]), {"device", "identity", "name"})   # name: „Android“/„Ubuntu“ (da5cbfcb)
+        self.assertEqual(set(data["devices"][0]), {"device", "identity"})
         self.assertEqual(self.call("GET", "/v1/users/niemand", token=anna)[0], 404)
 
     def test_key_packages_are_handed_out_once_per_device(self):

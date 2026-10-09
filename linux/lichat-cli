@@ -150,7 +150,8 @@ def main(argv):
                 quote = item.get("antwort")
                 about = f" (↪ {quote.get('from')}: {quote.get('text', '')[:40]})" if quote else ""
                 mark = " (@dich)" if item.get("mention") else ""
-                print(f"[{chat}] {when(item['at'])} {item['from']}{mark}{about}: {item['text']}")
+                who = "ich" if item["from"] == account.username else item["from"]     # mine, from another of my devices
+                print(f"[{chat}] {when(item['at'])} {who}{mark}{about}: {item['text']}")
         if not news:
             print("nichts Neues")
     elif command == "gespraeche":
@@ -213,7 +214,8 @@ def main(argv):
             print("widerrufen")
     elif command == "geraete":
         for d in account.my_devices():
-            print(f"{d['device']}  {d['name'] or '(ohne Namen)'}{'  ← dieses Gerät' if d['this'] else ''}")
+            since = time.strftime("%d.%m.%Y %H:%M", time.localtime(d["since"])) if d["since"] else "?"
+            print(f"{d['device']}  seit {since}{'  ← dieses Gerät' + (' (' + d['name'] + ')' if d['name'] else '') if d['this'] else ''}")
     elif command == "geraet-hinzufuegen":
         if not args:
             raise LiChatError("geraet-hinzufuegen <code vom neuen Gerät>")
