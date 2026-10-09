@@ -29,7 +29,7 @@ APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
 WAIT_SECONDS = 50     # one waiting fetch; the server answers at once when something arrives
 AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / f"{APP_ID}.desktop"
-DEFAULTS = {"hintergrund": True, "vorschau": False}
+DEFAULTS = {"hintergrund": True, "vorschau": False, "erklaert": False}
 GAP = 15 * 60          # a time stamp over the bubbles after this much quiet (like Messages)
 
 
@@ -350,6 +350,8 @@ class Window(Adw.ApplicationWindow):
         self.fill_list()
         self.show_conversation()
         self.listener = Listener(self.account, self.fetched, self.show_notice)
+        if not self.settings["erklaert"]:
+            GLib.idle_add(self.explain_background)
 
     # ------------------------------------------------------------------------------------------ list
 
@@ -556,6 +558,26 @@ class Window(Adw.ApplicationWindow):
         self.set_setting(action.get_name(), value.get_boolean())
         if action.get_name() == "hintergrund":
             autostart(value.get_boolean())
+
+    def explain_background(self):
+        """Once, at the first start (Michelle Z6/Z7): what „im Hintergrund“ means, and that it can be switched off."""
+        self.explained = Adw.AlertDialog(
+            heading="Nachrichten auch bei geschlossenem Fenster",
+            body="LiChat bleibt nach dem Schließen des Fensters verbunden und startet nach der Anmeldung am Rechner mit, "
+                 "damit neue Nachrichten sofort ankommen. Es spricht dabei nur mit deinem LiChat-Server – kein anderer "
+                 "Dienst erfährt davon. Ohne Hintergrund kommen Nachrichten erst, wenn du LiChat öffnest.\n\n"
+                 "Du kannst das jederzeit im Menü ⋮ ändern.")
+        self.explained.add_response("aus", "Ausschalten")
+        self.explained.add_response("an", "Eingeschaltet lassen")
+        self.explained.set_default_response("an")
+        self.explained.connect("response", self.on_explained)
+        self.explained.present(self)
+        return False
+
+    def on_explained(self, _dialog, response):
+        self.set_setting("erklaert", True)
+        if response == "aus":
+            self.activate_action("win.hintergrund", None)
 
     def choose_picture(self):
         dialog = Gtk.FileDialog(title="Profilbild wählen")

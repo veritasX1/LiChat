@@ -42,7 +42,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS devices (
                 id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES accounts(username) ON DELETE CASCADE,
-                token TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, push TEXT, created REAL NOT NULL);  -- push: unused since 09.10. (no ntfy)
+                token TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS key_packages (
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL);
@@ -53,6 +53,9 @@ class Store:
                 blob BLOB NOT NULL, received REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS messages_device ON messages(device, id);
         """)
+        # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
+        if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
+            self.db.execute("ALTER TABLE devices DROP COLUMN push")
 
     # Invitations ---------------------------------------------------------------------------------
 
@@ -85,8 +88,8 @@ class Store:
     def _add_device(self, username, identity):
         device = secrets.token_hex(8)
         token = secrets.token_urlsafe(32)
-        self.db.execute("INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?)",
-                        (device, username, token_hash(token), identity, None, self.clock()))
+        self.db.execute("INSERT INTO devices (id, username, token, identity, created) VALUES (?, ?, ?, ?, ?)",
+                        (device, username, token_hash(token), identity, self.clock()))
         return device, token
 
     def device_for_token(self, token):

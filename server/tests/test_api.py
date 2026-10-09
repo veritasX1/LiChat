@@ -97,7 +97,24 @@ class ApiTest(unittest.TestCase):
         status, _ = self.call("POST", "/v1/register", {"invite": invite, "username": "anna",
                                                        "identity": b64(b"x" * 32), "push": "https://fcm.googleapis.com/x"})
         self.assertEqual(status, 200)
-        self.assertEqual(self.app.store.db.execute("SELECT push FROM devices").fetchall(), [(None,)])
+        columns = [r[1] for r in self.app.store.db.execute("PRAGMA table_info(devices)")]
+        self.assertNotIn("push", columns)
+        self.assertNotIn(b"fcm.googleapis", b"".join(str(r).encode() for r in self.app.store.db.execute("SELECT * FROM devices")))
+
+    def test_old_database_loses_the_push_column(self):
+        old = os.path.join(self.tmp.name, "alt")
+        os.makedirs(old)
+        db = sqlite3.connect(os.path.join(old, "lichat.db"))
+        db.executescript("""CREATE TABLE accounts (username TEXT PRIMARY KEY, created REAL NOT NULL);
+            CREATE TABLE devices (id TEXT PRIMARY KEY, username TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+                identity TEXT NOT NULL, push TEXT, created REAL NOT NULL);
+            INSERT INTO accounts VALUES ('anna', 1); INSERT INTO devices VALUES ('0123456789abcdef', 'anna', 't', 'i', 'https://ntfy.x/geheim', 1);""")
+        db.commit()
+        db.close()
+        store = create_app(old).store
+        self.assertEqual([r[1] for r in store.db.execute("PRAGMA table_info(devices)")], ["id", "username", "token", "identity", "created"])
+        self.assertEqual(store.devices("anna"), [{"device": "0123456789abcdef", "identity": "i"}])
+        store.db.close()
 
     def test_wrong_token_is_rejected_and_limited(self):
         self.assertEqual(self.call("GET", "/v1/messages")[0], 401)

@@ -7,7 +7,7 @@ Ubuntu-Seite von LiChat: die App im Look von Nachrichten auf macOS 15 (`python3 
 | `lichat/account.py` | Konto auf dem Gerät: Server-Aufrufe, MLS-Kern, Ablage (versiegelt), Postfach holen und quittieren |
 | `lichat/lichat_core.abi3.so` | der Kern aus `core/` (nicht im Repo, wird gebaut, s. u.) |
 | `lichat/app.py`, `style.css` | das Fenster: Anmelden mit Einladung, Gespräche, Sprechblasen, Neue Nachricht (auch Gruppe), Info mit Sicherheitscode; ein Arbeits-Thread fürs Senden, eine stehende Verbindung (Warteabruf) fürs Empfangen – kein Push-Dienst; läuft nach dem Schließen im Hintergrund (GNOME-Mitteilungen, Standard nur „Neue Nachricht“), Autostart abschaltbar (`--hintergrund`) |
-| `lichat/keys.py` | Schlüssel der App im GNOME-Schlüsselbund (lichat-cli: Datei `key`) |
+| `lichat/keys.py` | Schlüssel der App im GNOME-Schlüsselbund. **lichat-cli** legt ihn als Datei `key` (600) neben die versiegelten Daten – bequem fürs Team und für Tests, schützt aber nicht, wenn jemand den ganzen Ordner kopiert. Echte Gespräche in der App führen. |
 | `lichat-cli` | Kommandozeile: `register`, `neu`, `senden`, `abholen`, `gespraeche`, `verlauf`, `mitglieder`, `code` |
 | `tests/test_account.py` | Tests gegen einen echten Server im Prozess (zu zweit, Gruppe, Neustart, Last-Resort, gefälschte Key-Packages) |
 
