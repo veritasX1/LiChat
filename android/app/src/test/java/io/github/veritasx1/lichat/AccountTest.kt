@@ -229,4 +229,46 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Kommt das an?"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
         assertFalse(server.walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("quittung") })
     }
+
+    /** Card d45b319a: add, rename, picture, leave, mute – end to end, a grey line for everyone; Ubuntu renames too. */
+    @Test
+    fun groupLife() {
+        val anna = person("anna"); val bernd = person("bernd"); val erna = person("erna")
+        val cid = anna.start(listOf("bernd"), "Grillen")
+        bernd.fetch()
+        anna.add(cid, listOf("erna"))
+        assertEquals(listOf(News.Kind.Joined), erna.fetch().filter { it.kind == News.Kind.Joined }.map { it.kind })
+        assertEquals("Grillen", erna.title(cid))
+        assertTrue(bernd.fetch().any { it.text == "anna hat erna hinzugefügt." })
+        anna.rename(cid, "Grillabend")
+        val picture = android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFFE08A2B.toInt()) }
+        val raw = java.io.ByteArrayOutputStream().also { picture.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        anna.setGroupPicture(cid, io.github.veritasx1.lichat.core.Pictures.prepare(raw))
+        val lines = erna.fetch().map { it.text }
+        assertTrue(lines.toString(), "anna hat die Gruppe „Grillabend“ genannt." in lines && "anna hat das Gruppenbild geändert." in lines)
+        assertEquals("Grillabend", erna.title(cid))
+        assertNotNull(erna.groupPicture(cid))
+        assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("Grillabend") })
+        erna.leave(cid)
+        try { erna.send(cid, "noch da?"); throw AssertionError("nach dem Verlassen") } catch (e: LiChatException) { }
+        assertTrue(anna.fetch().any { it.text == "erna hat die Unterhaltung verlassen." })
+        bernd.fetch(); bernd.fetch()
+        assertEquals(listOf("anna", "bernd"), bernd.members(cid).sorted())
+        assertEquals(emptyList<News>(), erna.fetch())
+        anna.mute(cid, true)
+        assertTrue(Account(anna.folder, KeyVault.Plain.load(anna.folder)!!).muted(cid))
+    }
+
+    @Test
+    fun ubuntuRenamesThePhonesGroup() {
+        val anna = person("anna"); val erna = person("erna")
+        assertTrue(cli("bernd", "register", url, invites.removeFirst(), "bernd").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd", "erna"))
+        erna.fetch()
+        cli("bernd", "abholen")
+        assertTrue(cli("bernd", "umbenennen", cid.take(8), "Verein").contains("Gruppenname"))
+        assertTrue(anna.fetch().any { it.text == "bernd hat die Gruppe „Verein“ genannt." })
+        assertEquals("Verein", anna.title(cid))
+    }
 }
+

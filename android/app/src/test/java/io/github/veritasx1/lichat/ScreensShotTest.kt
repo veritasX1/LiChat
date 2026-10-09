@@ -145,7 +145,7 @@ httpd.serve_forever()
     }
 
     @Test
-    fun details() = shot("4-info") { Details(anna, group, 0, {}, {}) }
+    fun details() = shot("4-info") { Details(anna, group, 0, {}, {}, io.github.veritasx1.lichat.ui.GroupActions()) }
 
     @Test
     fun newMessage() = shot("5-neue-nachricht") { NewMessage(null, {}, { _, _ -> }) }

@@ -276,6 +276,8 @@ class Attachments(Base):
         news = [n for n in bernd.fetch() if n.get("anhang")]
         clip, picture = (bernd.open_attachment(n["anhang"]) for n in news)
         self.assertNotIn(b"+52.5200", clip)
+        self.assertEqual(news[1]["anhang"]["art"], "bild")
+        self.assertTrue(news[1]["anhang"]["vorschau"], "als Bild mit Vorschau wie am iPhone")
         with Image.open(io.BytesIO(picture)) as image:
             self.assertEqual(image.size, (3000, 2000), "als Datei in voller Größe")
             self.assertEqual(len(image.getexif()), 0)

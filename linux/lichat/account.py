@@ -563,8 +563,10 @@ class Account:
             data, preview = self.prepare_photo(data)
             mime, name = "image/jpeg", (name.rsplit(".", 1)[0] or "Foto") + ".jpg"
         elif kind == "datei" and mime.startswith("image/") and mime not in ("image/gif", "image/svg+xml"):
-            # Sent as a file: full size – but never with its metadata (Michelle: place, camera, time).
+            # Sent as a file: full size – but never with its metadata (Michelle: place, camera, time); shown as a picture
+            # like on the iPhone (with its preview).
             data, mime, name = self.picture_without_metadata(data), "image/jpeg", name.rsplit(".", 1)[0] + ".jpg"
+            preview, kind = self.prepare_photo(data)[1], "bild"
         elif kind == "datei" and (mime.startswith("video/") or mime.startswith("audio/")):
             video = mime.startswith("video/")
             data = self.clean_media(data, "mp4" if video else "m4a")

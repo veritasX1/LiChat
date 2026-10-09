@@ -168,6 +168,8 @@ class Account(val folder: File, private val key: ByteArray) {
     private val owePicture = mutableSetOf<String>()
     /** Chat → mids that arrived and still get their „zugestellt“ (card db70d358). */
     private val oweDelivered = mutableMapOf<String, MutableList<String>>()
+    /** Chat → people who left and whose devices I take out of the MLS group (the first remaining member does it). */
+    private val oweRemoval = mutableMapOf<String, MutableSet<String>>()
 
     init {
         val accountFile = File(folder, "account.json")
@@ -237,27 +239,8 @@ class Account(val folder: File, private val key: ByteArray) {
     fun start(usernames: List<String>, title: String = ""): String {
         val others = usernames.map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != username }.toSortedSet()
         if (others.isEmpty()) throw LiChatException("Mit wem? Mindestens eine andere Person")
-        val roster = JSONObject().put(username, JSONArray().put(deviceId))
-        val packages = mutableListOf<ByteArray>()
-        for (user in others) {
-            val name = URLEncoder.encode(user, "UTF-8")
-            val listed = server.call("GET", "/v1/users/$name").getJSONArray("devices").let { a ->
-                (0 until a.length()).associate { a.getJSONObject(it).getString("device") to unb64(a.getJSONObject(it).getString("identity")) }
-            }
-            val claimed = server.call("POST", "/v1/key-packages/$name", JSONObject()).getJSONArray("key_packages")
-            if (claimed.length() == 0) throw LiChatException("$user hat gerade keinen Schlüssel frei")
-            val devices = JSONArray()
-            for (i in 0 until claimed.length()) {
-                val item = claimed.getJSONObject(i)
-                val packageBytes = unb64(item.getString("key_package"))
-                val owner = try { keyPackageOwner(packageBytes) } catch (e: CoreException) { throw LiChatException("Key-Package von $user ungültig") }
-                if (owner.identity != user || !(listed[item.getString("device")]?.contentEquals(owner.signatureKey) ?: false))
-                    throw LiChatException("Key-Package passt nicht zu $user – Gespräch nicht begonnen")
-                devices.put(item.getString("device"))
-                packages.add(packageBytes)
-            }
-            roster.put(user, devices)
-        }
+        val (roster, packages) = claim(others.toList())
+        roster.put(username, JSONArray().put(deviceId))
         val packets = mutableListOf<ByteArray>()
         val welcome: ByteArray
         val cid: String
@@ -278,6 +261,108 @@ class Account(val folder: File, private val key: ByteArray) {
         packets.forEach { post(targets, byteArrayOf(MLS) + it) }
         return cid
     }
+
+    /** One key package per device of each user – each checked against the directory (name and identity key). */
+    private fun claim(users: List<String>): Pair<JSONObject, List<ByteArray>> {
+        val roster = JSONObject()
+        val packages = mutableListOf<ByteArray>()
+        for (user in users) {
+            val name = URLEncoder.encode(user, "UTF-8")
+            val listed = directory(user)
+            val claimed = server.call("POST", "/v1/key-packages/$name", JSONObject()).getJSONArray("key_packages")
+            if (claimed.length() == 0) throw LiChatException("$user hat gerade keinen Schlüssel frei")
+            val devices = JSONArray()
+            for (i in 0 until claimed.length()) {
+                val item = claimed.getJSONObject(i)
+                val packageBytes = unb64(item.getString("key_package"))
+                val owner = try { keyPackageOwner(packageBytes) } catch (e: CoreException) { throw LiChatException("Key-Package von $user ungültig") }
+                if (owner.identity != user || !(listed[item.getString("device")]?.contentEquals(owner.signatureKey) ?: false))
+                    throw LiChatException("Key-Package passt nicht zu $user – nichts geändert")
+                devices.put(item.getString("device"))
+                packages.add(packageBytes)
+            }
+            roster.put(user, devices)
+        }
+        return roster to packages
+    }
+
+    private fun directory(user: String): Map<String, ByteArray> =
+        server.call("GET", "/v1/users/${URLEncoder.encode(user, "UTF-8")}").getJSONArray("devices").let { a ->
+            (0 until a.length()).associate { a.getJSONObject(it).getString("device") to unb64(a.getJSONObject(it).getString("identity")) }
+        }
+
+    // ------------------------------------------------------------------------------------------ groups (card d45b319a)
+
+    /** Adds people: the commit to everyone so far, the welcome to the new devices, then roster, name, picture to all. */
+    fun add(cid: String, usernames: List<String>) {
+        val chat = chat(cid)
+        if (chat.optString("removed").isNotEmpty()) throw LiChatException("Du bist nicht mehr in diesem Gespräch")
+        val roster = chat.getJSONObject("roster")
+        val new = usernames.map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != username && !roster.has(it) }.toSortedSet().toList()
+        if (new.isEmpty()) throw LiChatException("Wen hinzufügen? Die Person ist schon dabei")
+        val (added, packages) = claim(new)
+        val before: List<String>
+        val everyone: List<String>
+        val started: uniffi.lichat_core.Started
+        val packets = mutableListOf<ByteArray>()
+        synchronized(lock) {
+            before = targets(cid)
+            started = device.addMembers(cid.unhex(), packages)
+            added.keys().forEach { roster.put(it, added.getJSONArray(it)) }
+            new.forEach { system(chat, "Du hast $it hinzugefügt.") }
+            val payloads = mutableListOf(JSONObject().put("t", "roster").put("devices", roster).put("title", chat.optString("title")))
+            (chat.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "gruppenbild").put("bild", it)) }
+            (profiles.opt("me") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "profile").put("bild", it)) }
+            payloads.forEach { packets.add(device.encrypt(cid.unhex(), payload(it))) }
+            save()
+            everyone = targets(cid)
+        }
+        post(before, byteArrayOf(MLS) + started.conversation)
+        post(everyone.filter { it !in before }, byteArrayOf(WELCOME) + started.welcome)
+        packets.forEach { post(everyone, byteArrayOf(MLS) + it) }
+    }
+
+    private fun groupMessage(cid: String, content: JSONObject, line: String?) {
+        val chat = chat(cid)
+        if (chat.optString("removed").isNotEmpty()) throw LiChatException("Du bist nicht mehr in diesem Gespräch")
+        val packet: ByteArray
+        val targets: List<String>
+        synchronized(lock) {
+            line?.let { system(chat, it) }
+            packet = device.encrypt(cid.unhex(), payload(content))
+            save()
+            targets = targets(cid)
+        }
+        post(targets, byteArrayOf(MLS) + packet)
+    }
+
+    /** The group's name – only inside the conversation, never on the server. */
+    fun rename(cid: String, title: String) {
+        val clean = title.trim().take(80)
+        chat(cid).put("title", clean)
+        groupMessage(cid, JSONObject().put("t", "titel").put("titel", clean),
+            if (clean.isNotEmpty()) "Du hast die Gruppe „$clean“ genannt." else "Du hast den Gruppennamen entfernt.")
+    }
+
+    /** The group's picture (already 512 px without EXIF – Pictures.prepare); null removes it. */
+    fun setGroupPicture(cid: String, jpeg: ByteArray?) {
+        val value = jpeg?.let { b64(it) } ?: ""
+        chat(cid).put("bild", if (value.isEmpty()) JSONObject.NULL else value)
+        groupMessage(cid, JSONObject().put("t", "gruppenbild").put("bild", value),
+            if (value.isNotEmpty()) "Du hast das Gruppenbild geändert." else "Du hast das Gruppenbild entfernt.")
+    }
+
+    /** Leaving: the others are told, the first of them takes this device out; here the history stays readable. */
+    fun leave(cid: String) {
+        groupMessage(cid, JSONObject().put("t", "verlassen"), "Du hast die Unterhaltung verlassen.")
+        synchronized(lock) { chat(cid).put("removed", username); save() }
+    }
+
+    fun mute(cid: String, on: Boolean) = synchronized(lock) { chat(cid).put("stumm", on); save() }
+
+    fun muted(cid: String) = chats.optJSONObject(cid)?.optBoolean("stumm") ?: false
+
+    fun groupPicture(cid: String): ByteArray? = (chats.optJSONObject(cid)?.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { unb64(it) }
 
     fun send(cid: String, text: String): JSONObject {
         val clean = text.trim()
@@ -516,6 +601,14 @@ class Account(val folder: File, private val key: ByteArray) {
             val packages = synchronized(lock) { device.keyPackages(joined.toUInt()).also { save() } }
             server.call("POST", "/v1/key-packages", JSONObject().put("key_packages", JSONArray(packages.map { b64(it) })))
         }
+        if (oweRemoval.isNotEmpty()) {
+            val owed = synchronized(lock) { oweRemoval.toMap().also { oweRemoval.clear() } }
+            for ((cid, names) in owed) {
+                val (targets, commit) = synchronized(lock) { targets(cid) to device.removeMembers(cid.unhex(), names.sorted()).also { save() } }
+                val left = names.flatMap { directory(it).keys }
+                post((targets + left).toSortedSet().toList(), byteArrayOf(MLS) + commit)
+            }
+        }
         if (oweDelivered.isNotEmpty()) {
             // „zugestellt“ for what just arrived (always on – only „gelesen“ can be switched off).
             val owed = synchronized(lock) { oweDelivered.toMap().also { oweDelivered.clear() } }
@@ -553,6 +646,7 @@ class Account(val folder: File, private val key: ByteArray) {
         val chat = chat(cid)
         when (received) {
             is Incoming.Removed -> {
+                if (chat.optString("removed") == username) return emptyList()   // I left myself – the commit only confirms it
                 chat.put("removed", received.by)
                 return listOf(News(cid, News.Kind.Removed, from = received.by, received = at))
             }
@@ -560,7 +654,8 @@ class Account(val folder: File, private val key: ByteArray) {
                 // Whoever is no longer in the group gets no more packets – and everyone reads who took whom out (31ec7628).
                 val members = members(cid).toSet()
                 val roster = chat.getJSONObject("roster")
-                val gone = roster.keys().asSequence().filter { it !in members }.sorted().toList()
+                val gone = if (chat.optString("removed").isNotEmpty()) emptyList()
+                    else roster.keys().asSequence().filter { it !in members }.sorted().toList()
                 return gone.map { name ->
                     roster.remove(name)
                     val text = "${received.by} hat $name aus der Unterhaltung entfernt."
@@ -579,10 +674,43 @@ class Account(val folder: File, private val key: ByteArray) {
                         // Only names that really are in the MLS group may get packets.
                         if (names != members(cid).toSet() || names.any { devices.optJSONArray(it) == null })
                             return listOf(News(cid, News.Kind.Problem, text = "Teilnehmerliste von $sender passt nicht zur Gruppe – nicht übernommen"))
+                        val known = chat.getJSONObject("roster").keys().asSequence().toSet()
+                        val lines = mutableListOf<News>()
+                        if (known.isNotEmpty()) for (name in names.filter { it !in known }.sorted()) {
+                            val text = if (name == username) "$sender hat dich hinzugefügt." else "$sender hat $name hinzugefügt."
+                            system(chat, text)
+                            lines.add(News(cid, News.Kind.System, text = text, received = at))
+                        }
                         chat.put("roster", devices)
                         data.optString("title").takeIf { it.isNotEmpty() }?.let { chat.put("title", it) }
                         if (profiles.opt("me") is String && sender != username) owePicture.add(cid)
-                        return emptyList()
+                        return lines
+                    }
+                    "titel" -> {
+                        val title = data.optString("titel").take(80)
+                        chat.put("title", title)
+                        val text = if (title.isNotEmpty()) "$sender hat die Gruppe „$title“ genannt." else "$sender hat den Gruppennamen entfernt."
+                        system(chat, text)
+                        return listOf(News(cid, News.Kind.System, text = text, received = at))
+                    }
+                    "gruppenbild" -> {
+                        val picture = data.optString("bild")
+                        val raw = runCatching { if (picture.isEmpty()) ByteArray(0) else unb64(picture) }.getOrDefault(byteArrayOf(0))
+                        val jpeg = raw.size >= 3 && raw[0] == 0xFF.toByte() && raw[1] == 0xD8.toByte() && raw[2] == 0xFF.toByte()
+                        if (raw.isNotEmpty() && (raw.size > PICTURE_MAX || !jpeg))
+                            return listOf(News(cid, News.Kind.Problem, text = "Gruppenbild von $sender nicht übernommen"))
+                        chat.put("bild", if (picture.isEmpty()) JSONObject.NULL else picture)
+                        val text = if (picture.isNotEmpty()) "$sender hat das Gruppenbild geändert." else "$sender hat das Gruppenbild entfernt."
+                        system(chat, text)
+                        return listOf(News(cid, News.Kind.System, text = text, received = at))
+                    }
+                    "verlassen" -> {
+                        chat.getJSONObject("roster").remove(sender)
+                        val text = "$sender hat die Unterhaltung verlassen."
+                        system(chat, text)
+                        val remaining = chat.getJSONObject("roster").keys().asSequence().sorted().toList()
+                        if (remaining.firstOrNull() == username && sender in members(cid)) oweRemoval.getOrPut(cid) { mutableSetOf() }.add(sender)
+                        return listOf(News(cid, News.Kind.System, text = text, received = at))
                     }
                     "profile" -> {
                         val picture = data.optString("bild")

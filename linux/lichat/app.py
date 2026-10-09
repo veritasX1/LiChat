@@ -7,6 +7,8 @@ service – Olaf 09.10.: „wie bei einem echten Messenger“). The window gets 
 window keeps LiChat running in the background (GNOME notifications); it starts after login unless switched off.
 
     python3 main.py --hintergrund   start without the window (the autostart entry)
+    LICHAT_ORDNER=/pfad python3 main.py   a second, separate LiChat (tests, a team account): its own folder, its key as a
+                                          file there instead of the keyring, its own app id – Olaf's LiChat stays untouched
 """
 
 import json
@@ -629,7 +631,7 @@ class Window(Adw.ApplicationWindow):
     def on_setting(self, action, value):
         action.set_state(value)
         self.set_setting(action.get_name(), value.get_boolean())
-        if action.get_name() == "hintergrund":
+        if action.get_name() == "hintergrund" and self.key_store is not None:   # a LICHAT_ORDNER LiChat never touches autostart
             autostart(value.get_boolean())
 
     def explain_background(self):
@@ -890,4 +892,11 @@ def main(argv=None):
     argv = list(argv or sys.argv)
     background = "--hintergrund" in argv
     argv = [a for a in argv if a != "--hintergrund"]
+    folder = os.environ.get("LICHAT_ORDNER")
+    if folder:
+        # Michelle: an own LiChat beside Olaf's – no keyring, no shared app id, no autostart entry.
+        app = App(folder=Path(folder), key_store=None, background=background)
+        import hashlib
+        app.set_application_id(APP_ID + ".Ordner" + hashlib.sha256(str(Path(folder).resolve()).encode()).hexdigest()[:8])
+        return app.run(argv)
     return App(key_store=keys, background=background).run(argv)

@@ -677,6 +677,8 @@ internal object IntegrityCheckingUniffiLib {
     internal fun ensureInitialized() = Unit
     external fun uniffi_lichat_core_checksum_func_key_package_owner(
     ): Int
+    external fun uniffi_lichat_core_checksum_method_device_add_members(
+    ): Int
     external fun uniffi_lichat_core_checksum_method_device_conversations(
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_encrypt(
@@ -737,6 +739,8 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_lichat_core_fn_constructor_device_new(`identity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_lichat_core_fn_method_device_add_members(`ptr`: Long,`conversation`: RustBuffer.ByValue,`keyPackages`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_conversations(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_encrypt(`ptr`: Long,`conversation`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -887,6 +891,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_lichat_core_checksum_func_key_package_owner() and 0xFFFF) != 34297) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_lichat_core_checksum_method_device_add_members() and 0xFFFF) != 33113) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_lichat_core_checksum_method_device_conversations() and 0xFFFF) != 53091) {
@@ -1291,6 +1298,11 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 public interface DeviceInterface {
     
+    /**
+     * -> Started { conversation: the commit for the members so far, welcome: for the new devices }
+     */
+    fun `addMembers`(`conversation`: kotlin.ByteArray, `keyPackages`: List<kotlin.ByteArray>): Started
+    
     fun `conversations`(): List<kotlin.ByteArray>
     
     fun `encrypt`(`conversation`: kotlin.ByteArray, `payload`: kotlin.ByteArray): kotlin.ByteArray
@@ -1431,6 +1443,25 @@ open class Device: Disposable, AutoCloseable, DeviceInterface
             UniffiLib.uniffi_lichat_core_fn_clone_device(handle, status)
         }
     }
+
+    
+    /**
+     * -> Started { conversation: the commit for the members so far, welcome: for the new devices }
+     */
+    @Throws(CoreException::class)override fun `addMembers`(`conversation`: kotlin.ByteArray, `keyPackages`: List<kotlin.ByteArray>): Started {
+            return FfiConverterTypeStarted.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.uniffi_lichat_core_fn_method_device_add_members(
+        it,
+        
+        FfiConverterByteArray.lower(`conversation`),
+        FfiConverterSequenceByteArray.lower(`keyPackages`),_status)
+}
+    }
+    )
+    }
+    
 
     override fun `conversations`(): List<kotlin.ByteArray> {
             return FfiConverterSequenceByteArray.lift(
