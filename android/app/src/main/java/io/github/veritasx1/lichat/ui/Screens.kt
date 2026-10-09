@@ -5,6 +5,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.customActions
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -208,10 +214,17 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
 
 // ---------------------------------------------------------------------------------------------- conversation
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, onBack: () -> Unit, onInfo: () -> Unit,
-               onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions()) {
+               onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
+               onReact: (String, String) -> Unit = { _, _ -> }) {
     val colors = palette()
+    // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
+    var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val chat = remember(version, cid) { synchronized(account.lock) { JSONObject(account.chat(cid).toString()) } }
     val title = account.title(cid)
     val others = account.others(cid)
@@ -251,10 +264,38 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 val mine = m.optString("from") == account.username
                 if (!mine && others.size > 1 && previous?.optString("from") != m.optString("from"))
                     BasicText(m.optString("from"), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                m.optJSONObject("antwort")?.let { quoted ->
+                    // The message this answers, small above the bubble; a tap jumps to it.
+                    val target = list.indexOfFirst { it.optString("mid") == quoted.optString("mid") }
+                    Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else quoted.optString("from")}: ${quoted.optString("text")}",
+                            style = style(13f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, colors.fill, RoundedCornerShape(12.dp))
+                                .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(target + 1) } }
+                                .padding(horizontal = 10.dp, vertical = 5.dp))
+                    }
+                }
+                val mid = m.optString("mid")
+                var drag by remember(mid) { mutableStateOf(0f) }
+                val threshold = with(androidx.compose.ui.platform.LocalDensity.current) { 64.dp.toPx() }
+                val gestures = Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(drag.toInt(), 0) }
+                    .pointerInput(mid) {
+                        detectHorizontalDragGestures(onDragEnd = { if (drag > threshold && mid.isNotEmpty()) replyTo = m; drag = 0f },
+                            onDragCancel = { drag = 0f }) { _, amount -> drag = (drag + amount).coerceIn(0f, threshold * 1.4f) }
+                    }
+                    .semantics {
+                        if (mid.isNotEmpty()) customActions = listOf(
+                            androidx.compose.ui.semantics.CustomAccessibilityAction("Antworten") { replyTo = m; true },
+                            androidx.compose.ui.semantics.CustomAccessibilityAction("Reagieren") { menuFor = m; true })
+                    }
                 m.optJSONObject("anhang")?.let { info ->
                     Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                        AttachmentBubble(info, mine, actions.playing == info.optString("id")) { actions.open(info) }
+                        Box(gestures.combinedClickable(onClick = { actions.open(info) }, onLongClick = { if (mid.isNotEmpty()) menuFor = m })) {
+                            AttachmentBubble(info, mine, actions.playing == info.optString("id")) { actions.open(info) }
+                        }
                     }
+                    Reactions(m, mine)
                     if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
                     return@items
                 }
@@ -263,9 +304,11 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
                     if (!mine && others.size > 1) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
                     BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
-                        modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+                        modifier = gestures.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+                            .combinedClickable(onClick = {}, onLongClick = { if (mid.isNotEmpty()) menuFor = m })
                             .padding(horizontal = 12.dp, vertical = 7.dp))
                 }
+                Reactions(m, mine)
                 if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             }
             chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
@@ -274,8 +317,77 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             }
         }
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
-        if (chat.optString("removed").isEmpty()) InputBar(onSend, actions)
+        replyTo?.let { quoted ->
+            // Answering: the quote above the input line, ✕ takes it back.
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(3.dp, 32.dp).background(colors.blue))
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    BasicText("Antwort an ${if (quoted.optString("from") == account.username) "dich" else quoted.optString("from")}", style = style(13f, 600, colors.blue))
+                    BasicText(io.github.veritasx1.lichat.core.describe(quoted), style = style(13f, 400, colors.secondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable { replyTo = null }.semantics { contentDescription = "Antwort aufheben" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
+            }
+        }
+        if (chat.optString("removed").isEmpty()) InputBar({ text -> onSend(text, replyTo?.optString("mid")); replyTo = null }, actions)
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
+    }
+    menuFor?.let { m ->
+        MessageMenu(m, account.username, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
+            onReply = { replyTo = m; menuFor = null }, onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.optString("text"))); menuFor = null },
+            onClose = { menuFor = null })
+    }
+}
+
+val TAPBACKS = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
+
+/** The reactions under a bubble, small at its lower corner (Olaf: „unten rechts“): each emoji once, with a number when
+ *  several chose it. */
+@Composable
+fun Reactions(message: JSONObject, mine: Boolean) {
+    val colors = palette()
+    val reactions = message.optJSONObject("reaktionen") ?: return
+    if (reactions.length() == 0) return
+    val counts = reactions.keys().asSequence().map { reactions.getString(it) }.groupingBy { it }.eachCount()
+    val who = reactions.keys().asSequence().joinToString(", ") { "$it ${reactions.getString(it)}" }
+    Box(Modifier.fillMaxWidth().padding(top = 0.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+        BasicText(counts.entries.joinToString(" ") { (emoji, n) -> if (n > 1) "$emoji $n" else emoji }, style = style(13f, 400, colors.label),
+            modifier = Modifier.padding(horizontal = 8.dp).offset(y = (-6).dp).clip(RoundedCornerShape(12.dp)).background(colors.cell)
+                .border(1.dp, colors.background, RoundedCornerShape(12.dp)).padding(horizontal = 7.dp, vertical = 2.dp)
+                .semantics { contentDescription = "Reaktionen: $who" })
+    }
+}
+
+/** Long press on a bubble: six tapbacks like iOS, then Antworten / Kopieren and who reacted how. */
+@Composable
+fun MessageMenu(message: JSONObject, me: String, onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit) {
+    val colors = palette()
+    val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
+    val mine = reactions.optString(me)
+    Box(Modifier.fillMaxSize().background(Color(0x66000000)).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+        Column(Modifier.padding(32.dp).widthIn(max = 340.dp).clickable(enabled = false) {}) {
+            Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).padding(horizontal = 6.dp, vertical = 4.dp)) {
+                TAPBACKS.forEach { emoji ->
+                    BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
+                        modifier = Modifier.size(46.dp).clip(CircleShape).background(if (emoji == mine) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
+                            .clickable { onReact(if (emoji == mine) "" else emoji) }.padding(top = 6.dp)
+                            .semantics { contentDescription = if (emoji == mine) "Reaktion $emoji zurücknehmen" else "Mit $emoji reagieren" })
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
+                BasicText("Antworten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onReply).padding(14.dp))
+                if (message.optString("text").isNotEmpty()) {
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Kopieren", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onCopy).padding(14.dp))
+                }
+                if (reactions.length() > 0) {
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText(reactions.keys().asSequence().joinToString("\n") { "${if (it == me) "Du" else it}  ${reactions.getString(it)}" },
+                        style = style(15f, 400, colors.secondary), modifier = Modifier.fillMaxWidth().padding(14.dp))
+                }
+            }
+        }
     }
 }
 

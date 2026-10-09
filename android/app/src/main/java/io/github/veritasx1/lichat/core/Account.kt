@@ -46,7 +46,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
                 val attachment: JSONObject? = null) {
-    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt }
+    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction }
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
@@ -365,14 +365,38 @@ class Account(val folder: File, private val key: ByteArray) {
 
     fun groupPicture(cid: String): ByteArray? = (chats.optJSONObject(cid)?.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { unb64(it) }
 
-    fun send(cid: String, text: String): JSONObject {
+    /** [replyTo]: the mid of the message this answers (Olaf 09.10.: swipe to answer) – sender and a short quote travel along. */
+    fun send(cid: String, text: String, replyTo: String? = null): JSONObject {
         val clean = text.trim()
         if (clean.isEmpty()) throw LiChatException("Leere Nachricht")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
         val at = System.currentTimeMillis() / 1000
         val message = JSONObject().put("from", username).put("text", clean).put("at", at).put("mid", newMid()).put("status", "wartet")
+        val content = JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid"))
+        replyTo?.let { mid -> findMessage(cid, mid) }?.let { quoted ->
+            val answer = JSONObject().put("mid", quoted.getString("mid")).put("from", quoted.optString("from"))
+                .put("text", describe(quoted).take(120))
+            message.put("antwort", answer)
+            content.put("antwort", answer)
+        }
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
-        return deliver(cid, message, JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid")))
+        return deliver(cid, message, content)
+    }
+
+    fun findMessage(cid: String, mid: String): JSONObject? {
+        val list = chat(cid).getJSONArray("messages")
+        return (0 until list.length()).map { list.getJSONObject(it) }.firstOrNull { it.optString("mid") == mid }
+    }
+
+    /** My reaction on a message (one per person, like iOS tapbacks); "" takes it back. */
+    fun react(cid: String, mid: String, emoji: String) {
+        val clean = emoji.take(8)
+        synchronized(lock) {
+            val target = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
+            val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
+            if (clean.isEmpty()) reactions.remove(username) else reactions.put(username, clean)
+        }
+        groupMessage(cid, JSONObject().put("t", "reaktion").put("mid", mid).put("emoji", clean), null)
     }
 
     private fun newMid() = ByteArray(8).also { SecureRandom().nextBytes(it) }.hex()
@@ -723,6 +747,13 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (raw.isEmpty()) people.remove(sender) else people.put(sender, picture)
                         return listOf(News(cid, News.Kind.Picture, from = sender, received = at))
                     }
+                    "reaktion" -> {
+                        val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
+                        val emoji = data.optString("emoji").take(8)
+                        val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
+                        if (emoji.isEmpty()) reactions.remove(sender) else reactions.put(sender, emoji)
+                        return listOf(News(cid, News.Kind.Reaction, from = sender, text = emoji, received = at))
+                    }
                     "quittung" -> {
                         val kind = data.optString("art")
                         val mids = data.optJSONArray("mids")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
@@ -756,6 +787,10 @@ class Account(val folder: File, private val key: ByteArray) {
                         val text = data.optString("text")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", text).put("at", sent)
+                        data.optJSONObject("antwort")?.takeIf { Regex("[0-9a-f]{16}").matches(it.optString("mid")) }?.let { a ->
+                            message.put("antwort", JSONObject().put("mid", a.optString("mid")).put("from", a.optString("from").take(40))
+                                .put("text", a.optString("text").take(120)))
+                        }
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at))

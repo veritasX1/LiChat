@@ -28,6 +28,10 @@ answer end-to-end {"t": "quittung", "art": "zugestellt" | "gelesen", "mids": [�
 „gelesen“ only when read receipts are on; they are off by default and mutual (whoever has them off sends none and sees
 none, like the iPhone). Under each own bubble: ◷ wird gesendet · ✓ gesendet · ✓✓ zugestellt · ✓✓ blau gelesen.
 
+Replies and reactions (Olaf 09.10.: swipe to answer, long press for an emoji): a text may carry
+    "antwort": {"mid", "from", "text"}   – the message it answers, with a short quote (also only end-to-end)
+and {"t": "reaktion", "mid", "emoji"} sets the sender's one reaction on a message ("" removes it).
+
 Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
 <JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
@@ -451,7 +455,8 @@ class Account:
     def _payload(data):
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send(self, cid, text):
+    def send(self, cid, text, reply_to=None):
+        """[reply_to]: the mid of the message this answers – its sender and a short quote travel along."""
         text = text.strip()
         if not text:
             raise LiChatError("Leere Nachricht")
@@ -459,10 +464,28 @@ class Account:
             raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
         at = int(time.time())
         message = {"from": self.username, "text": text, "at": at, "mid": secrets.token_hex(8), "status": "wartet"}
+        payload = {"t": "text", "text": text, "at": at, "mid": message["mid"]}
+        if reply_to:
+            quoted = next((m for m in self.chats[cid]["messages"] if m.get("mid") == reply_to), None)
+            if quoted:
+                message["antwort"] = payload["antwort"] = {"mid": reply_to, "from": quoted["from"],
+                                                           "text": (self.describe(quoted) or quoted.get("text", ""))[:120]}
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
-        return self._deliver(cid, message, {"t": "text", "text": text, "at": at, "mid": message["mid"]})
+        return self._deliver(cid, message, payload)
+
+    def react(self, cid, mid, emoji):
+        """My reaction on a message (one per person, like iOS); "" takes it back."""
+        emoji = str(emoji)[:8]
+        with self.lock:
+            target = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
+            reactions = target.setdefault("reaktionen", {})
+            if emoji:
+                reactions[self.username] = emoji
+            else:
+                reactions.pop(self.username, None)
+        self._group_message(cid, {"t": "reaktion", "mid": mid, "emoji": emoji})
 
     def _deliver(self, cid, message, payload):
         """Encrypts and posts one of my messages; its status follows: wartet → gesendet, or fehler (a red line, retry)."""
@@ -831,6 +854,17 @@ class Account:
             else:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
+        if data.get("t") == "reaktion":
+            mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "")[:8]
+            target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
+            if target is None:
+                return []
+            reactions = target.setdefault("reaktionen", {})
+            if emoji:
+                reactions[sender] = emoji
+            else:
+                reactions.pop(sender, None)
+            return [{"chat": cid, "reaction": emoji, "from": sender}]
         if data.get("t") == "quittung":
             kind = data.get("art")
             mids = {str(m) for m in (data.get("mids") or []) if isinstance(m, str)}
@@ -857,6 +891,9 @@ class Account:
             return [{"chat": cid, "from": sender, "text": self.describe(message), "at": message["at"], "anhang": info}]
         if data.get("t") == "text":
             message = {"from": sender, "text": str(data.get("text", "")), "at": int(data.get("at") or time.time())}
+            answer = data.get("antwort")
+            if isinstance(answer, dict) and re.fullmatch(r"[0-9a-f]{16}", str(answer.get("mid", ""))):
+                message["antwort"] = {"mid": answer["mid"], "from": str(answer.get("from", ""))[:40], "text": str(answer.get("text", ""))[:120]}
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             return [{"chat": cid, **message}]

@@ -361,6 +361,33 @@ class Ticks(Base):
         self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Kommt das an?"])
 
 
+class RepliesAndReactions(Base):
+    """Olaf 09.10.: swipe to answer, long press for an emoji – end to end."""
+
+    def test_reply_and_reaction(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Kommst du Samstag?")
+        bernd.fetch()
+        asked = bernd.chats[cid]["messages"][-1]
+        bernd.send(cid, "Ja!", reply_to=asked["mid"])
+        answer = [n for n in anna.fetch() if "text" in n][0]
+        mine = anna.chats[cid]["messages"][-1]
+        self.assertEqual(mine["antwort"]["text"], "Kommst du Samstag?")
+        self.assertEqual(mine["antwort"]["from"], "anna")
+        anna.react(cid, mine["mid"], "❤️")
+        bernd.fetch()
+        self.assertEqual(next(m for m in bernd.chats[cid]["messages"] if m.get("mid") == mine["mid"])["reaktionen"], {"anna": "❤️"})
+        anna.react(cid, mine["mid"], "👍")          # one per person – replaced
+        anna.react(cid, mine["mid"], "")            # and taken back
+        bernd.fetch()
+        self.assertEqual(next(m for m in bernd.chats[cid]["messages"] if m.get("mid") == mine["mid"])["reaktionen"], {})
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn("❤️".encode(), server_files)
+        self.assertNotIn(b"Kommst du", server_files)
+
+
 class Remove(Base):
     def test_removed_member_reads_nothing_after(self):
         """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""
