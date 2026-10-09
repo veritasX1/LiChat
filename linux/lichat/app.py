@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from .account import Account, LiChatError, short, unb64  # noqa: E402
+from .account import TYPING_FRESH, Account, LiChatError, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -304,6 +304,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Im Hintergrund empfangen und beim Anmelden starten", "win.hintergrund")
         menu.append("Absender und Text in Mitteilungen zeigen", "win.vorschau")
         menu.append("Lesebestätigungen senden", "win.lesebestaetigungen")
+        menu.append("Tipp-Anzeige senden", "win.tippanzeige")
         menu.append("Name ändern …", "win.name")
         menu.append("Profilbild wählen …", "win.bild")
         menu.append("LiChat beenden", "win.beenden")
@@ -315,6 +316,10 @@ class Window(Adw.ApplicationWindow):
         receipts = Gio.SimpleAction.new_stateful("lesebestaetigungen", None, GLib.Variant.new_boolean(self.account.read_receipts))
         receipts.connect("change-state", self.on_receipts)
         self.add_action(receipts)
+        # „… tippt“ (Olaf 09.10.): off by default, mutual like the read receipts.
+        typing = Gio.SimpleAction.new_stateful("tippanzeige", None, GLib.Variant.new_boolean(self.account.typing_indicator))
+        typing.connect("change-state", self.on_typing_setting)
+        self.add_action(typing)
         name_action = Gio.SimpleAction.new("name", None)
         name_action.connect("activate", lambda *_: self.edit_name())
         self.add_action(name_action)
@@ -358,7 +363,18 @@ class Window(Adw.ApplicationWindow):
                                margin_top=8, margin_bottom=8, valign=Gtk.Align.END)
         self.scroller = Gtk.ScrolledWindow(child=self.bubbles, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
                                            css_classes=["lichat-transcript"])
-        self.pane.append(self.scroller)
+        # The end stays in view – new bubbles, „•••“, a narrower window (cards 0c01f599, be8f93c3). Reading further up,
+        # a new message shows „↓ Neue Nachricht“ instead of pulling the view away.
+        self.stick, self.upper, self.held, self.unseen, self.shown, self.end_pending = True, 0.0, None, 0, None, False
+        adjustment = self.scroller.get_vadjustment()
+        adjustment.connect("changed", self.keep_end)
+        adjustment.connect("value-changed", self.followed)
+        self.new_pill = Gtk.Button(label="↓ Neue Nachricht", css_classes=["lichat-new-pill"], halign=Gtk.Align.CENTER,
+                                   valign=Gtk.Align.END, margin_bottom=10, visible=False)
+        self.new_pill.connect("clicked", lambda *_: self.to_end())
+        overlay = Gtk.Overlay(child=self.scroller, vexpand=True)
+        overlay.add_overlay(self.new_pill)
+        self.pane.append(overlay)
         self.notice = Gtk.Label(css_classes=["lichat-notice"], visible=False, margin_bottom=4)
         self.pane.append(self.notice)
         self.reply_to = None
@@ -377,6 +393,8 @@ class Window(Adw.ApplicationWindow):
         line.append(attach)
         self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"])
         self.input.connect("activate", lambda *_: self.send())
+        self.input.connect("changed", self.typed)
+        self.typing_timer = 0
         line.append(self.input)
         self.input_line = line
         self.pane.append(line)
@@ -473,6 +491,18 @@ class Window(Adw.ApplicationWindow):
         self.bubbles.set_valign(Gtk.Align.END)
         cid = self.current
         chat = self.account.chats[cid]
+        count = len(chat["messages"])
+        if self.shown != cid:
+            self.shown, self.unseen = cid, 0
+            self.stick, self.held = True, None
+            self.new_pill.set_visible(False)
+        elif count > self.seen.get(cid, count):
+            if chat["messages"][-1]["from"] == self.account.username:
+                self.stick, self.held = True, None      # what I sent myself is always shown
+            elif not self.stick:
+                self.unseen += count - self.seen[cid]
+                self.new_pill.set_label("↓ Neue Nachricht" if self.unseen == 1 else f"↓ {self.unseen} neue Nachrichten")
+                self.new_pill.set_visible(True)
         title = self.account.title(cid)
         self.title_box.append(Gtk.Label(label=title, css_classes=["lichat-title"]))
         others = [u for u in chat["roster"] if u != self.account.username]
@@ -530,6 +560,17 @@ class Window(Adw.ApplicationWindow):
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
+        typing = self.account.typing_now(cid)
+        if typing and not chat.get("removed"):
+            # „…“ in a grey bubble, in a group with who it is (card 884f7c8a); gone a few seconds after the last sign.
+            if len(others) > 1:
+                self.bubbles.append(Gtk.Label(label=", ".join(self.account.display(u) for u in typing), css_classes=["lichat-sender"], xalign=0))
+            dots = Gtk.Label(label="•••", css_classes=["lichat-bubble", "lichat-theirs", "lichat-typing"], halign=Gtk.Align.START)
+            dots.update_property([Gtk.AccessibleProperty.LABEL], [f"{', '.join(self.account.display(u) for u in typing)} tippt"])
+            self.bubbles.append(dots)
+            if self.typing_timer:
+                GLib.source_remove(self.typing_timer)
+            self.typing_timer = GLib.timeout_add(TYPING_FRESH * 1000 + 100, self.typing_over, cid)
         self.seen[cid] = len(chat["messages"])
         if self.is_active() and self.get_visible():
             account = self.account
@@ -541,9 +582,56 @@ class Window(Adw.ApplicationWindow):
             self.info.set_visible(False)
         GLib.idle_add(self.scroll_down)
 
+    def typing_over(self, cid):
+        self.typing_timer = 0
+        if self.current == cid and not self.composing:
+            self.show_conversation()
+        return False
+
+    def typed(self, entry):
+        """Something typed in a conversation: with the switch on, the others see „…“ (rate-limited in the account)."""
+        cid = self.current
+        if cid is None or self.composing or not entry.get_text() or not self.account.typing_indicator:
+            return
+        account = self.account
+        self.worker.do(lambda: account.typing(cid))
+
+    def keep_end(self, adjustment):
+        """The content changed size: at the end stay there; further up stay on what was read."""
+        self.upper = adjustment.get_upper()
+        # Not now: a value set while GTK lays the transcript out is overtaken by that layout – on the next frame.
+        if not self.end_pending:
+            self.end_pending = True
+            self.scroller.add_tick_callback(self.hold_place)
+
+    def hold_place(self, *_):
+        self.end_pending = False
+        adjustment = self.scroller.get_vadjustment()
+        end = adjustment.get_upper() - adjustment.get_page_size()
+        if self.stick:
+            adjustment.set_value(end)
+        elif self.held is not None:
+            adjustment.set_value(min(self.held, end))
+        return False
+
+    def followed(self, adjustment):
+        if adjustment.get_upper() != self.upper:
+            return                     # a size change, not the person scrolling
+        self.stick = adjustment.get_value() >= adjustment.get_upper() - adjustment.get_page_size() - 40
+        self.held = None if self.stick else adjustment.get_value()
+        if self.stick and self.unseen:
+            self.unseen = 0
+            self.new_pill.set_visible(False)
+
+    def to_end(self):
+        self.stick, self.held, self.unseen = True, None, 0
+        self.new_pill.set_visible(False)
+        adjustment = self.scroller.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
     def scroll_down(self):
-        adj = self.scroller.get_vadjustment()
-        adj.set_value(adj.get_upper())
+        if self.stick:
+            self.to_end()
         return False
 
     @locked
@@ -926,6 +1014,11 @@ class Window(Adw.ApplicationWindow):
         action.set_state(value)
         account = self.account
         self.worker.do(lambda: account.set_read_receipts(value.get_boolean()), lambda *_: self.show_conversation())
+
+    def on_typing_setting(self, action, value):
+        action.set_state(value)
+        account = self.account
+        self.worker.do(lambda: account.set_typing_indicator(value.get_boolean()), lambda *_: self.show_conversation())
 
     def edit_name(self):
         """Vorname and Nachname as they should be shown – sent end-to-end into every conversation."""

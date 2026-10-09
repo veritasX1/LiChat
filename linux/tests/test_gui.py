@@ -213,6 +213,34 @@ def main():
     assert not window.reply_line.get_visible()
     shot(window, "03d-antwort-reaktion.png")
 
+    # „… tippt“ (card 884f7c8a): off by default; with both switched on Bernd's typing shows as a grey „•••“ bubble.
+    assert not window.lookup_action("tippanzeige").get_state().get_boolean()
+    window.lookup_action("tippanzeige").change_state(GLib.Variant.new_boolean(True))
+    bernd.set_typing_indicator(True)
+    until(lambda: anna.typing_indicator)
+    assert bernd.typing(cid)
+    until(lambda: "•••" in texts(window.bubbles))
+    settle(0.3)
+    # The newest bubble is wholly in view, not under the input line (card 0c01f599).
+    ok, bounds = window.bubbles.get_last_child().compute_bounds(window.scroller)
+    assert ok and bounds.get_y() + bounds.get_height() <= window.scroller.get_height(), (bounds.get_y(), bounds.get_height(), window.scroller.get_height())
+    shot(window, "03e-tippt.png")
+
+    # Reading further up, a new message does not pull the view away: „↓ Neue Nachricht“ appears, a click goes to the end.
+    window.scroller.get_vadjustment().set_value(0)
+    settle(0.2)
+    assert not window.stick
+    bernd.send(cid, "Noch was: Grillkohle?")
+    until(lambda: window.new_pill.get_visible())
+    settle(0.3)
+    assert window.scroller.get_vadjustment().get_value() < 50, "bleibt oben"
+    shot(window, "03f-neue-nachricht.png")
+    window.new_pill.emit("clicked")
+    settle(0.3)
+    adjustment = window.scroller.get_vadjustment()
+    assert window.stick and not window.new_pill.get_visible()
+    assert adjustment.get_value() >= adjustment.get_upper() - adjustment.get_page_size() - 1
+
     # The safety code in the info popover equals Bernd's.
     window.fill_info(window.info)
     window.info.popup()
@@ -298,7 +326,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 8
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 9  # + „Noch was: Grillkohle?“
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

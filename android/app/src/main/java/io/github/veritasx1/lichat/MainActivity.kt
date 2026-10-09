@@ -213,8 +213,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             val cid = chatId()
             if (acc != null && cid != null) work({ acc.retry(cid, mid) }) { _, error -> problem = error; Hub.changed() }
         },
+        typing = {
+            val acc = account
+            val cid = chatId()
+            if (acc != null && cid != null && acc.typingIndicator) work({ acc.typing(cid) }) { _, _ -> }
+        },
     )
     var receipts by remember { mutableStateOf(account?.readReceipts ?: false) }
+    var typingOn by remember { mutableStateOf(account?.typingIndicator ?: false) }
 
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
@@ -239,12 +245,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             return@CompositionLocalProvider
         }
         LaunchedEffect(Unit) { if (!Settings.explained(context)) explaining = true }
-        when (val p = page) {
+        Navigation(page, onBack = { page = it }) { p -> when (p) {
             Page.List -> ChatList(acc, version, seen, serverProblem, unrestricted,
                 onOpen = { page = Page.Chat(it) }, onNew = { problem = null; page = Page.New }, onSettings = { page = Page.Settings },
                 onUnrestrict = { askBattery() }, notifying = notifying, onNotifications = { openNotificationSettings() })
             is Page.Chat -> {
-                BackHandler { page = Page.List }
                 LaunchedEffect(version, p.cid) {
                     seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() }
                     // On screen = read (only reported with read receipts on, card db70d358).
@@ -256,7 +261,6 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onReact = { mid, emoji -> work({ acc.react(p.cid, mid, emoji) }) { _, error -> problem = error; Hub.changed() } })
             }
             Page.New -> {
-                BackHandler { page = Page.List }
                 NewMessage(problem, onCancel = { page = Page.List }) { names, text ->
                     work({ acc.start(names).also { acc.send(it, text) } }) { cid, error ->
                         problem = error
@@ -266,7 +270,6 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 }
             }
             is Page.Info -> {
-                BackHandler { page = Page.Chat(p.cid) }
                 fun groupWork(job: () -> Unit) = work(job) { _, error -> problem = error; Hub.changed() }
                 Details(acc, p.cid, version, onBack = { page = Page.Chat(p.cid) }, onRemove = { name -> groupWork { acc.remove(p.cid, listOf(name)) } },
                     group = GroupActions(
@@ -278,15 +281,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     ))
             }
             Page.Settings -> {
-                BackHandler { page = Page.List }
                 SettingsScreen(acc, preview, unrestricted, onPreview = { preview = it; Settings.setPreview(context, it) },
                     onPicture = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onUnrestrict = { askBattery() }, onBack = { page = Page.List }, notifying = notifying,
                     onNotifications = { openNotificationSettings() }, receipts = receipts,
                     onReceipts = { on -> receipts = on; work({ acc.readReceipts = on }) { _, _ -> Hub.changed() } },
-                    onName = { first, last -> work({ acc.setName(first, last) }) { _, error -> problem = error; Hub.changed() } })
+                    onName = { first, last -> work({ acc.setName(first, last) }) { _, error -> problem = error; Hub.changed() } },
+                    typing = typingOn, onTyping = { on -> typingOn = on; work({ acc.typingIndicator = on }) { _, _ -> Hub.changed() } })
             }
-        }
+        } }
         if (sheet) AttachmentSheet(
             onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
             onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
