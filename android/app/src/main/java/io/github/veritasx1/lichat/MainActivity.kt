@@ -183,6 +183,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             }, 250)
         } else problem = "Aufnahme nicht möglich"
     }
+    // Scanning a new device's QR code (Olaf: „per QR-Code koppeln“): the camera only for that moment.
+    var scanning by remember { mutableStateOf(false) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) scanning = true else problem = "LiChat darf die Kamera nicht benutzen – den Code stattdessen eintippen."
+    }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startRecording() else problem = "LiChat darf das Mikrofon nicht benutzen – in den Android-Einstellungen erlauben."
     }
@@ -336,7 +341,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         linking = "Warte auf das neue Gerät …"
                         waitWork({ acc.acceptLink(code); acc.myDevices() }) { list, error -> linking = null; problem = error; list?.let { devices = it }; Hub.changed() }
                     },
-                    onRemoveDevice = { id -> work({ acc.removeMyDevice(id); acc.myDevices() }) { list, error -> problem = error; list?.let { devices = it } } })
+                    onRemoveDevice = { id -> work({ acc.removeMyDevice(id); acc.myDevices() }) { list, error -> problem = error; list?.let { devices = it } } },
+                    onScanDevice = {
+                        if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED) scanning = true else camera.launch(Manifest.permission.CAMERA)
+                    })
                 LaunchedEffect(Unit) { work({ acc.myDevices() }) { list, _ -> devices = list ?: emptyList() } }
             }
         } }
@@ -344,6 +353,17 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
             onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
         photo?.let { bytes -> BackHandler { photo = null }; PhotoViewer(bytes) { photo = null } }
+        if (scanning) io.github.veritasx1.lichat.ui.QrScanner { text ->
+            scanning = false
+            val acc = account
+            if (text != null && acc != null) {
+                if (Account.parseLinkUri(text) == null) problem = "Das ist kein LiChat-Code zum Koppeln."
+                else {
+                    linking = "Warte auf das neue Gerät …"
+                    waitWork({ acc.acceptLink(text); acc.myDevices() }) { list, error -> linking = null; problem = error; list?.let { devices = it }; Hub.changed() }
+                }
+            }
+        }
         if (explaining) Explain(onContinue = {
             explaining = false
             Settings.setExplained(context)

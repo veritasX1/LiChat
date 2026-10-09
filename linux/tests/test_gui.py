@@ -391,7 +391,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 11  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen
+    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 11  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

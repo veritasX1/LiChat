@@ -306,6 +306,11 @@ class Account:
         return anonymous.url, anonymous.call("POST", "/v1/kopplung", {})["code"]
 
     @staticmethod
+    def link_uri(server, code):
+        """What the new device's QR code says (Olaf: „per QR-Code koppeln“): lichat://koppeln?server=…&code=…"""
+        return f"lichat://koppeln?server={urllib.parse.quote(server, safe='')}&code={code}"
+
+    @staticmethod
     def link_state(server, code):
         """{} while waiting, {username} once an existing device accepted, {username, device} once signed in."""
         return Server(server).call("GET", f"/v1/kopplung/{urllib.parse.quote(code)}")
@@ -345,7 +350,12 @@ class Account:
 
     def accept_link(self, code, wait=600, poll=2.0):
         """Existing device: that code is my new device. Waits until it signed in, then puts it into every conversation.
-        Returns the new device's id."""
+        Returns the new device's id. [code]: as typed, or the scanned/pasted lichat://koppeln link."""
+        parsed = self.parse_link(code)
+        if parsed and parsed["art"] == "koppeln":
+            if parsed["server"] and parsed["server"].rstrip("/") != self.info["server"].rstrip("/"):
+                raise LiChatError("Das neue Gerät hat einen anderen Server gewählt")
+            code = parsed["code"]
         self.server.call("POST", "/v1/kopplung/annehmen", {"code": code})
         end = time.time() + wait
         while time.time() < end:
@@ -757,6 +767,8 @@ class Account:
         query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
         if parsed.netloc == "einladung" and query.get("code"):
             return {"art": "einladung", "server": query.get("server", ""), "code": query["code"].upper()}
+        if parsed.netloc == "koppeln" and query.get("code"):
+            return {"art": "koppeln", "server": query.get("server", ""), "code": query["code"].upper()}
         if parsed.netloc == "kontakt" and query.get("name"):
             return {"art": "kontakt", "server": query.get("server", ""), "name": query["name"], "fp": query.get("fp", "")}
         return None

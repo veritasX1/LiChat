@@ -265,6 +265,8 @@ httpd.serve_forever()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Code vom neuen Gerät")).performTextInput("abcd-ef23")
         compose.onNodeWithText("Verbinden").performScrollTo().performClick()
         org.junit.Assert.assertEquals("ABCD-EF23", added)
+        compose.onNodeWithText("Gerät hinzufügen …").performScrollTo().performClick()
+        compose.onNodeWithText("QR-Code scannen …").assertExists()
     }
 
     @Test
@@ -279,7 +281,7 @@ httpd.serve_forever()
     fun linkCodeShown() = shot("7c-koppeln-code") {
         // the code as the new device shows it (the mode is opened by the link on the sign-in screen)
         SetupScreen(true, null, linkCode = "ABCD-EF23") { _, _, _, _, _ -> }
-    }
+    }.also { compose.onNode(androidx.compose.ui.test.hasContentDescription("QR-Code zum Koppeln")).assertExists() }
 
     @Test
     fun switchRowsAreSwitches() {
