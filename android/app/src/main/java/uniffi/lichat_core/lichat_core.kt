@@ -675,6 +675,8 @@ internal object IntegrityCheckingUniffiLib {
     }
 
     internal fun ensureInitialized() = Unit
+    external fun uniffi_lichat_core_checksum_func_conversation_of(
+    ): Int
     external fun uniffi_lichat_core_checksum_func_key_package_owner(
     ): Int
     external fun uniffi_lichat_core_checksum_method_device_add_members(
@@ -776,6 +778,8 @@ internal object UniffiLib {
     external fun uniffi_lichat_core_fn_method_device_start_conversation(`ptr`: Long,`keyPackages`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_method_device_update_keys(`ptr`: Long,`conversation`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_lichat_core_fn_func_conversation_of(`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_lichat_core_fn_func_key_package_owner(`keyPackage`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -898,6 +902,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if ((lib.uniffi_lichat_core_checksum_func_conversation_of() and 0xFFFF) != 59548) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_lichat_core_checksum_func_key_package_owner() and 0xFFFF) != 34297) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -2147,6 +2154,21 @@ public object FfiConverterSequenceByteArray: FfiConverterRustBuffer<List<kotlin.
         }
     }
 }
+        /**
+         * The conversation a packet belongs to, without decrypting it (to show „konnte nicht entschlüsselt werden“ there).
+         */
+    @Throws(CoreException::class) fun `conversationOf`(`packet`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.uniffi_lichat_core_fn_func_conversation_of(
+    
+        
+        FfiConverterByteArray.lower(`packet`),_status)
+}
+    )
+    }
+    
+
         /**
          * Whose a claimed key package is (signature checked) – compared with the directory before a conversation starts.
          */

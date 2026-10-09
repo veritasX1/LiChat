@@ -60,6 +60,12 @@ impl Device {
         Ok((identity, PyBytes::new(py, &key)))
     }
 
+    /// The conversation a packet belongs to, without decrypting it (to show „konnte nicht entschlüsselt werden“ there).
+    #[staticmethod]
+    fn conversation_of<'py>(py: Python<'py>, packet: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &Core::conversation_of(packet).map_err(err)?))
+    }
+
     /// -> (conversation id, welcome)
     fn start_conversation<'py>(&mut self, py: Python<'py>, key_packages: Vec<Vec<u8>>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         let started = self.inner.start_conversation(&key_packages).map_err(err)?;

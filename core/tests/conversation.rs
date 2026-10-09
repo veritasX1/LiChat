@@ -237,3 +237,34 @@ fn two_devices_of_one_person() {
     assert!(phone.receive(&after).is_ok());
     assert!(phone.remove_device(&cid, &laptop.identity_key()).is_err());
 }
+
+/// Michelle 09.10.: right after the phone signed out another device, Bernd (not yet fetched) writes in the old epoch – the
+/// phone must still read it.
+#[test]
+fn a_message_from_before_a_device_removal_stays_readable() {
+    let mut phone = Device::new("anna").unwrap();
+    let mut laptop = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let started = phone.start_conversation(&bernd.key_packages(1).unwrap()).unwrap();
+    let cid = started.conversation.clone();
+    bernd.join(&started.welcome).unwrap();
+    let added = phone.add_members(&cid, &laptop.key_packages(1).unwrap()).unwrap();
+    bernd.receive(&added.conversation).unwrap();
+    laptop.join(&added.welcome).unwrap();
+    let commit = phone.remove_device(&cid, &laptop.identity_key()).unwrap();
+    let late = bernd.encrypt(&cid, b"nach dem Abmelden").unwrap(); // Bernd has not seen the commit yet
+    assert!(matches!(phone.receive(&late).unwrap(), Received::Message { payload, .. } if payload == b"nach dem Abmelden"));
+    bernd.receive(&commit).unwrap();
+}
+
+/// Michelle 09.10.: a packet that cannot be decrypted still names its conversation (shown there, not swallowed).
+#[test]
+fn an_unreadable_packet_still_names_its_conversation() {
+    let mut anna = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let started = anna.start_conversation(&bernd.key_packages(1).unwrap()).unwrap();
+    bernd.join(&started.welcome).unwrap();
+    let packet = anna.encrypt(&started.conversation, b"hallo").unwrap();
+    assert_eq!(Device::conversation_of(&packet).unwrap(), started.conversation);
+    assert!(Device::conversation_of(b"Unsinn").is_err());
+}
