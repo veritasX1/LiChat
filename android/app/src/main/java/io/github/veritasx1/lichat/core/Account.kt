@@ -1078,8 +1078,9 @@ class Account(val folder: File, private val key: ByteArray) {
         chat.getJSONArray("messages").put(JSONObject().put("from", "").put("system", true).put("text", text).put("at", System.currentTimeMillis() / 1000))
     }
 
+    /** The people in it – each once, however many devices they have (Michelle 8534fe11). */
     fun members(cid: String): List<String> =
-        if (chat(cid).optString("removed").isNotEmpty()) listOf(username) else device.members(cid.unhex())
+        if (chat(cid).optString("removed").isNotEmpty()) listOf(username) else device.members(cid.unhex()).distinct()
 
     /** Groups of five digits, the same on every member's device (the same digits as Ubuntu). */
     fun safetyCode(cid: String): String {

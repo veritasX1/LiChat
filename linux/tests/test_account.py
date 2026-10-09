@@ -868,6 +868,9 @@ class Devices(Base):
         phone.fetch()
         mine = phone.chats[cid]["messages"][-1]
         self.assertEqual((mine["from"], mine["text"]), ("anna", "Vom Laptop"))
+        # people, not devices (8534fe11): still a chat of two
+        self.assertEqual(sorted(phone.members(cid)), ["anna", "bernd"])
+        self.assertEqual(sorted(bernd.members(cid)), ["anna", "bernd"])
         # a new conversation reaches both devices
         erna = self.person("erna")
         new = erna.start(["anna"])
