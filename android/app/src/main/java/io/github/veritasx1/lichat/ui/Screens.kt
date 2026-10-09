@@ -254,6 +254,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
                         AttachmentBubble(info, mine, actions.playing == info.optString("id")) { actions.open(info) }
                     }
+                    if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
                     return@items
                 }
                 Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
@@ -261,6 +262,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                         modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
                             .padding(horizontal = 12.dp, vertical = 7.dp))
                 }
+                if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             }
             chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
                 item { BasicText("$by hat dich aus der Unterhaltung entfernt.", style = style(11f, 400, colors.secondary).copy(textAlign = TextAlign.Center),
@@ -283,7 +285,43 @@ class AttachmentActions(
     val recording: Int? = null,
     /** The voice message playing now (its id). */
     val playing: String? = null,
+    /** „Nicht gesendet“ tapped: send that message (its mid) again. */
+    val retry: (String) -> Unit = {},
 )
+
+/** Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with Jaques,
+ *  card db70d358). Not sent: a red line, a tap sends it again. */
+@Composable
+fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
+    val colors = palette()
+    val (state, whenAt) = tick
+    val time = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(at * 1000))
+    if (state == "fehler") {
+        BasicText("Nicht gesendet – tippen zum Wiederholen", style = style(11f, 400, colors.red).copy(textAlign = TextAlign.End),
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onRetry).padding(end = 4.dp, top = 1.dp, bottom = 2.dp))
+        return
+    }
+    val words = when (state) { "wartet" -> "Wird gesendet"; "zugestellt" -> "Zugestellt"; "gelesen" -> "Gelesen"; else -> "Gesendet" }
+    val label = "$words " + SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(whenAt * 1000))
+    Row(Modifier.fillMaxWidth().padding(end = 2.dp, top = 1.dp, bottom = 2.dp).semantics(mergeDescendants = true) { contentDescription = label },
+        horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+        BasicText(time, style = style(11f, 400, colors.secondary))
+        val color = if (state == "gelesen") colors.blue else colors.secondary
+        androidx.compose.foundation.Canvas(Modifier.padding(start = 3.dp).size(17.dp, 11.dp)) {
+            val s = size.width / 17f
+            val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = (if (state == "wartet") 1.3f else 1.6f) * s,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+            fun line(vararg p: Pair<Float, Float>) = drawPath(androidx.compose.ui.graphics.Path().apply {
+                moveTo(p[0].first * s, p[0].second * s); p.drop(1).forEach { lineTo(it.first * s, it.second * s) } }, color, style = stroke)
+            when (state) {
+                "wartet" -> { drawCircle(color, 4.3f * s, androidx.compose.ui.geometry.Offset(8.5f * s, 5.5f * s), style = stroke)
+                              line(8.5f to 3.2f, 8.5f to 5.7f, 10.1f to 6.7f) }
+                "gesendet" -> line(4f to 5.8f, 6.6f to 8.4f, 12.6f to 2.4f)
+                else -> { line(1.2f to 5.8f, 3.8f to 8.4f, 9.8f to 2.4f); line(7.4f to 8.1f, 7.7f to 8.4f, 13.7f to 2.4f) }
+            }
+        }
+    }
+}
 
 /** The input line like iOS 18: ⊕ on the left, the rounded field „LiChat“, inside it 🎤 while empty and the blue ↑ with
  *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
@@ -482,7 +520,8 @@ fun Section(header: String?, footer: String? = null, content: @Composable () -> 
 
 @Composable
 fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, onPreview: (Boolean) -> Unit, onPicture: () -> Unit,
-                   onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {}) {
+                   onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {},
+                   receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -509,6 +548,13 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 BasicText("Absender und Text zeigen", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
                 Switch(preview, onPreview)
+            }
+        }
+        Section("NACHRICHTEN", footer = "Wenn eingeschaltet, sehen andere, dass du ihre Nachrichten gelesen hast – und du siehst es bei ihnen " +
+            "(blaue Haken). Ausgeschaltet gilt beides nicht. „Zugestellt“ gibt es immer.") {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicText("Lesebestätigungen senden", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
+                Switch(receipts, onReceipts)
             }
         }
         Section("VERBINDUNG", footer = "LiChat hält selbst eine Verbindung zu deinem Server – kein anderer Dienst erfährt, wann du Nachrichten bekommst. " +

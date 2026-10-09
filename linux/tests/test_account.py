@@ -261,6 +261,25 @@ class Attachments(Base):
                                capture_output=True, text=True).stdout.split()
         self.assertEqual(sorted(probe), ["audio", "video"], "Bild und Ton bleiben")
 
+    def test_media_as_file_lose_metadata_too(self):
+        """Michelle 9780f3a0: via „Datei“ an MP4 kept its place – files that are pictures, videos or sound are cleaned too."""
+        import subprocess
+        from PIL import Image
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        video = self.root / "ort.mov"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10", "-c:v", "libx264",
+                        "-metadata", "location=+52.5200+013.4050/", str(video)], check=True)
+        anna.send_attachment(cid, video.read_bytes(), "ort.mov", "video/quicktime", "datei")
+        anna.send_attachment(cid, test_image(self.root / "voll.jpg", size=(3000, 2000)).read_bytes(), "voll.jpg", "image/jpeg", "datei")
+        news = [n for n in bernd.fetch() if n.get("anhang")]
+        clip, picture = (bernd.open_attachment(n["anhang"]) for n in news)
+        self.assertNotIn(b"+52.5200", clip)
+        with Image.open(io.BytesIO(picture)) as image:
+            self.assertEqual(image.size, (3000, 2000), "als Datei in voller Größe")
+            self.assertEqual(len(image.getexif()), 0)
+
     def test_changed_attachment_is_refused(self):
         anna, bernd = self.person("anna"), self.person("bernd")
         cid = anna.start(["bernd"])
@@ -443,6 +462,15 @@ class Cli(Base):
         self.assertIn("bernd: Bist du da?", out)
         self.assertLess(time.monotonic() - started, 15)
         self.assertIn("nichts Neues", self.run_cli("anna", "warten", "--bis", "1")[1])
+        # datei / anhang: send a file from the console and save it again, byte for byte.
+        (self.root / "notiz.txt").write_bytes(b"Kohle \x00 Wurst")
+        self.assertIn("gesendet_ms=", self.run_cli("anna", "datei", chat, str(self.root / "notiz.txt"))[1])
+        self.run_cli("bernd", "abholen")
+        self.assertIn("[Anhang 1]", self.run_cli("bernd", "verlauf", chat)[1])
+        out_dir = self.root / "raus"
+        out_dir.mkdir()
+        self.assertEqual(self.run_cli("bernd", "anhang", chat, "1", str(out_dir))[0], 0)
+        self.assertEqual((out_dir / "notiz.txt").read_bytes(), b"Kohle \x00 Wurst")
         code, out = self.run_cli("erna", "ich")
         self.assertEqual(code, 1)
         self.assertIn("Noch kein Konto", out)
