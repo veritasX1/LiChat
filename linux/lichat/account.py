@@ -69,6 +69,7 @@ except ImportError:  # run from inside the folder
 WELCOME, MLS = b"W", b"M"
 CHATS_MAGIC = b"LICHATC1"
 PROFILE_MAGIC = b"LICHATP1"
+TOKEN_MAGIC = b"LICHATT1"     # the device's server token, sealed like the rest (Michelle f09a8086)
 PICTURE_PX = 512
 PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
 ATTACHMENT_MAGIC = b"LICHATA1"
@@ -223,6 +224,12 @@ def default_folder(profile):
     return base / "lichat-cli" / profile
 
 
+def seal_file(path, key, magic, data):
+    """magic + nonce + AES-GCM(JSON) – the format of chats.bin, profile.bin and token.bin."""
+    nonce = os.urandom(12)
+    write_private(path, magic + nonce + AESGCM(key).encrypt(nonce, json.dumps(data, ensure_ascii=False).encode(), magic))
+
+
 def write_private(path, data):
     """Written whole or not at all, readable only by the owner."""
     tmp = path.with_name(path.name + ".tmp")
@@ -337,7 +344,18 @@ class Account:
         self._typed = {}            # chat → when I last said „tippt“ there
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
         self._owe_removal = {}      # chat → people who left and whose devices I take out of the MLS group
-        self.server = Server(self.info["server"], self.info["token"])
+        token = self.info.get("token")
+        if token:
+            # An account from before 09.10. evening: the token moves out of account.json into token.bin (sealed), no new
+            # sign-in (Michelle f09a8086: a copied account.json let someone fetch – and so lose – this device's packets).
+            seal_file(self.folder / "token.bin", self.key, TOKEN_MAGIC, {"token": token})
+            self.info.pop("token")
+            write_private(self.folder / "account.json", json.dumps(self.info, indent=1).encode())
+        else:
+            token = self._unseal("token.bin", TOKEN_MAGIC, {}).get("token")
+            if not token:
+                raise LiChatError("Anmeldedaten fehlen (token.bin) – dieses Gerät bitte neu koppeln")
+        self.server = Server(self.info["server"], token)
 
     # ------------------------------------------------------------------------------------------ setup
 
@@ -354,13 +372,14 @@ class Account:
         key = os.urandom(32) if own_key else key
         answer = anonymous.call("POST", "/v1/register", {"invite": invite, "username": username,
                                                          "identity": b64(device.identity_key())})
-        info = {"server": anonymous.url, "username": username, "device": answer["device"], "token": answer["token"]}
+        info = {"server": anonymous.url, "username": username, "device": answer["device"]}
         # Key packages are made (and their private halves kept in the state) before they are offered.
         packages = device.key_packages(SUPPLY)
         reserve = device.last_resort_key_package()
         if own_key:
             write_private(folder / "key", key)
         write_private(folder / "state.bin", bytes(device.save(key)))
+        seal_file(folder / "token.bin", key, TOKEN_MAGIC, {"token": answer["token"]})
         write_private(folder / "account.json", json.dumps(info, indent=1).encode())
         account = cls(folder, None if own_key else key)
         account.save()
@@ -406,12 +425,13 @@ class Account:
         key = os.urandom(32) if own_key else key
         answer = anonymous.call("POST", f"/v1/kopplung/{urllib.parse.quote(code)}/geraet",
                                 {"identity": b64(device.identity_key())})
-        info = {"server": anonymous.url, "username": username, "device": answer["device"], "token": answer["token"]}
+        info = {"server": anonymous.url, "username": username, "device": answer["device"]}
         packages = device.key_packages(SUPPLY)
         reserve = device.last_resort_key_package()
         if own_key:
             write_private(folder / "key", key)
         write_private(folder / "state.bin", bytes(device.save(key)))
+        seal_file(folder / "token.bin", key, TOKEN_MAGIC, {"token": answer["token"]})
         write_private(folder / "account.json", json.dumps(info, indent=1).encode())
         account = cls(folder, None if own_key else key)
         account.profiles["gekoppelt"] = int(time.time())

@@ -112,6 +112,23 @@ class TwoPeople(Base):
         self.assertEqual([n["text"] for n in got["news"]], ["Bist du da?"])
         self.assertLess(got["seconds"], 2.5)
 
+    def test_token_never_in_plain(self):
+        """Michelle f09a8086: the device token is sealed like the chats; an old account.json with the token in plain is
+        taken over without a new sign-in."""
+        anna = self.person("anna")
+        self.assertNotIn("token", json.loads((anna.folder / "account.json").read_text()))
+        token = anna.server.token
+        self.assertNotIn(token.encode(), b"".join(p.read_bytes() for p in anna.folder.iterdir() if p.is_file()))
+        # as before 09.10.: token in account.json, no token.bin
+        info = json.loads((anna.folder / "account.json").read_text())
+        info["token"] = token
+        (anna.folder / "account.json").write_text(json.dumps(info))
+        (anna.folder / "token.bin").unlink()
+        again = Account(anna.folder)
+        self.assertEqual(again.server.token, token)
+        self.assertNotIn("token", json.loads((anna.folder / "account.json").read_text()))
+        again.fetch()                                   # still signed in
+
     def test_wrong_key_does_not_open(self):
         anna = self.person("anna")
         (anna.folder / "key").write_bytes(os.urandom(32))
