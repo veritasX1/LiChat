@@ -1160,7 +1160,8 @@ class Account(val folder: File, private val key: ByteArray) {
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         // „@ich“ / „@alle“ in a group: a notification even when the chat is muted (iOS)
-                        val mention = chat.getJSONObject("roster").length() > 2 && mentionsMe(text)
+                        val group = chat.getJSONObject("roster").length() > 2 || chat.optString("title").isNotEmpty()
+                        val mention = group && mentionsMe(text)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at, mention = mention))
                     }
                 }

@@ -1380,7 +1380,7 @@ class Account:
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             news = {"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}
-            if len(chat.get("roster", {})) > 2 and self.mentions_me(cid, message["text"]):
+            if (len(chat.get("roster", {})) > 2 or chat.get("title")) and self.mentions_me(cid, message["text"]):
                 news["mention"] = True      # „@ich“ or „@alle“: a notification even when the chat is muted (iOS)
             return [news]
         return []
