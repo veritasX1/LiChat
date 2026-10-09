@@ -6,6 +6,7 @@
     lichat-cli [--profil NAME] neu [--titel T] <person …>   # Gespräch beginnen (auch Gruppe)
     lichat-cli [--profil NAME] senden <gespräch> <text …>
     lichat-cli [--profil NAME] abholen                      # Postfach holen, Neues zeigen
+    lichat-cli [--profil NAME] warten [--bis SEKUNDEN]      # wartet, bis etwas kommt, zeigt es und endet (für Claude-Instanzen)
     lichat-cli [--profil NAME] gespraeche                   # alle Gespräche
     lichat-cli [--profil NAME] verlauf <gespräch>
     lichat-cli [--profil NAME] mitglieder <gespräch>
@@ -66,8 +67,17 @@ def main(argv):
             print(f"Nicht zugestellt an: {', '.join(answer.get('unknown', []) + answer.get('full', []))}")
         # gesendet_ms: the moment the server took it – Michelle measures the way to the phone's notification (Z5).
         print(f"gesendet an {len(answer.get('delivered', []))} Gerät(e) · gesendet_ms={int(time.time() * 1000)}")
-    elif command == "abholen":
-        news = account.fetch()
+    elif command in ("abholen", "warten"):
+        # warten: one standing connection after the other until something arrives – then show it and end, so a waiting
+        # Claude instance (Monitor, background task) is woken exactly when Olaf writes. Without --bis: no end.
+        limit = None
+        if command == "warten" and args[:1] == ["--bis"] and len(args) > 1:
+            limit = time.time() + float(args[1])
+        while True:
+            wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
+            news = account.fetch(wait=wait)
+            if news or command == "abholen" or (limit and time.time() >= limit):
+                break
         for item in news:
             chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
             if item.get("joined"):

@@ -378,6 +378,16 @@ class Cli(Base):
         self.assertIn("Test", self.run_cli("anna", "gespraeche")[1])
         self.assertIn("bernd: Hallo aus der Konsole", self.run_cli("anna", "verlauf", chat)[1])
         self.assertEqual(self.run_cli("anna", "code", chat)[1], self.run_cli("bernd", "code", chat)[1])
+        # warten: ends as soon as something comes (here: bernd writes while anna waits).
+        import threading as _t
+        later = _t.Timer(1.5, lambda: self.run_cli("bernd", "senden", chat, "Bist", "du", "da?"))
+        later.start()
+        started = time.monotonic()
+        code, out = self.run_cli("anna", "warten", "--bis", "30")
+        later.join()
+        self.assertIn("bernd: Bist du da?", out)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertIn("nichts Neues", self.run_cli("anna", "warten", "--bis", "1")[1])
         code, out = self.run_cli("erna", "ich")
         self.assertEqual(code, 1)
         self.assertIn("Noch kein Konto", out)
