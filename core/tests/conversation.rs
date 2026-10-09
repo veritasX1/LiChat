@@ -27,7 +27,7 @@ fn messages_both_ways_and_key_change() {
     // Bernd renews his keys; Anna follows; both still talk and agree on the safety code.
     let before = anna.safety_code(&joined).unwrap();
     let commit = bernd.update_keys(&joined).unwrap();
-    assert_eq!(anna.receive(&commit).unwrap(), Received::Changed { conversation: joined.clone() });
+    assert_eq!(anna.receive(&commit).unwrap(), Received::Changed { conversation: joined.clone(), by: "bernd".into() });
     assert_ne!(anna.safety_code(&joined).unwrap(), before);
     assert_eq!(anna.safety_code(&joined).unwrap(), bernd.safety_code(&joined).unwrap());
     let after = anna.encrypt(&joined, b"Neue Schluessel").unwrap();
@@ -162,7 +162,7 @@ fn remove_a_member() {
 
     let commit = anna.remove_members(&cid, &["erna".to_string()]).unwrap();
     assert_eq!(anna.members(&cid).unwrap(), vec!["anna", "bernd"]);
-    assert_eq!(bernd.receive(&commit).unwrap(), Received::Changed { conversation: cid.clone() });
+    assert_eq!(bernd.receive(&commit).unwrap(), Received::Changed { conversation: cid.clone(), by: "anna".into() });
     assert_eq!(bernd.members(&cid).unwrap(), vec!["anna", "bernd"]);
     assert_eq!(erna.receive(&commit).unwrap(), Received::Removed { conversation: cid.clone(), by: "anna".into() });
     assert!(erna.conversations().is_empty());

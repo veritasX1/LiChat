@@ -192,6 +192,7 @@ def main():
     assert "anna" in [n.get("removed") for n in erna.fetch()]
     window.fill_info(window.info)
     assert "erna" not in " ".join(texts(window.info.get_popover()))
+    assert "Du hast erna aus der Unterhaltung entfernt." in texts(window.bubbles)
 
     # Search in the list.
     window.search.set_text("Kartoffel")

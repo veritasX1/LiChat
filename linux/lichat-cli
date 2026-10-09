@@ -71,6 +71,8 @@ def main(argv):
             chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
             if item.get("joined"):
                 print(f"[{chat}] neues Gespräch")
+            elif item.get("system"):
+                print(f"[{chat}] {item['system']}")
             elif item.get("removed"):
                 print(f"[{chat}] {item['removed']} hat dich aus dem Gespräch entfernt")
             elif item.get("picture"):
@@ -84,7 +86,7 @@ def main(argv):
     elif command == "gespraeche":
         for cid, chat in account.chats.items():
             last = chat["messages"][-1] if chat["messages"] else None
-            tail = f" – {last['from']}: {last['text'][:40]}" if last else ""
+            tail = (f" – {last['text'][:40]}" if last.get("system") else f" – {last['from']}: {last['text'][:40]}") if last else ""
             print(f"{short(bytes.fromhex(cid))}  {account.title(cid)}{tail}")
         if not account.chats:
             print("noch keine Gespräche")
@@ -92,7 +94,10 @@ def main(argv):
         cid = account.chat(args[0] if args else "")
         print(f"— {account.title(cid)} —")
         for m in account.chats[cid]["messages"]:
-            print(f"{when(m['at'])} {'ich' if m['from'] == account.username else m['from']}: {m['text']}")
+            if m.get("system"):
+                print(f"{when(m['at'])} — {m['text']}")
+            else:
+                print(f"{when(m['at'])} {'ich' if m['from'] == account.username else m['from']}: {m['text']}")
     elif command == "mitglieder":
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":

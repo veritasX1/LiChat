@@ -53,7 +53,7 @@ pub struct Owner {
 #[derive(uniffi::Enum)]
 pub enum Incoming {
     Message { conversation: Vec<u8>, sender: String, payload: Vec<u8> },
-    Changed { conversation: Vec<u8> },
+    Changed { conversation: Vec<u8>, by: String },
     Removed { conversation: Vec<u8>, by: String },
 }
 
@@ -121,7 +121,7 @@ impl Device {
     pub fn receive(&self, data: Vec<u8>) -> Result<Incoming, CoreError> {
         self.with(|d| d.receive(&data)).map(|r| match r {
             Received::Message { conversation, sender, payload } => Incoming::Message { conversation, sender, payload },
-            Received::Changed { conversation } => Incoming::Changed { conversation },
+            Received::Changed { conversation, by } => Incoming::Changed { conversation, by },
             Received::Removed { conversation, by } => Incoming::Removed { conversation, by },
         })
     }

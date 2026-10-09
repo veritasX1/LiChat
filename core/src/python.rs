@@ -89,9 +89,10 @@ impl Device {
                 out.set_item("sender", sender)?;
                 out.set_item("payload", PyBytes::new(py, &payload))?;
             }
-            Received::Changed { conversation } => {
+            Received::Changed { conversation, by } => {
                 out.set_item("kind", "changed")?;
                 out.set_item("conversation", PyBytes::new(py, &conversation))?;
+                out.set_item("sender", by)?;
             }
             Received::Removed { conversation, by } => {
                 out.set_item("kind", "removed")?;
