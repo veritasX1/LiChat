@@ -40,4 +40,19 @@ class EmojiTest {
         val source = com.google.zxing.RGBLuminanceSource(200, 200, pixels)
         assertEquals(uri, com.google.zxing.qrcode.QRCodeReader().decode(com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source))).text)
     }
+
+    /** 22c918ce: web, mail and phone become links – nothing else (times, dates, user names). */
+    @Test
+    fun links() {
+        val found = io.github.veritasx1.lichat.core.findLinks("Schau www.lisoftware.de/lichat, schreib olaf@example.org oder ruf +49 421 1234567 an – um 18:26 am 09.10.2026, @bernd.")
+        assertEquals(listOf("https://www.lisoftware.de/lichat", "mailto:olaf@example.org", "tel:+494211234567"), found.map { it.target })
+        assertEquals("https://lichat.lisoftware.de/e/AB2C", io.github.veritasx1.lichat.core.findLinks("(https://lichat.lisoftware.de/e/AB2C).").single().target)
+    }
+
+    @Test
+    fun typingLabels() {
+        assertEquals("Anna schreibt …", io.github.veritasx1.lichat.ui.typingLabel(listOf("Anna")))
+        assertEquals("Anna und Bernd schreiben …", io.github.veritasx1.lichat.ui.typingLabel(listOf("Anna", "Bernd")))
+        assertEquals("Anna, Bernd und Erna schreiben …", io.github.veritasx1.lichat.ui.typingLabel(listOf("Anna", "Bernd", "Erna")))
+    }
 }
