@@ -126,6 +126,11 @@ impl Device {
         })
     }
 
+    /// -> Started { conversation: the commit for the members so far, welcome: for the new devices }
+    pub fn add_members(&self, conversation: Vec<u8>, key_packages: Vec<Vec<u8>>) -> Result<Started, CoreError> {
+        self.with(|d| d.add_members(&conversation, &key_packages)).map(|s| Started { conversation: s.conversation, welcome: s.welcome })
+    }
+
     pub fn remove_members(&self, conversation: Vec<u8>, identities: Vec<String>) -> Result<Vec<u8>, CoreError> {
         self.with(|d| d.remove_members(&conversation, &identities))
     }

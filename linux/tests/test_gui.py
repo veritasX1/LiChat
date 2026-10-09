@@ -214,6 +214,17 @@ def main():
     assert "erna" in texts(window.bubbles)          # the sender's name over the bubble in a group
     shot(window, "06-gruppe.png")
 
+    # Group life (card d45b319a): rename and picture end to end, the info popover offers add/mute/leave.
+    window.current = group
+    window.group_job(lambda acc: acc.rename(group, "Grillabend"))
+    until(lambda: anna.chats[group]["title"] == "Grillabend")
+    bernd.fetch()
+    assert bernd.title(group) == "Grillabend"
+    window.fill_info(window.info)
+    labels = " ".join(w.get_label() or "" for w in walk(window.info.get_popover()) if isinstance(w, (Gtk.Label, Gtk.Button, Gtk.CheckButton)))
+    assert "Unterhaltung verlassen" in labels and "stummschalten" in labels, labels
+    assert any(w.has_css_class("lichat-avatar") for w in walk(window.bubbles)), "Absenderbild in der Gruppe"
+
     # Take Erna out of the group (test plan S2): her side shows it, the input is gone.
     window.current = group
     window.show_conversation()
@@ -221,7 +232,7 @@ def main():
     until(lambda: "erna" not in anna.chats[group]["roster"])
     assert "anna" in [n.get("removed") for n in erna.fetch()]
     window.fill_info(window.info)
-    assert "erna" not in " ".join(texts(window.info.get_popover()))
+    assert "erna" not in texts(window.info.get_popover()), texts(window.info.get_popover())
     assert "Du hast erna aus der Unterhaltung entfernt." in texts(window.bubbles)
 
     # Search in the list.

@@ -391,7 +391,7 @@ class Window(Adw.ApplicationWindow):
                           opacity=1 if len(chat["messages"]) > self.seen.get(cid, 0) and cid != self.current else 0)
             box.append(dot)
             others = [u for u in chat["roster"] if u != self.account.username]
-            box.append(avatar(title, 40, self.account.picture(others[0]) if len(others) == 1 else None))
+            box.append(avatar(title, 40, self.account.picture(others[0]) if len(others) == 1 else self.account.group_picture(cid)))
             text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, spacing=1)
             head = Gtk.Box()
             head.append(Gtk.Label(label=title, css_classes=["lichat-name"], xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
@@ -457,12 +457,20 @@ class Window(Adw.ApplicationWindow):
             if group and not mine and (previous is None or previous["from"] != m["from"]):
                 self.bubbles.append(Gtk.Label(label=m["from"], css_classes=["lichat-sender"], xalign=0))
             if m.get("anhang"):
-                self.bubbles.append(self.attachment_bubble(m["anhang"], mine))
+                piece = self.attachment_bubble(m["anhang"], mine)
             else:
-                bubble = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
-                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
-                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
-                self.bubbles.append(bubble)
+                piece = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
+                                  max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
+                                  halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+            if group and not mine:
+                # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
+                row = Gtk.Box(spacing=6, halign=Gtk.Align.START)
+                face = avatar(m["from"], 24, self.account.picture(m["from"]))
+                face.set_valign(Gtk.Align.END)
+                row.append(face)
+                row.append(piece)
+                piece = row
+            self.bubbles.append(piece)
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
@@ -486,8 +494,21 @@ class Window(Adw.ApplicationWindow):
     def fill_info(self, button):
         cid = self.current
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
-        box.append(Gtk.Label(label=self.account.title(cid), css_classes=["lichat-title"]))
         members = self.account.members(cid)
+        group = len(members) > 2 or bool(self.account.chats[cid].get("title"))
+        top = avatar(self.account.title(cid), 64, self.account.group_picture(cid) if group else None)
+        top.set_halign(Gtk.Align.CENTER)
+        box.append(top)
+        if group and not self.account.chats[cid].get("removed"):
+            # Name and picture of the group (card d45b319a) – end to end, never on the server.
+            name = Gtk.Entry(text=self.account.chats[cid].get("title", ""), placeholder_text="Gruppenname", css_classes=["lichat-field"])
+            name.connect("activate", lambda e: (button.popdown(), self.group_job(lambda a: a.rename(cid, e.get_text()))))
+            box.append(name)
+            picture = Gtk.Button(label="Gruppenbild wählen …", css_classes=["flat"])
+            picture.connect("clicked", lambda *_: (button.popdown(), self.choose_picture(cid)))
+            box.append(picture)
+        else:
+            box.append(Gtk.Label(label=self.account.title(cid), css_classes=["lichat-title"]))
         for name in members:
             row = Gtk.Box(spacing=8)
             row.append(avatar(name, 24, self.account.picture(name)))
@@ -498,6 +519,18 @@ class Window(Adw.ApplicationWindow):
                 out.connect("clicked", lambda _b, who=name: (button.popdown(), self.remove_member(cid, who)))
                 row.append(out)
             box.append(row)
+        if not self.account.chats[cid].get("removed"):
+            adding = Gtk.Entry(placeholder_text="Person hinzufügen (Benutzername)", css_classes=["lichat-field"], margin_top=4)
+            adding.connect("activate", lambda e: (button.popdown(), self.group_job(
+                lambda a: a.add(cid, [n.strip().lower() for n in e.get_text().replace(";", ",").split(",") if n.strip()]))))
+            box.append(adding)
+            mute = Gtk.CheckButton(label="Mitteilungen stummschalten", active=bool(self.account.chats[cid].get("stumm")))
+            mute.connect("toggled", lambda c: self.account.mute(cid, c.get_active()))
+            box.append(mute)
+            if group:
+                leave = Gtk.Button(label="Unterhaltung verlassen", css_classes=["flat", "lichat-remove"], halign=Gtk.Align.START)
+                leave.connect("clicked", lambda *_: (button.popdown(), self.group_job(lambda a: a.leave(cid))))
+                box.append(leave)
         box.append(Gtk.Label(label="Sicherheitscode", css_classes=["lichat-subtitle"], xalign=0, margin_top=8))
         code = self.account.safety_code(cid).split()
         box.append(Gtk.Label(label=" ".join(code[:4]) + "\n" + " ".join(code[4:]), css_classes=["lichat-code"], selectable=True))
@@ -573,6 +606,8 @@ class Window(Adw.ApplicationWindow):
                 continue
             if self.is_active() and self.get_visible() and item["chat"] == self.current:
                 continue
+            if self.account.chats.get(item["chat"], {}).get("stumm"):
+                continue     # muted (card d45b319a)
             self.notify(item)
 
     def notify(self, item):
@@ -767,6 +802,17 @@ class Window(Adw.ApplicationWindow):
 
         self.worker.do(job, done)
 
+    def group_job(self, job):
+        """Adding, renaming, leaving: in the worker, then everything drawn again."""
+        account = self.account
+
+        def done(_r, error):
+            self.show_notice(error)
+            self.fill_list()
+            self.show_conversation()
+
+        self.worker.do(lambda: job(account), done)
+
     def remove_member(self, cid, name):
         account = self.account
 
@@ -782,8 +828,9 @@ class Window(Adw.ApplicationWindow):
         account = self.account
         self.worker.do(lambda: account.set_read_receipts(value.get_boolean()), lambda *_: self.show_conversation())
 
-    def choose_picture(self):
-        dialog = Gtk.FileDialog(title="Profilbild wählen")
+    def choose_picture(self, cid=None):
+        self.picture_for = cid      # None: my profile picture; a chat: that group's picture
+        dialog = Gtk.FileDialog(title="Gruppenbild wählen" if cid else "Profilbild wählen")
         images = Gtk.FileFilter(name="Bilder")
         images.add_mime_type("image/*")
         filters = Gio.ListStore.new(Gtk.FileFilter)
@@ -796,7 +843,11 @@ class Window(Adw.ApplicationWindow):
             file = dialog.open_finish(result)
         except GLib.Error:
             return   # cancelled
-        self.set_picture(file.get_path())
+        if getattr(self, "picture_for", None):
+            cid, path = self.picture_for, file.get_path()
+            self.group_job(lambda a: a.set_group_picture(cid, path))
+        else:
+            self.set_picture(file.get_path())
 
     def set_picture(self, path):
         """Made small and without EXIF, then sent end-to-end into every conversation (account.set_picture)."""

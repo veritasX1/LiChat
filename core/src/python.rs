@@ -103,6 +103,12 @@ impl Device {
         Ok(out)
     }
 
+    /// -> (commit for the members so far, welcome for the new devices)
+    fn add_members<'py>(&mut self, py: Python<'py>, conversation: &[u8], key_packages: Vec<Vec<u8>>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+        let added = self.inner.add_members(conversation, &key_packages).map_err(err)?;
+        Ok((PyBytes::new(py, &added.conversation), PyBytes::new(py, &added.welcome)))
+    }
+
     fn remove_members<'py>(&mut self, py: Python<'py>, conversation: &[u8], identities: Vec<String>) -> PyResult<Bound<'py, PyBytes>> {
         Ok(PyBytes::new(py, &self.inner.remove_members(conversation, &identities).map_err(err)?))
     }

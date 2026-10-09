@@ -173,3 +173,23 @@ fn remove_a_member() {
     assert!(erna.receive(&after).is_err());
     assert!(anna.remove_members(&cid, &["niemand".to_string()]).is_err());
 }
+
+#[test]
+fn add_a_member_later() {
+    let mut anna = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let mut erna = Device::new("erna").unwrap();
+    let started = anna.start_conversation(&bernd.key_packages(1).unwrap()).unwrap();
+    let cid = started.conversation.clone();
+    bernd.join(&started.welcome).unwrap();
+    let before = anna.encrypt(&cid, b"vor Erna").unwrap();
+    let added = anna.add_members(&cid, &erna.key_packages(1).unwrap()).unwrap();
+    assert_eq!(bernd.receive(&added.conversation).unwrap(), Received::Changed { conversation: cid.clone(), by: "anna".into() });
+    assert_eq!(erna.join(&added.welcome).unwrap(), cid);
+    assert_eq!(bernd.members(&cid).unwrap(), vec!["anna", "bernd", "erna"]);
+    // Erna reads what comes after – not what was before (MLS: no history for newcomers).
+    let after = bernd.encrypt(&cid, b"mit Erna").unwrap();
+    assert!(matches!(erna.receive(&after).unwrap(), Received::Message { payload, .. } if payload == b"mit Erna"));
+    assert!(erna.receive(&before).is_err());
+    assert_eq!(anna.safety_code(&cid).unwrap(), erna.safety_code(&cid).unwrap());
+}
