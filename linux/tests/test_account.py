@@ -395,6 +395,27 @@ class Attachments(Base):
                                capture_output=True, text=True).stdout.split()
         self.assertEqual(sorted(probe), ["audio", "video"], "Bild und Ton bleiben")
 
+    def test_animated_gif_stays_animated(self):
+        """Michelle 999f37be: a GIF is not turned into a JPEG still – frames and loop stay, comment and XMP go."""
+        import io
+        from PIL import Image
+        frames = [Image.new("RGB", (20, 20), c) for c in ((255, 0, 0), (0, 255, 0), (0, 0, 255))]
+        buffer = io.BytesIO()
+        frames[0].save(buffer, "GIF", save_all=True, append_images=frames[1:], loop=0, duration=100, comment=b"Ort: Bremen")
+        payload = b"<x:xmpmeta Bremen"
+        raw = buffer.getvalue()[:-1] + b"\x21\xff\x0bXMP DataXMP" + bytes([len(payload)]) + payload + b"\x00\x3b"
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send_attachment(cid, raw, "tanz.gif", "image/gif", "bild")
+        info = [n for n in bernd.fetch() if n.get("anhang")][0]["anhang"]
+        self.assertEqual((info["mime"], info["name"], info["art"]), ("image/gif", "tanz.gif", "bild"))
+        arrived = bernd.open_attachment(info)
+        self.assertNotIn(b"Bremen", arrived)
+        image = Image.open(io.BytesIO(arrived))
+        self.assertEqual((image.n_frames, image.info.get("loop")), (3, 0))
+        self.assertTrue(info.get("vorschau"))
+
     def test_media_as_file_lose_metadata_too(self):
         """Michelle 9780f3a0: via „Datei“ an MP4 kept its place – files that are pictures, videos or sound are cleaned too."""
         import subprocess

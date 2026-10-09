@@ -142,8 +142,8 @@ def typing_dots(dark=False):
     import cairo  # noqa: F401  (pycairo draws the capsule)
     area = Gtk.DrawingArea(content_width=58, content_height=34, halign=Gtk.Align.START, margin_top=2)
     capsule = (0.23, 0.23, 0.24) if dark else (0.925, 0.925, 0.925)
-    rest = (0.49, 0.49, 0.50) if dark else (0.69, 0.70, 0.71)
-    peak = (0.82, 0.82, 0.83) if dark else (0.376, 0.376, 0.376)
+    rest = (0.42, 0.42, 0.45) if dark else (0.69, 0.70, 0.71)      # dark #6C6C72 → #E6E6EA (Michelle)
+    peak = (0.90, 0.90, 0.92) if dark else (0.376, 0.376, 0.376)
     moving = Gtk.Settings.get_default().get_property("gtk-enable-animations")
     start = GLib.get_monotonic_time()
 

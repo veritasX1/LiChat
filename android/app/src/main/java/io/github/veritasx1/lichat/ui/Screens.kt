@@ -1276,9 +1276,10 @@ fun TypingBubble() {
     }
     val time = if (still) null else androidx.compose.animation.core.rememberInfiniteTransition(label = "tippt").animateFloat(0f, 1840f,
         androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1840, easing = androidx.compose.animation.core.LinearEasing)), label = "welle")
-    val capsule = if (dark) Color(0xFF3B3B3D) else Color(0xFFECECEC)
-    val rest = if (dark) Color(0xFF7C7C80) else Color(0xFFB0B2B4)
-    val peak = if (dark) Color(0xFFD0D0D4) else Color(0xFF606060)
+    // Dark: the capsule is the incoming bubble's colour, like iOS (Michelle: #3B3B3D was too light against #26252A).
+    val capsule = if (dark) palette().theirs else Color(0xFFECECEC)
+    val rest = if (dark) Color(0xFF6C6C72) else Color(0xFFB0B2B4)
+    val peak = if (dark) Color(0xFFE6E6EA) else Color(0xFF606060)
     Row(Modifier.clip(RoundedCornerShape(18.dp)).background(capsule).padding(horizontal = 12.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         listOf(380f, 580f, 760f).forEach { top ->
