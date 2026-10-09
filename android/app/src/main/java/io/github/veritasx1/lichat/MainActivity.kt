@@ -57,6 +57,15 @@ fun <T> work(job: () -> T, done: (T?, String?) -> Unit) = worker.execute {
     main.post { done(result.getOrNull(), error) }
 }
 
+/** Long waits (a new device to link, up to 10 minutes) on their own thread – sending must not wait behind them. */
+private val waiter = Executors.newCachedThreadPool()
+
+fun <T> waitWork(job: () -> T, done: (T?, String?) -> Unit) = waiter.execute {
+    val result = runCatching(job)
+    val error = result.exceptionOrNull()?.let { (it as? LiChatException)?.message ?: "Fehler: ${it.message}" }
+    main.post { done(result.getOrNull(), error) }
+}
+
 sealed class Page {
     data object List : Page()
     data class Chat(val cid: String) : Page()
@@ -221,11 +230,43 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     )
     var receipts by remember { mutableStateOf(account?.readReceipts ?: false) }
     var typingOn by remember { mutableStateOf(account?.typingIndicator ?: false) }
+    var linkCode by remember { mutableStateOf<String?>(null) }
+    var devices by remember { mutableStateOf<List<Account.OwnDevice>?>(null) }
+    var linking by remember { mutableStateOf<String?>(null) }
 
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
         if (acc == null) {
-            SetupScreen(busy, problem) { server, invite, name, first, last ->
+            SetupScreen(busy, problem, linkCode,
+                onLink = { server ->
+                    // A second device (card da5cbfcb): show a code, wait for the other device to accept it, then sign in.
+                    problem = null
+                    work({ Account.linkOpen(server) }) { opened, error ->
+                        problem = error
+                        if (opened == null) return@work
+                        linkCode = opened.second
+                        busy = true
+                        waitWork({
+                            val end = System.currentTimeMillis() + 10 * 60_000
+                            while (Account.linkState(opened.first, opened.second).optString("username").isEmpty()) {
+                                if (System.currentTimeMillis() > end || linkCode != opened.second) throw LiChatException("Abgelaufen – noch einmal „Code anzeigen“")
+                                Thread.sleep(2000)
+                            }
+                            Account.linkFinish(Hub.folder(context), opened.first, opened.second, "Android", vault.create(Hub.folder(context)))
+                        }) { created, failed ->
+                            busy = false
+                            problem = failed
+                            if (created != null) {
+                                linkCode = null
+                                Hub.account = created
+                                account = created
+                                runCatching { LiChatService.start(context) }
+                                if (!Settings.explained(context)) explaining = true
+                            }
+                        }
+                    }
+                },
+                onLinkCancel = { linkCode = null; busy = false; problem = null }) { server, invite, name, first, last ->
                 busy = true
                 problem = null
                 work({
@@ -289,7 +330,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onNotifications = { openNotificationSettings() }, receipts = receipts,
                     onReceipts = { on -> receipts = on; work({ acc.readReceipts = on }) { _, _ -> Hub.changed() } },
                     onName = { first, last -> work({ acc.setName(first, last) }) { _, error -> problem = error; Hub.changed() } },
-                    typing = typingOn, onTyping = { on -> typingOn = on; work({ acc.typingIndicator = on }) { _, _ -> Hub.changed() } })
+                    typing = typingOn, onTyping = { on -> typingOn = on; work({ acc.typingIndicator = on }) { _, _ -> Hub.changed() } },
+                    devices = devices, linking = linking,
+                    onAddDevice = { code ->
+                        linking = "Warte auf das neue Gerät …"
+                        waitWork({ acc.acceptLink(code); acc.myDevices() }) { list, error -> linking = null; problem = error; list?.let { devices = it }; Hub.changed() }
+                    },
+                    onRemoveDevice = { id -> work({ acc.removeMyDevice(id); acc.myDevices() }) { list, error -> problem = error; list?.let { devices = it } } })
+                LaunchedEffect(Unit) { work({ acc.myDevices() }) { list, _ -> devices = list ?: emptyList() } }
             }
         } }
         if (sheet) AttachmentSheet(

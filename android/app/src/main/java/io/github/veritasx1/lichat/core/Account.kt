@@ -258,6 +258,137 @@ class Account(val folder: File, private val key: ByteArray) {
             account.server.call("PUT", "/v1/key-packages/last-resort", JSONObject().put("key_package", b64(reserve)))
             return account
         }
+
+        // -------------------------------------------------------------------------------------- linking (card da5cbfcb)
+        // Like Signal: the NEW device shows a code, an existing device of the person accepts it, then the new device
+        // makes its keys for that name and signs in once; the existing device puts it into every conversation.
+
+        /** New device, step 1: (server url, code to show). */
+        fun linkOpen(server: String): Pair<String, String> {
+            val anonymous = Server(server)
+            return anonymous.url to anonymous.call("POST", "/v1/kopplung", JSONObject()).getString("code")
+        }
+
+        /** {} while waiting, {username} once accepted, {username, device} once signed in. */
+        fun linkState(server: String, code: String): JSONObject = Server(server).call("GET", "/v1/kopplung/${URLEncoder.encode(code, "UTF-8")}")
+
+        /** New device, step 3 (after an existing device accepted): own keys for that name, signed in once. The name stays
+         *  on this device – never on the server (Michelle). */
+        fun linkFinish(folder: File, server: String, code: String, name: String, key: ByteArray): Account {
+            if (File(folder, "account.json").exists()) throw LiChatException("Hier gibt es schon ein Konto")
+            val anonymous = Server(server)
+            val path = "/v1/kopplung/${URLEncoder.encode(code, "UTF-8")}"
+            val username = anonymous.call("GET", path).optString("username")
+            if (username.isEmpty()) throw LiChatException("Noch nicht angenommen – auf dem anderen Gerät „Gerät hinzufügen“ und den Code eingeben")
+            folder.mkdirs()
+            val device = Device(username)
+            val answer = anonymous.call("POST", "$path/geraet", JSONObject().put("identity", b64(device.identityKey())))
+            val info = JSONObject().put("server", anonymous.url).put("username", username)
+                .put("device", answer.getString("device")).put("token", answer.getString("token"))
+            val packages = device.keyPackages(SUPPLY.toUInt())
+            val reserve = device.lastResortKeyPackage()
+            writePrivate(File(folder, "state.bin"), device.save(key))
+            writePrivate(File(folder, "account.json"), info.toString(1).toByteArray())
+            device.close()
+            val account = Account(folder, key)
+            account.profiles.put("gekoppelt", System.currentTimeMillis() / 1000)
+            if (name.isNotBlank()) account.profiles.put("geraetename", name.trim().take(40))
+            account.save()
+            account.server.call("POST", "/v1/key-packages", JSONObject().put("key_packages", JSONArray(packages.map { b64(it) })))
+            account.server.call("PUT", "/v1/key-packages/last-resort", JSONObject().put("key_package", b64(reserve)))
+            return account
+        }
+    }
+
+    data class OwnDevice(val id: String, val since: Long, val isThis: Boolean, val name: String)
+
+    /** Existing device: that code is my new device – waits until it signed in, then puts it into every conversation. */
+    fun acceptLink(code: String, waitS: Long = 600, pollMs: Long = 2000): String {
+        server.call("POST", "/v1/kopplung/annehmen", JSONObject().put("code", code))
+        val end = System.currentTimeMillis() + waitS * 1000
+        while (System.currentTimeMillis() < end) {
+            val state = server.call("GET", "/v1/kopplung/${URLEncoder.encode(code, "UTF-8")}")
+            state.optString("device").takeIf { it.isNotEmpty() }?.let { syncOwnDevices(); return it }
+            Thread.sleep(pollMs)
+        }
+        throw LiChatException("Das neue Gerät hat sich nicht gemeldet – noch einmal versuchen")
+    }
+
+    /** My devices with the time each signed in; a name only for this one (it stays here). */
+    fun myDevices(): List<OwnDevice> = server.call("GET", "/v1/devices").getJSONArray("devices").let { a ->
+        (0 until a.length()).map { a.getJSONObject(it) }.map {
+            val mine = it.getString("device") == deviceId
+            OwnDevice(it.getString("device"), it.optLong("created"), mine, if (mine) profiles.optString("geraetename") else "")
+        }
+    }
+
+    /** Signs out another of my devices and takes it out of every conversation – it reads nothing that follows. */
+    fun removeMyDevice(id: String) {
+        if (id == deviceId) throw LiChatException("Dieses Gerät meldest du in seinen eigenen Einstellungen ab")
+        server.call("DELETE", "/v1/devices/$id")
+        syncOwnDevices()
+    }
+
+    /** Every conversation holds exactly my devices from the directory: new ones added (MLS), signed-out ones taken out. */
+    fun syncOwnDevices(): Int {
+        val listed = directory(username)
+        val listedKeys = listed.values.toList()
+        var changed = 0
+        for (cid in chats.keys().asSequence().toList()) {
+            val chat = chat(cid)
+            if (chat.optString("removed").isNotEmpty()) continue
+            val keys = try { device.deviceKeys(cid.unhex(), username) } catch (e: CoreException) { continue }
+            val roster = chat.getJSONObject("roster")
+            val have = roster.optJSONArray(username)?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty().toSet()
+            val goneKeys = keys.filter { k -> listedKeys.none { it.contentEquals(k) } }
+            for (key in goneKeys) {
+                val before: List<String>
+                val commit: ByteArray
+                synchronized(lock) {
+                    before = targets(cid)
+                    commit = device.removeDevice(cid.unhex(), key)
+                    roster.put(username, JSONArray(have.filter { it in listed.keys }))
+                    save()
+                }
+                post(before, byteArrayOf(MLS) + commit)
+            }
+            val packages = mutableListOf<ByteArray>()
+            val adding = mutableListOf<String>()
+            for (id in (listed.keys - have).sorted()) {
+                val claimed = server.call("POST", "/v1/key-packages/${URLEncoder.encode(username, "UTF-8")}", JSONObject().put("device", id))
+                    .getJSONArray("key_packages")
+                for (i in 0 until claimed.length()) {
+                    val item = claimed.getJSONObject(i)
+                    val bytes = unb64(item.getString("key_package"))
+                    val owner = try { keyPackageOwner(bytes) } catch (e: CoreException) { continue }
+                    if (item.getString("device") == id && owner.identity == username && listed[id]?.contentEquals(owner.signatureKey) == true) {
+                        packages.add(bytes); adding.add(id)
+                    }
+                }
+            }
+            if (packages.isNotEmpty()) {
+                val before: List<String>
+                val everyone: List<String>
+                val started: uniffi.lichat_core.Started
+                val packets = mutableListOf<ByteArray>()
+                synchronized(lock) {
+                    before = targets(cid)
+                    started = device.addMembers(cid.unhex(), packages)
+                    val now = roster.optJSONArray(username)?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+                    roster.put(username, JSONArray((now + adding).toSortedSet().toList()))
+                    val payloads = mutableListOf(JSONObject().put("t", "roster").put("devices", roster).put("title", chat.optString("title")))
+                    (chat.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { payloads.add(JSONObject().put("t", "gruppenbild").put("bild", it)) }
+                    payloads.forEach { packets.add(device.encrypt(cid.unhex(), payload(it))) }
+                    save()
+                    everyone = targets(cid)
+                }
+                post(before, byteArrayOf(MLS) + started.conversation)
+                post(adding, byteArrayOf(WELCOME) + started.welcome)
+                packets.forEach { post(everyone, byteArrayOf(MLS) + it) }
+            }
+            if (packages.isNotEmpty() || goneKeys.isNotEmpty()) changed++
+        }
+        return changed
     }
 
     fun save() {
@@ -309,6 +440,7 @@ class Account(val folder: File, private val key: ByteArray) {
         }
         post(targets, byteArrayOf(WELCOME) + welcome)
         packets.forEach { post(targets, byteArrayOf(MLS) + it) }
+        syncOwnDevices()      // my other devices belong in it too (card da5cbfcb)
         return cid
     }
 
@@ -336,10 +468,13 @@ class Account(val folder: File, private val key: ByteArray) {
         return roster to packages
     }
 
-    private fun directory(user: String): Map<String, ByteArray> =
+    private fun directory(user: String): Map<String, ByteArray> = try {
         server.call("GET", "/v1/users/${URLEncoder.encode(user, "UTF-8")}").getJSONArray("devices").let { a ->
             (0 until a.length()).associate { a.getJSONObject(it).getString("device") to unb64(a.getJSONObject(it).getString("identity")) }
         }
+    } catch (e: LiChatException) {
+        if ("(404)" in (e.message ?: "")) emptyMap() else throw e
+    }
 
     // ------------------------------------------------------------------------------------------ groups (card d45b319a)
 
@@ -835,7 +970,8 @@ class Account(val folder: File, private val key: ByteArray) {
         val mid = data.optString("mid")
         if (Regex("[0-9a-f]{16}").matches(mid)) {
             message.put("mid", mid)
-            oweDelivered.getOrPut(cid) { mutableListOf() }.add(mid)
+            // my own, written on another of my devices: no receipt to myself
+            if (message.optString("from") != username) oweDelivered.getOrPut(cid) { mutableListOf() }.add(mid)
         }
     }
 
@@ -878,12 +1014,31 @@ class Account(val folder: File, private val key: ByteArray) {
                         // Only names that really are in the MLS group may get packets.
                         if (names != members(cid).toSet() || names.any { devices.optJSONArray(it) == null })
                             return listOf(News(cid, News.Kind.Problem, text = "Teilnehmerliste von $sender passt nicht zur Gruppe – nicht übernommen"))
-                        val known = chat.getJSONObject("roster").keys().asSequence().toSet()
+                        // Per device too (da5cbfcb): as many devices per person as the MLS group has leaves for them.
+                        for (name in names) {
+                            val count = devices.getJSONArray(name).let { a -> (0 until a.length()).map { a.getString(it) }.toSet().size }
+                            if (count != device.deviceKeys(cid.unhex(), name).size)
+                                return listOf(News(cid, News.Kind.Problem, text = "Geräteliste von $name passt nicht zur Gruppe – nicht übernommen"))
+                        }
+                        val oldRoster = chat.getJSONObject("roster")
+                        val known = oldRoster.keys().asSequence().toSet()
                         val lines = mutableListOf<News>()
-                        if (known.isNotEmpty()) for (name in names.filter { it !in known }.sorted()) {
-                            val text = if (name == username) "$sender hat dich hinzugefügt." else "$sender hat $name hinzugefügt."
-                            system(chat, text)
-                            lines.add(News(cid, News.Kind.System, text = text, received = at))
+                        if (known.isNotEmpty()) {
+                            for (name in names.filter { it !in known }.sorted()) {
+                                val text = if (name == username) "$sender hat dich hinzugefügt." else "$sender hat $name hinzugefügt."
+                                system(chat, text)
+                                lines.add(News(cid, News.Kind.System, text = text, received = at))
+                            }
+                            for (name in names.filter { it in known && it != username }.sorted()) {
+                                if (devices.getJSONArray(name).length() > (oldRoster.optJSONArray(name)?.length() ?: 0)) {
+                                    val text = "${display(name)} benutzt jetzt ein weiteres Gerät."
+                                    system(chat, text)
+                                    lines.add(News(cid, News.Kind.System, text = text, received = at))
+                                }
+                            }
+                        } else if (profiles.has("gekoppelt") && (devices.optJSONArray(username)?.length() ?: 0) > 1 &&
+                            chat.getJSONArray("messages").length() == 0) {
+                            system(chat, "Ältere Nachrichten gibt es nur auf deinen anderen Geräten.")
                         }
                         chat.put("roster", devices)
                         data.optString("title").takeIf { it.isNotEmpty() }?.let { chat.put("title", it) }

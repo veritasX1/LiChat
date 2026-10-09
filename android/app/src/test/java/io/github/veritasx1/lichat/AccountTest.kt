@@ -66,7 +66,7 @@ httpd.serve_forever()
 
     private fun cli(profile: String, vararg args: String): String {
         val process = ProcessBuilder("python3", File(repo, "linux/lichat-cli").absolutePath, "--profil", profile, *args)
-            .redirectErrorStream(true).apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath }.start()
+            .redirectErrorStream(true).apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath; environment()["LICHAT_SOFORT"] = "1" }.start()
         val out = process.inputStream.bufferedReader().readText()
         process.waitFor()
         return out
@@ -221,6 +221,50 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(emptyList<String>(), bernd.typingNow(cid))
         assertEquals(1, bernd.chat(cid).getJSONArray("messages").length())
         assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("tippt") })
+    }
+
+    /** Card da5cbfcb: a second device – linked by code (Kotlin ↔ Kotlin), in every conversation, own messages everywhere;
+     *  a third from the Ubuntu console; signed out from the phone. */
+    @Test
+    fun severalDevices() {
+        val phone = person("anna"); val bernd = person("bernd")
+        val cid = phone.start(listOf("bernd"))
+        bernd.fetch()
+        val (url, code) = Account.linkOpen(url)
+        var accepted = ""
+        val accept = Thread { accepted = phone.acceptLink(code, pollMs = 100) }.apply { start() }
+        while (Account.linkState(url, code).optString("username").isEmpty()) Thread.sleep(50)
+        val tabletFolder = File(root, "anna-tablet")
+        val tablet = Account.linkFinish(tabletFolder, url, code, "Tablet", KeyVault.Plain.create(tabletFolder))
+        accept.join(10_000)
+        assertEquals(tablet.deviceId, accepted)
+        assertEquals("anna", tablet.username)
+        assertEquals(listOf(false to "", true to "Tablet"), tablet.myDevices().map { it.isThis to it.name })
+        tablet.fetch()
+        assertTrue(tablet.chats.has(cid))
+        assertTrue(bernd.fetch().any { it.text == "anna benutzt jetzt ein weiteres Gerät." })
+        bernd.send(cid, "An beide")
+        assertEquals(listOf("An beide"), phone.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        assertEquals(listOf("An beide"), tablet.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        tablet.send(cid, "Vom Tablet")
+        phone.fetch()
+        val last = phone.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }
+        assertEquals("anna" to "Vom Tablet", last.getString("from") to last.getString("text"))
+        // Ubuntu console as a third device, accepted on the phone
+        val console = ProcessBuilder("python3", File(repo, "linux/lichat-cli").absolutePath, "--profil", "anna3", "koppeln", url, "Rechner")
+            .redirectErrorStream(true).apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath }.start()
+        val reader = console.inputStream.bufferedReader()
+        val consoleCode = reader.readLine().substringAfter(":").trim().substringBefore(" ")
+        phone.acceptLink(consoleCode, pollMs = 100)
+        assertTrue(reader.readText().contains("Gekoppelt als anna"))
+        assertTrue(cli("anna3", "abholen").contains("neues Gespräch"))
+        assertEquals(3, phone.myDevices().size)
+        // signed out from the phone
+        phone.removeMyDevice(tablet.deviceId)
+        bernd.fetch()
+        bernd.send(cid, "Ohne Tablet")
+        try { tablet.fetch(); throw AssertionError("abgemeldet") } catch (e: LiChatException) { }
+        assertTrue(cli("anna3", "abholen").contains("Ohne Tablet"))
     }
 
     /** Card d54175ed: „@name“ members only, „@alle“ everyone, a mention of me is flagged (notifies even when muted). */
