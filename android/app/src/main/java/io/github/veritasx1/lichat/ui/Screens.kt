@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -531,10 +532,7 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
             }
         }
         if (active) Section(null) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                BasicText("Mitteilungen stummschalten", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
-                Switch(account.muted(cid), group.mute)
-            }
+            SwitchRow("Mitteilungen stummschalten", account.muted(cid), group.mute)
             if (isGroup) {
                 Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
                 BasicText("Unterhaltung verlassen", style = style(17f, 400, colors.red),
@@ -594,17 +592,11 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                 BasicText(if (notifying) "An" else "Aus", style = style(17f, 400, if (notifying) colors.secondary else colors.blue))
             }
             Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                BasicText("Absender und Text zeigen", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
-                Switch(preview, onPreview)
-            }
+            SwitchRow("Absender und Text zeigen", preview, onPreview)
         }
         Section("NACHRICHTEN", footer = "Wenn eingeschaltet, sehen andere, dass du ihre Nachrichten gelesen hast – und du siehst es bei ihnen " +
             "(blaue Haken). Ausgeschaltet gilt beides nicht. „Zugestellt“ gibt es immer.") {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                BasicText("Lesebestätigungen senden", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
-                Switch(receipts, onReceipts)
-            }
+            SwitchRow("Lesebestätigungen senden", receipts, onReceipts)
         }
         Section("VERBINDUNG", footer = "LiChat hält selbst eine Verbindung zu deinem Server – kein anderer Dienst erfährt, wann du Nachrichten bekommst. " +
             "Solange Android LiChat beim Akku einschränkt, können Nachrichten verspätet kommen.") {
@@ -622,13 +614,25 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
     }
 }
 
-/** Apple's switch: green when on, 51 × 31 dp (Li-Gestaltung). */
+/** Apple's switch: green when on, 51 × 31 dp (Li-Gestaltung) – only drawn; the row around it is what is tapped. */
 @Composable
-fun Switch(on: Boolean, onChange: (Boolean) -> Unit) {
+fun Switch(on: Boolean) {
     val colors = palette()
-    Box(Modifier.size(51.dp, 31.dp).clip(CircleShape).background(if (on) colors.green else colors.fill)
-        .clickable(role = Role.Switch) { onChange(!on) }.padding(2.dp), contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart) {
+    Box(Modifier.size(51.dp, 31.dp).clip(CircleShape).background(if (on) colors.green else colors.fill).padding(2.dp),
+        contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart) {
         Box(Modifier.size(27.dp).clip(CircleShape).background(Color.White))
+    }
+}
+
+/** A settings row with a switch: the whole row toggles, and it is one switch node with its label and state – like iOS
+ *  and LiMail (Michelle: before, only the pixels of the switch reacted and it had no checked state). */
+@Composable
+fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    val colors = palette()
+    Row(Modifier.fillMaxWidth().toggleable(value = on, role = Role.Switch, onValueChange = onChange)
+        .padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        BasicText(label, style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
+        Switch(on)
     }
 }
 

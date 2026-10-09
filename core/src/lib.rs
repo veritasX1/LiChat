@@ -157,12 +157,17 @@ impl Device {
         Ok((identity, leaf.signature_key().as_slice().to_vec()))
     }
 
+    /// Messages that crossed a change of the group (someone sent while someone else added a member) stay readable for
+    /// a few epochs – else they are lost (Michelle 09.10.). Small on purpose: older keys are not kept.
+    const PAST_EPOCHS: usize = 3;
+
     fn create_config() -> MlsGroupCreateConfig {
-        MlsGroupCreateConfig::builder().ciphersuite(CIPHERSUITE).use_ratchet_tree_extension(true).build()
+        MlsGroupCreateConfig::builder().ciphersuite(CIPHERSUITE).use_ratchet_tree_extension(true)
+            .max_past_epochs(Self::PAST_EPOCHS).build()
     }
 
     fn join_config() -> MlsGroupJoinConfig {
-        MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build()
+        MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).max_past_epochs(Self::PAST_EPOCHS).build()
     }
 
     /// Starts a conversation with the devices whose key packages were claimed from the server. Every key package is

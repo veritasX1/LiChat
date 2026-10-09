@@ -242,6 +242,28 @@ class ApiTest(unittest.TestCase):
         self.assertEqual([m["blob"] for m in got["box"]], [b64(b"\x00hallo")])
         self.assertLess(got["seconds"], 3)
 
+    def test_many_threads_at_once(self):
+        """09.10. (Michelle): waiting fetches, sends and acks in parallel broke the one shared SQLite connection (500)."""
+        devices = [self.account(name) for name in ("anna", "bernd", "erna", "otto")]
+        errors = []
+
+        def hammer(device, token):
+            for _ in range(40):
+                for method, path, body in (("POST", "/v1/messages", {"to": [d for d, _ in devices], "blob": b64(b"x")}),
+                                           ("GET", "/v1/messages", None)):
+                    status, data = self.call(method, path, body, token=token)
+                    if status != 200:
+                        errors.append((status, data))
+                box = self.call("GET", "/v1/messages", token=token)[1]["messages"]
+                self.call("POST", "/v1/messages/ack", {"ids": [m["id"] for m in box]}, token=token)
+
+        threads = [threading.Thread(target=hammer, args=d) for d in devices]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        self.assertEqual(errors, [])
+
     def test_waiting_fetch_ends_empty_after_its_time_and_is_capped(self):
         _, bernd = self.account("bernd")
         started = time.monotonic()

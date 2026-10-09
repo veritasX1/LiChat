@@ -37,6 +37,7 @@ import hashlib
 import io
 import re
 import secrets
+import fcntl
 import json
 import os
 import threading
@@ -149,6 +150,36 @@ class Server:
             raise LiChatError(f"Server nicht erreichbar: {getattr(error, 'reason', error)}") from None
 
 
+class ProfileLock:
+    """A lock for one profile – threads of this process (RLock) and other processes (flock on .sperre). Taking it first
+    loads what another process saved meanwhile, so nobody works on an old state and overwrites the newer one."""
+
+    def __init__(self, account):
+        self.account = account
+        self.thread = threading.RLock()
+        self.depth = 0
+        self.fd = None
+
+    def __enter__(self):
+        self.thread.acquire()
+        if self.depth == 0:
+            self.fd = os.open(self.account.folder / ".sperre", os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            self.account._reload_if_changed()
+        self.depth += 1
+        return self
+
+    def __exit__(self, *_):
+        self.depth -= 1
+        if self.depth == 0:
+            self.account._seen = self.account._disk_mark()
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = None
+        self.thread.release()
+        return False
+
+
 class Account:
     """An account in [folder]. Use Account.register(…) once, then Account(folder) to open it. [key]: the sealing key
     from the keyring (the app); without it the key file in the folder (lichat-cli)."""
@@ -161,10 +192,12 @@ class Account:
         except FileNotFoundError:
             raise LiChatError("Noch kein Konto – erst „register“") from None
         self.device = lichat_core.Device.load((self.folder / "state.bin").read_bytes(), self.key)
-        # Held while the state changes (never during a call to the server): the app's window reads under it too.
-        self.lock = threading.RLock()
         self.chats = self._unseal("chats.bin", CHATS_MAGIC, {})
         self.profiles = self._unseal("profile.bin", PROFILE_MAGIC, {"me": None, "people": {}})
+        # Held while the state changes (never during a wait at the server): the app's window reads under it too – and a
+        # second lichat-cli on the same profile waits for it (Michelle 09.10.: „warten“ + „abholen“ overwrote each other).
+        self.lock = ProfileLock(self)
+        self._seen = self._disk_mark()
         self._owe_picture = set()   # chats that learn my picture once their roster is known
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
         self._owe_removal = {}      # chat → people who left and whose devices I take out of the MLS group
@@ -208,6 +241,25 @@ class Account:
         return self.info["device"]
 
     # ------------------------------------------------------------------------------------------ storage
+
+    def _disk_mark(self):
+        try:
+            stat = (self.folder / "state.bin").stat()
+            return stat.st_mtime_ns, stat.st_size, stat.st_ino
+        except FileNotFoundError:
+            return None
+
+    def _reload_if_changed(self):
+        """Another process saved since we last looked: take its state (device, chats, pictures) before changing anything."""
+        if self._disk_mark() == getattr(self, "_seen", None):
+            return
+        self.device = lichat_core.Device.load((self.folder / "state.bin").read_bytes(), self.key)
+        self.chats = self._unseal("chats.bin", CHATS_MAGIC, {})
+        self.profiles = self._unseal("profile.bin", PROFILE_MAGIC, {"me": None, "people": {}})
+
+    def _mine(self, cid, mid):
+        """One of my messages, looked up again (after a reload the old dict is gone)."""
+        return next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
 
     def _unseal(self, name, magic, empty):
         path = self.folder / name
@@ -422,12 +474,13 @@ class Account:
             answer = self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         except (LiChatError, ValueError):
             with self.lock:
-                message["status"] = "fehler"
+                self._mine(cid, message["mid"])["status"] = "fehler"
                 self.save()
             raise
         with self.lock:
-            message["status"] = "gesendet"
-            message["gesendet"] = int(time.time())
+            mine = self._mine(cid, message["mid"])
+            mine["status"] = "gesendet"
+            mine["gesendet"] = int(time.time())
             self.save()
         return answer
 
@@ -637,9 +690,13 @@ class Account:
         [{"chat", "from", "text", "at"} | {"chat", "joined": True} | {"chat", "problem"}].
         [wait] seconds: the server answers as soon as something arrives (the app's standing connection, no push
         service). Only one fetch at a time per account – the app's listener thread."""
-        path = f"/v1/messages?warten={int(wait)}" if wait else "/v1/messages"
-        waiting = self.server.call("GET", path, timeout=TIMEOUT + wait)["messages"]
+        if wait:
+            # The long wait happens outside the lock; what arrived is fetched again under it, so two processes on one
+            # profile never handle (and acknowledge) the same packets twice.
+            if not self.server.call("GET", f"/v1/messages?warten={int(wait)}", timeout=TIMEOUT + wait)["messages"]:
+                return []
         with self.lock:
+            waiting = self.server.call("GET", "/v1/messages")["messages"]
             news, joined, done = [], 0, []
             for item in waiting:
                 blob = unb64(item["blob"])
@@ -661,7 +718,8 @@ class Account:
             if not done:
                 return news
             self.save()
-        self.server.call("POST", "/v1/messages/ack", {"ids": done})
+            # Acknowledged before the lock opens: another process on this profile must not get these packets again.
+            self.server.call("POST", "/v1/messages/ack", {"ids": done})
         if joined:
             # Each welcome used up a key package of the supply: replace it (state saved before offering).
             with self.lock:

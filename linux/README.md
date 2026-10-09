@@ -13,7 +13,7 @@ Ubuntu-Seite von LiChat: die App im Look von Nachrichten auf macOS 15 (`python3 
 
 Kern bauen (nie gleichzeitig mit Gradle):
 
-    cd ../core && nice cargo build -j 3 --release --features python && cp target/release/liblichat_core.so ../linux/lichat/lichat_core.abi3.so
+    ../tools/kern-python.sh      (tauscht die Datei per mv – laufende LiChats behalten ihre)
 
 Ausprobieren mit dem lokalen Server:
 

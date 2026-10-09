@@ -78,10 +78,22 @@ def main(argv):
         limit = None
         if command == "warten" and args[:1] == ["--bis"] and len(args) > 1:
             limit = time.time() + float(args[1])
+        pause = 2
         while True:
             wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
-            # Receipts (✓✓) only move the ticks – nothing to show, keep waiting.
-            news = [n for n in account.fetch(wait=wait) if not n.get("receipt")]
+            try:
+                # Receipts (✓✓) only move the ticks – nothing to show, keep waiting.
+                news = [n for n in account.fetch(wait=wait) if not n.get("receipt")]
+                pause = 2
+            except LiChatError as error:
+                # Server restarting (502), down (5xx) or no network: „warten“ keeps listening (Michelle – else an instance
+                # is deaf after every restart), with a growing pause; „abholen“ says it and ends.
+                if command == "abholen" or not (str(error).startswith("Server nicht erreichbar") or "(5" in str(error)):
+                    raise
+                print(f"({error} – neuer Versuch in {pause} s)", file=sys.stderr, flush=True)
+                time.sleep(pause)
+                pause = min(pause * 2, 60)
+                news = []
             if news or command == "abholen" or (limit and time.time() >= limit):
                 break
         for item in news:
