@@ -1013,15 +1013,31 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
     val active = chat.optString("removed").isEmpty()
     var name by remember(cid, version) { mutableStateOf(chat.optString("title")) }
     var adding by remember(cid) { mutableStateOf("") }
+    val person = others.singleOrNull()?.takeIf { !isGroup }
+    val picture = if (person != null) account.picture(person) else account.groupPicture(cid)
+    // Olaf zu 8534fe11: a tap on the picture shows it big and whole
+    var big by remember(cid) { mutableStateOf(false) }
+    if (big && picture != null) {
+        androidx.activity.compose.BackHandler { big = false }
+        PhotoViewer(picture) { big = false }
+        return
+    }
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.ime)).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
             Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onBack) }
         }
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.clip(CircleShape).clickable(enabled = isGroup && active, onClick = group.picture)) {
-                Avatar(title, if (others.size == 1 && !isGroup) account.picture(others[0]) else account.groupPicture(cid), 88.dp)
+            Box(Modifier.clip(CircleShape).semantics { contentDescription = "Bild" }
+                .clickable(enabled = picture != null || (isGroup && active)) { if (picture != null) big = true else group.picture() }) {
+                Avatar(title, picture, 88.dp)
             }
             if (isGroup && active) BasicText("Bild ändern", style = style(15f, 400, colors.blue), modifier = Modifier.padding(top = 6.dp).clickable(onClick = group.picture))
+            // Like Apple Contacts: my own picture of this person, only for me – „Zurücksetzen“ brings their shared one back
+            if (person != null) Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                BasicText("Bild ändern", style = style(15f, 400, colors.blue), modifier = Modifier.clickable { group.contactPicture(person) })
+                if (account.hasContactPicture(person))
+                    BasicText("Zurücksetzen", style = style(15f, 400, colors.blue), modifier = Modifier.clickable { group.resetContactPicture(person) })
+            }
             if (!isGroup || !active) BasicText(title, style = style(22f, 600, colors.label), modifier = Modifier.padding(top = 10.dp, bottom = 20.dp))
         }
         if (isGroup && active) Section("GRUPPENNAME", footer = "Name und Bild sehen nur die Mitglieder – sie stehen nie im Klartext auf dem Server.") {
@@ -1088,6 +1104,8 @@ class GroupActions(
     val leave: () -> Unit = {},
     val receipts: (Boolean) -> Unit = {},
     val block: ((String, Boolean) -> Unit)? = null,
+    val contactPicture: (String) -> Unit = {},
+    val resetContactPicture: (String) -> Unit = {},
 )
 
 @Composable

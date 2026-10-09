@@ -1173,8 +1173,21 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     fun picture(user: String): ByteArray? {
-        val value = if (user == username) profiles.opt("me") else profiles.getJSONObject("people").opt(user)
+        val own = contactPictures.opt(user) as? String
+        val value = own?.takeIf { it.isNotEmpty() } ?: if (user == username) profiles.opt("me") else profiles.getJSONObject("people").opt(user)
         return (value as? String)?.takeIf { it.isNotEmpty() }?.let { unb64(it) }
+    }
+
+    private val contactPictures: JSONObject get() = profiles.optJSONObject("kontaktbilder") ?: JSONObject().also { profiles.put("kontaktbilder", it) }
+
+    fun hasContactPicture(user: String): Boolean = (contactPictures.opt(user) as? String)?.isNotEmpty() == true
+
+    /** A picture of someone only for me, like Apple Contacts (Olaf 8534fe11): it follows on my devices (their own group),
+     *  the person learns nothing. [jpeg] already prepared (Pictures.prepare); null: their shared picture again („Zurücksetzen“). */
+    fun setContactPicture(user: String, jpeg: ByteArray?) {
+        val value = jpeg?.let { b64(it) }
+        synchronized(lock) { if (value != null) contactPictures.put(user, value) else contactPictures.remove(user); save() }
+        tellOwnDevices(JSONObject().put("t", "kontaktbild").put("name", user).put("bild", value ?: JSONObject.NULL))
     }
 
     /** My picture (already square, 512 px, JPEG without EXIF – Pictures.prepare), sent end-to-end into every chat. */
@@ -1322,6 +1335,12 @@ class Account(val folder: File, private val key: ByteArray) {
                             val key = data.optString("key")
                             val target = chats.optJSONObject(data.optString("chat"))
                             if (target != null && key in syncedChatKeys) { if (data.isNull("value")) target.remove(key) else target.put(key, data.get("value")) }
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                        "kontaktbild" -> {
+                            val value = data.opt("bild") as? String
+                            if (!value.isNullOrEmpty() && value.length <= PICTURE_MAX * 2) contactPictures.put(data.optString("name"), value)
+                            else contactPictures.remove(data.optString("name"))
                             return listOf(News(null, News.Kind.Settings))
                         }
                         "blockiert" -> {

@@ -1135,9 +1135,27 @@ class Window(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
         members = self.account.members(cid)
         group = len(members) > 2 or bool(self.account.chats[cid].get("title"))
-        top = avatar(self.account.title(cid), 64, self.account.group_picture(cid) if group else None)
+        others = [m for m in members if m != self.account.username]
+        person = others[0] if not group and len(others) == 1 else None
+        shown = self.account.picture(person) if person else self.account.group_picture(cid) if group else None
+        top = avatar(self.account.title(cid), 64, shown)
+        if shown:
+            # Olaf zu 8534fe11: a click shows the picture big and whole
+            top = Gtk.Button(child=top, css_classes=["flat", "circular"], tooltip_text="Bild groß zeigen")
+            top.connect("clicked", lambda *_: (button.popdown(), self.show_picture(shown, self.account.title(cid))))
         top.set_halign(Gtk.Align.CENTER)
         box.append(top)
+        if person:
+            # Like Apple Contacts: my own picture of this person, only for me (on my devices) – „Zurücksetzen“ brings theirs back
+            row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+            change = Gtk.Button(label="Bild ändern", css_classes=["flat"])
+            change.connect("clicked", lambda *_: (button.popdown(), self.choose_picture(person=person)))
+            row.append(change)
+            if self.account.has_contact_picture(person):
+                reset = Gtk.Button(label="Zurücksetzen", css_classes=["flat"])
+                reset.connect("clicked", lambda *_: (button.popdown(), self.group_job(lambda a: a.set_contact_picture(person, None))))
+                row.append(reset)
+            box.append(row)
         if group and not self.account.chats[cid].get("removed"):
             # Name and picture of the group (card d45b319a) – end to end, never on the server.
             name = Gtk.Entry(text=self.account.chats[cid].get("title", ""), placeholder_text="Gruppenname", css_classes=["lichat-field"],
@@ -1753,9 +1771,10 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
         self.name_dialog = dialog
 
-    def choose_picture(self, cid=None):
+    def choose_picture(self, cid=None, person=None):
         self.picture_for = cid      # None: my profile picture; a chat: that group's picture
-        dialog = Gtk.FileDialog(title="Gruppenbild wählen" if cid else "Profilbild wählen")
+        self.contact_picture_for = person      # a person: my own picture of them, only for me
+        dialog = Gtk.FileDialog(title="Kontaktbild wählen" if person else "Gruppenbild wählen" if cid else "Profilbild wählen")
         images = Gtk.FileFilter(name="Bilder")
         images.add_mime_type("image/*")
         filters = Gio.ListStore.new(Gtk.FileFilter)
@@ -1768,11 +1787,29 @@ class Window(Adw.ApplicationWindow):
             file = dialog.open_finish(result)
         except GLib.Error:
             return   # cancelled
-        if getattr(self, "picture_for", None):
+        if getattr(self, "contact_picture_for", None):
+            person, path = self.contact_picture_for, file.get_path()
+            self.group_job(lambda a: a.set_contact_picture(person, path))
+        elif getattr(self, "picture_for", None):
             cid, path = self.picture_for, file.get_path()
             self.group_job(lambda a: a.set_group_picture(cid, path))
         else:
             self.set_picture(file.get_path())
+
+    def show_picture(self, data, title):
+        """A picture big and whole in its own window (Esc or a click closes it)."""
+        window = Gtk.Window(title=title, transient_for=self, modal=True, default_width=560, default_height=560)
+        picture = Gtk.Picture.new_for_paintable(Gdk.Texture.new_from_bytes(GLib.Bytes.new(data)))
+        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        window.set_child(picture)
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: window.close())
+        picture.add_controller(click)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", lambda _c, key, *_: key == Gdk.KEY_Escape and (window.close() or True))
+        window.add_controller(keys)
+        window.present()
+        return window
 
     def set_picture(self, path):
         """Made small and without EXIF, then sent end-to-end into every conversation (account.set_picture)."""

@@ -10,6 +10,8 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -255,6 +257,17 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(tablet.readReceipts)
         assertTrue(bernd.fetch().any { it.text == "anna benutzt jetzt ein weiteres Gerät." })
         assertEquals(listOf("anna", "bernd"), bernd.members(cid).sorted())      // people, not devices (8534fe11)
+        // Olaf zu 8534fe11: my own picture of Bernd, like Apple Contacts – on my devices, Bernd learns nothing
+        val mine = byteArrayOf(-1, -40, -1, 1, 2, 3)
+        phone.setContactPicture("bernd", mine)
+        assertTrue(phone.hasContactPicture("bernd"))
+        tablet.fetch()
+        assertArrayEquals(mine, tablet.picture("bernd"))
+        assertEquals(emptyList<News>(), bernd.fetch())
+        tablet.setContactPicture("bernd", null)                                   // „Zurücksetzen“
+        phone.fetch()
+        assertFalse(phone.hasContactPicture("bernd"))
+        assertNull(phone.picture("bernd"))
         bernd.send(cid, "An beide")
         assertEquals(listOf("An beide"), phone.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
         assertEquals(listOf("An beide"), tablet.fetch().filter { it.kind == News.Kind.Text }.map { it.text })

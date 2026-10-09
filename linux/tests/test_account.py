@@ -886,6 +886,36 @@ class Devices(Base):
         with self.assertRaises(LiChatError):
             laptop.fetch()
 
+    def test_own_contact_picture_only_for_me_on_all_my_devices(self):
+        """Olaf zu 8534fe11: „Bild ändern“ wie Apple Kontakte – nur für mich, über meine Geräte abgeglichen, Bernd merkt nichts."""
+        phone, bernd = self.person("anna"), self.person("bernd")
+        bernd.set_picture(test_image(self.root / "bernd.jpg", gps=False))
+        cid = bernd.start(["anna"])
+        phone.fetch()
+        shared = phone.picture("bernd")
+        self.assertIsNotNone(shared)
+        laptop = self.link(phone)
+        laptop.fetch()
+        bernd.fetch()
+        from PIL import Image
+        own = io.BytesIO()
+        Image.new("RGB", (800, 600), (30, 90, 200)).save(own, "JPEG")
+        phone.set_contact_picture("bernd", own.getvalue())
+        self.assertTrue(phone.has_contact_picture("bernd"))
+        mine = phone.picture("bernd")
+        self.assertTrue(mine != shared, "eigenes Bild statt des geteilten")
+        laptop.fetch()
+        self.assertEqual(laptop.picture("bernd"), mine)
+        self.assertEqual(self.reopen(laptop).picture("bernd"), mine, "nach Neustart noch da")
+        self.assertEqual(bernd.fetch(), [], "Bernd merkt nichts")
+        self.assertEqual(bernd.picture("bernd"), shared)
+        # „Zurücksetzen“ – auf dem Laptop, das Handy folgt
+        laptop = self.reopen(laptop)
+        laptop.set_contact_picture("bernd", None)
+        phone.fetch()
+        self.assertFalse(phone.has_contact_picture("bernd"))
+        self.assertEqual(phone.picture("bernd"), shared)
+
     def test_the_server_cannot_slip_in_a_device(self):
         """A roster naming more devices than the person has in the MLS group is refused."""
         anna, bernd = self.person("anna"), self.person("bernd")

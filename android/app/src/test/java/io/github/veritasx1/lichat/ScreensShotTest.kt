@@ -246,6 +246,25 @@ httpd.serve_forever()
         org.junit.Assert.assertEquals("bernd", blocked)
     }
 
+    /** Olaf zu 8534fe11: the other's picture on top, a tap shows it big, „Bild ändern“ only for me, „Zurücksetzen“. */
+    @Test
+    fun detailsContactPicture() {
+        var changed = ""; var reset = ""
+        val jpeg = java.io.ByteArrayOutputStream().also {
+            android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF3366CC.toInt()) }
+                .compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        anna.setContactPicture("bernd", jpeg)
+        val actions = io.github.veritasx1.lichat.ui.GroupActions(contactPicture = { changed = it }, resetContactPicture = { reset = it })
+        shot("4c-info-kontaktbild") { Details(anna, cid, 0, {}, {}, actions) }
+        compose.onNodeWithText("Bild ändern").performClick()
+        org.junit.Assert.assertEquals("bernd", changed)
+        compose.onNodeWithText("Zurücksetzen").performClick()
+        org.junit.Assert.assertEquals("bernd", reset)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Bild")).performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Foto, tippen zum Schließen")).assertIsDisplayed()
+        anna.setContactPicture("bernd", null)
+    }
+
     @Test
     fun typing() {
         anna.typingIndicator = true; bernd.typingIndicator = true

@@ -935,9 +935,28 @@ class Account:
         return re.sub(r"\.{2,}", ".", text)[:32]
 
     def picture(self, username):
-        """The JPEG bytes of [username]'s picture (mine too), or None."""
-        value = self.profiles["me"] if username == self.username else self.profiles["people"].get(username)
+        """The JPEG bytes of [username]'s picture (mine too), or None – my own contact picture for them first (8534fe11)."""
+        own = self.profiles.get("kontaktbilder", {}).get(username)
+        value = own or (self.profiles["me"] if username == self.username else self.profiles["people"].get(username))
         return unb64(value) if value else None
+
+    def has_contact_picture(self, username):
+        return bool(self.profiles.get("kontaktbilder", {}).get(username))
+
+    def set_contact_picture(self, username, path_or_bytes):
+        """A picture of someone only for me, like Apple Contacts (Olaf 8534fe11): it follows on my devices (their own group),
+        the person learns nothing. None: their shared picture again („Zurücksetzen“)."""
+        if isinstance(path_or_bytes, (bytes, bytearray)):
+            path_or_bytes = io.BytesIO(bytes(path_or_bytes))
+        value = b64(self.prepare_picture(path_or_bytes)) if path_or_bytes is not None else None
+        with self.lock:
+            pictures = self.profiles.setdefault("kontaktbilder", {})
+            if value:
+                pictures[username] = value
+            else:
+                pictures.pop(username, None)
+            self.save()
+        self._tell_own_devices({"t": "kontaktbild", "name": username, "bild": value})
 
     def targets(self, cid):
         return sorted({d for devices in self.chats[cid]["roster"].values() for d in devices} - {self.device_id})
@@ -1608,6 +1627,13 @@ class Account:
                     self.chats[data["chat"]].pop(data["key"], None)
                 else:
                     self.chats[data["chat"]][data["key"]] = data["value"]
+                return [{"chat": None, "settings": True}]
+            if data.get("t") == "kontaktbild" and isinstance(data.get("name"), str):
+                pictures = self.profiles.setdefault("kontaktbilder", {})
+                if data.get("bild") and len(str(data["bild"])) <= PICTURE_MAX * 2:
+                    pictures[data["name"]] = data["bild"]
+                else:
+                    pictures.pop(data["name"], None)
                 return [{"chat": None, "settings": True}]
             if data.get("t") == "blockiert" and isinstance(data.get("name"), str):
                 if data.get("an"):
