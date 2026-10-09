@@ -9,6 +9,10 @@
 
 #[cfg(feature = "python")]
 mod python;
+#[cfg(feature = "mobile")]
+mod mobile;
+#[cfg(feature = "mobile")]
+uniffi::setup_scaffolding!();
 
 use std::collections::HashMap;
 
