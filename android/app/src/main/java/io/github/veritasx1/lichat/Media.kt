@@ -48,8 +48,11 @@ class Media(private val context: Context) {
                 account.sendAttachment(cid, clean, name.substringBeforeLast('.') + ".m4a", "audio/mp4", "sprache")
             }
             // Sent as a file the content stays as it is – but never its metadata (Michelle: an MP4 via „Datei“ kept its place).
-            asFile && mime.startsWith("image/") && mime != "image/gif" && mime != "image/svg+xml" ->
-                account.sendAttachment(cid, Pictures.withoutMetadata(bytes), name.substringBeforeLast('.') + ".jpg", "image/jpeg", "datei")
+            asFile && mime.startsWith("image/") && mime != "image/gif" && mime != "image/svg+xml" -> {
+                // Full size, only without EXIF – and shown as a picture with its preview, like on the iPhone (Michelle).
+                val full = Pictures.withoutMetadata(bytes)
+                account.sendAttachment(cid, full, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = Pictures.photo(full).second)
+            }
             asFile && mime.startsWith("video/") -> account.sendAttachment(cid,
                 clean(bytes, "mp4") ?: throw LiChatException("Video lässt sich nicht ohne Ortsangaben verschicken"),
                 name.substringBeforeLast('.') + ".mp4", "video/mp4", "datei")
@@ -97,7 +100,8 @@ class Media(private val context: Context) {
                 extractor.seekTo(0, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             }
             muxer.stop(); muxer.release(); extractor.release()
-            output.readBytes()
+            // MediaMuxer adds the phone's maker, model and Android version itself (Michelle) – those go too.
+            io.github.veritasx1.lichat.core.Mp4.withoutMetadata(output.readBytes())
         } catch (e: Exception) {
             null
         } finally {

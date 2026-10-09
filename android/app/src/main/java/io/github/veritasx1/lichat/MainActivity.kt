@@ -39,6 +39,7 @@ import io.github.veritasx1.lichat.ui.PhotoViewer
 import io.github.veritasx1.lichat.ui.ChatScreen
 import io.github.veritasx1.lichat.ui.Details
 import io.github.veritasx1.lichat.ui.Explain
+import io.github.veritasx1.lichat.ui.GroupActions
 import io.github.veritasx1.lichat.ui.LocalPalette
 import io.github.veritasx1.lichat.ui.NewMessage
 import io.github.veritasx1.lichat.ui.Palette
@@ -145,11 +146,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         runCatching { battery.launch(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))) }
     }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { askBattery() }
+    // The same picker for my profile picture and a group's picture (groupPictureFor = that chat).
+    var groupPictureFor by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val acc = account ?: return@rememberLauncherForActivityResult
+        val group = groupPictureFor.also { groupPictureFor = null }
         if (uri != null) work({
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw LiChatException("Bild nicht lesbar")
-            acc.setPicture(Pictures.prepare(bytes))
+            if (group != null) acc.setGroupPicture(group, Pictures.prepare(bytes)) else acc.setPicture(Pictures.prepare(bytes))
         }) { _, error -> problem = error; Hub.changed() }
     }
 
@@ -258,9 +262,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             }
             is Page.Info -> {
                 BackHandler { page = Page.Chat(p.cid) }
-                Details(acc, p.cid, version, onBack = { page = Page.Chat(p.cid) }) { name ->
-                    work({ acc.remove(p.cid, listOf(name)) }) { _, error -> problem = error; Hub.changed() }
-                }
+                fun groupWork(job: () -> Unit) = work(job) { _, error -> problem = error; Hub.changed() }
+                Details(acc, p.cid, version, onBack = { page = Page.Chat(p.cid) }, onRemove = { name -> groupWork { acc.remove(p.cid, listOf(name)) } },
+                    group = GroupActions(
+                        rename = { name -> groupWork { acc.rename(p.cid, name) } },
+                        picture = { groupPictureFor = p.cid; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        add = { names -> groupWork { acc.add(p.cid, names) } },
+                        mute = { on -> groupWork { acc.mute(p.cid, on) } },
+                        leave = { groupWork { acc.leave(p.cid) }; page = Page.Chat(p.cid) },
+                    ))
             }
             Page.Settings -> {
                 BackHandler { page = Page.List }

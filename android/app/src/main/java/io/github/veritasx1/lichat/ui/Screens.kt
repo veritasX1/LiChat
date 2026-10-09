@@ -183,7 +183,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(if (count > (seen[cid] ?: 0)) colors.blue else Color.Transparent))
                     Spacer(Modifier.width(6.dp))
-                    Avatar(title, if (others.size == 1) account.picture(others[0]) else null, 44.dp)
+                    Avatar(title, if (others.size == 1) account.picture(others[0]) else account.groupPicture(cid), 44.dp)
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             BasicText(title, style = style(17f, 600, colors.label), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
@@ -226,7 +226,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             }
             Column(Modifier.align(Alignment.Center).clip(RoundedCornerShape(8.dp)).clickable(onClick = onInfo).padding(vertical = 6.dp, horizontal = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally) {
-                Avatar(title, if (others.size == 1) account.picture(others[0]) else null, 36.dp)
+                Avatar(title, if (others.size == 1) account.picture(others[0]) else account.groupPicture(cid), 36.dp)
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                     BasicText(title, style = style(11f, 400, colors.label), maxLines = 1)
                     GlyphIcon(Glyph.Chevron, colors.tertiary, 9.dp, Modifier.padding(start = 2.dp))
@@ -257,7 +257,10 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
                     return@items
                 }
-                Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+                    verticalAlignment = Alignment.Bottom) {
+                    // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
+                    if (!mine && others.size > 1) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
                     BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
                         modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
                             .padding(horizontal = 12.dp, vertical = 7.dp))
@@ -476,37 +479,83 @@ fun NewMessage(problem: String?, onCancel: () -> Unit, onSend: (List<String>, St
 // ---------------------------------------------------------------------------------------------- details
 
 @Composable
-fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onRemove: (String) -> Unit) {
+fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onRemove: (String) -> Unit,
+            group: GroupActions = GroupActions()) {
     val colors = palette()
     val members = remember(version, cid) { runCatching { account.members(cid) }.getOrDefault(emptyList()) }
     val code = remember(version, cid) { runCatching { account.safetyCode(cid) }.getOrDefault("") }
     val title = account.title(cid)
     val others = account.others(cid)
-    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
+    val chat = account.chat(cid)
+    val isGroup = members.size > 2 || chat.optString("title").isNotEmpty()
+    val active = chat.optString("removed").isEmpty()
+    var name by remember(cid, version) { mutableStateOf(chat.optString("title")) }
+    var adding by remember(cid) { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.ime)).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
             Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onBack) }
         }
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Avatar(title, if (others.size == 1) account.picture(others[0]) else null, 88.dp)
-            BasicText(title, style = style(22f, 600, colors.label), modifier = Modifier.padding(top = 10.dp, bottom = 20.dp))
+            Box(Modifier.clip(CircleShape).clickable(enabled = isGroup && active, onClick = group.picture)) {
+                Avatar(title, if (others.size == 1 && !isGroup) account.picture(others[0]) else account.groupPicture(cid), 88.dp)
+            }
+            if (isGroup && active) BasicText("Bild ändern", style = style(15f, 400, colors.blue), modifier = Modifier.padding(top = 6.dp).clickable(onClick = group.picture))
+            if (!isGroup || !active) BasicText(title, style = style(22f, 600, colors.label), modifier = Modifier.padding(top = 10.dp, bottom = 20.dp))
+        }
+        if (isGroup && active) Section("GRUPPENNAME", footer = "Name und Bild sehen nur die Mitglieder – sie stehen nie im Klartext auf dem Server.") {
+            BasicTextField(name, { name = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { group.rename(name) }),
+                modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = "Gruppenname" },
+                decorationBox = { inner -> Box { if (name.isEmpty()) BasicText("Gruppenname", style = style(17f, 400, colors.tertiary)); inner() } })
         }
         Section("${members.size} Personen") {
-            members.forEachIndexed { i, name ->
+            members.forEachIndexed { i, member ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(name, account.picture(name), 32.dp)
-                    BasicText(if (name == account.username) "$name (ich)" else name, style = style(17f, 400, colors.label),
+                    Avatar(member, account.picture(member), 32.dp)
+                    BasicText(if (member == account.username) "$member (ich)" else member, style = style(17f, 400, colors.label),
                         modifier = Modifier.weight(1f).padding(start = 12.dp))
                     // In a group someone can be taken out (test plan S2).
-                    if (members.size > 2 && name != account.username) TextButton("Entfernen", colors.red) { onRemove(name) }
+                    if (members.size > 2 && member != account.username && active) TextButton("Entfernen", colors.red) { onRemove(member) }
                 }
-                if (i < members.lastIndex) Box(Modifier.padding(start = 60.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                Box(Modifier.padding(start = 60.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+            }
+            if (active) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(32.dp).clip(CircleShape).background(colors.fill), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Plus, colors.blue, 18.dp) }
+                BasicTextField(adding, { adding = it.lowercase() }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = {
+                        group.add(adding.split(',', ';', ' ').map { it.trim() }.filter { it.isNotEmpty() }); adding = "" }),
+                    modifier = Modifier.weight(1f).padding(start = 12.dp).semantics { contentDescription = "Person hinzufügen" },
+                    decorationBox = { inner -> Box { if (adding.isEmpty()) BasicText("Person hinzufügen", style = style(17f, 400, colors.blue)); inner() } })
+            }
+        }
+        if (active) Section(null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicText("Mitteilungen stummschalten", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
+                Switch(account.muted(cid), group.mute)
+            }
+            if (isGroup) {
+                Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                BasicText("Unterhaltung verlassen", style = style(17f, 400, colors.red),
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = group.leave).padding(16.dp))
             }
         }
         if (code.isNotEmpty()) Section("SICHERHEITSCODE", footer = "Vergleicht den Code auf allen Geräten – gleich heißt: niemand liest mit.") {
             BasicText(code.split(" ").chunked(4).joinToString("\n") { it.joinToString("  ") }, style = style(20f, 500, colors.label).copy(textAlign = TextAlign.Center), modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = "Sicherheitscode $code" })
         }
+        Spacer(Modifier.height(24.dp))
     }
 }
+
+/** What the details of a group can do (card d45b319a) – the activity does the work. */
+class GroupActions(
+    val rename: (String) -> Unit = {},
+    val picture: () -> Unit = {},
+    val add: (List<String>) -> Unit = {},
+    val mute: (Boolean) -> Unit = {},
+    val leave: () -> Unit = {},
+)
 
 @Composable
 fun Section(header: String?, footer: String? = null, content: @Composable () -> Unit) {
