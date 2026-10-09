@@ -1,0 +1,19 @@
+# docker compose -f deploy/docker-compose.yml up -d --build   (aus ~/LiChat auf dem Pi)
+services:
+  lichat:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    container_name: lichat-server
+    restart: unless-stopped
+    ports: ["127.0.0.1:8440:8000"]          # only nginx reaches it
+    environment:
+      LICHAT_TRUSTED_PROXIES: "172.30.0.1"   # nginx through the bridge: X-Real-IP is believed only from there
+    volumes:
+      - /media/olaf/6TB/lichat/daten:/daten  # never on the SD card
+    networks: [lichat]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+networks:
+  lichat:
+    ipam: { config: [{ subnet: 172.30.0.0/24, gateway: 172.30.0.1 }] }
