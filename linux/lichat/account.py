@@ -12,7 +12,7 @@ Inside the MLS application messages (encrypted, only members read it) a small JS
 
 On disk, in the profile folder (files 600, folder 700):
     account.json   server, user name, device id, token
-    key            32 random bytes sealing the two files below (the app will keep it in the keyring instead)
+    key            32 random bytes sealing the two files below – only lichat-cli; the app keeps it in the keyring
     state.bin      the core's state, sealed by the core (LICHAT1)
     chats.bin      rosters, titles and the history, sealed here (LICHATC1, AES-256-GCM)
 """
@@ -20,6 +20,7 @@ On disk, in the profile folder (files 600, folder 700):
 import base64
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -105,23 +106,26 @@ class Server:
 
 
 class Account:
-    """An account in [folder]. Use Account.register(…) once, then Account(folder) to open it."""
+    """An account in [folder]. Use Account.register(…) once, then Account(folder) to open it. [key]: the sealing key
+    from the keyring (the app); without it the key file in the folder (lichat-cli)."""
 
-    def __init__(self, folder):
+    def __init__(self, folder, key=None):
         self.folder = Path(folder)
         try:
             self.info = json.loads((self.folder / "account.json").read_text())
-            self.key = (self.folder / "key").read_bytes()
+            self.key = key if key is not None else (self.folder / "key").read_bytes()
         except FileNotFoundError:
             raise LiChatError("Noch kein Konto – erst „register“") from None
         self.device = lichat_core.Device.load((self.folder / "state.bin").read_bytes(), self.key)
+        # Held while the state changes (never during a call to the server): the app's window reads under it too.
+        self.lock = threading.RLock()
         self.chats = self._open_chats()
         self.server = Server(self.info["server"], self.info["token"])
 
     # ------------------------------------------------------------------------------------------ setup
 
     @classmethod
-    def register(cls, folder, server, invite, username):
+    def register(cls, folder, server, invite, username, key=None):
         folder = Path(folder)
         if (folder / "account.json").exists():
             raise LiChatError(f"In {folder} gibt es schon ein Konto")
@@ -129,17 +133,19 @@ class Account:
         os.chmod(folder, 0o700)
         anonymous = Server(server)
         device = lichat_core.Device(username)
-        key = os.urandom(32)
+        own_key = key is None
+        key = os.urandom(32) if own_key else key
         answer = anonymous.call("POST", "/v1/register", {"invite": invite, "username": username,
                                                          "identity": b64(device.identity_key())})
         info = {"server": anonymous.url, "username": username, "device": answer["device"], "token": answer["token"]}
         # Key packages are made (and their private halves kept in the state) before they are offered.
         packages = device.key_packages(SUPPLY)
         reserve = device.last_resort_key_package()
-        write_private(folder / "key", key)
+        if own_key:
+            write_private(folder / "key", key)
         write_private(folder / "state.bin", bytes(device.save(key)))
         write_private(folder / "account.json", json.dumps(info, indent=1).encode())
-        account = cls(folder)
+        account = cls(folder, None if own_key else key)
         account.save()
         account.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
         account.server.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(reserve)})
@@ -205,14 +211,15 @@ class Account:
                     raise LiChatError(f"Key-Package passt nicht zu {user} – Gespräch nicht begonnen")
                 roster.setdefault(user, []).append(item["device"])
                 packages.append(package)
-        conversation, welcome = self.device.start_conversation(packages)
-        conversation = bytes(conversation)
-        cid = conversation.hex()
-        self.chats[cid] = {"title": title, "roster": roster, "messages": []}
-        hello = self._payload({"t": "roster", "devices": roster, "title": title})
-        packet = self.device.encrypt(conversation, hello)
-        self.save()
-        targets = self.targets(cid)
+        with self.lock:
+            conversation, welcome = self.device.start_conversation(packages)
+            conversation = bytes(conversation)
+            cid = conversation.hex()
+            self.chats[cid] = {"title": title, "roster": roster, "messages": []}
+            hello = self._payload({"t": "roster", "devices": roster, "title": title})
+            packet = self.device.encrypt(conversation, hello)
+            self.save()
+            targets = self.targets(cid)
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(WELCOME + bytes(welcome))})
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return cid
@@ -229,10 +236,12 @@ class Account:
         if not text:
             raise LiChatError("Leere Nachricht")
         at = int(time.time())
-        packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "text", "text": text, "at": at}))
-        self.chats[cid]["messages"].append({"from": self.username, "text": text, "at": at})
-        self.save()
-        answer = self.server.call("POST", "/v1/messages", {"to": self.targets(cid), "blob": b64(MLS + bytes(packet))})
+        with self.lock:
+            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "text", "text": text, "at": at}))
+            self.chats[cid]["messages"].append({"from": self.username, "text": text, "at": at})
+            self.save()
+            targets = self.targets(cid)
+        answer = self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return answer
 
     def members(self, cid):
@@ -249,32 +258,34 @@ class Account:
         """Fetches the mailbox, decrypts, keeps – and only then acknowledges. Returns what is new for the user:
         [{"chat", "from", "text", "at"} | {"chat", "joined": True} | {"chat", "problem"}]."""
         waiting = self.server.call("GET", "/v1/messages")["messages"]
-        news, joined, done = [], 0, []
-        for item in waiting:
-            blob = unb64(item["blob"])
-            tag, body = blob[:1], blob[1:]
-            try:
-                if tag == WELCOME:
-                    cid = bytes(self.device.join(body)).hex()
-                    self.chats.setdefault(cid, {"title": "", "roster": {}, "messages": []})
-                    joined += 1
-                    news.append({"chat": cid, "joined": True})
-                elif tag == MLS:
-                    news.extend(self._take(self.device.receive(body)))
-                else:
-                    news.append({"chat": None, "problem": "unbekanntes Paket"})
-            except ValueError as error:
-                # Replayed, forged or from an epoch long gone: the core refused it – it is dropped, not kept.
-                news.append({"chat": None, "problem": f"Paket verworfen: {error}"})
-            done.append(item["id"])
-        if not done:
-            return news
-        self.save()
+        with self.lock:
+            news, joined, done = [], 0, []
+            for item in waiting:
+                blob = unb64(item["blob"])
+                tag, body = blob[:1], blob[1:]
+                try:
+                    if tag == WELCOME:
+                        cid = bytes(self.device.join(body)).hex()
+                        self.chats.setdefault(cid, {"title": "", "roster": {}, "messages": []})
+                        joined += 1
+                        news.append({"chat": cid, "joined": True})
+                    elif tag == MLS:
+                        news.extend(self._take(self.device.receive(body)))
+                    else:
+                        news.append({"chat": None, "problem": "unbekanntes Paket"})
+                except ValueError as error:
+                    # Replayed, forged or from an epoch long gone: the core refused it – it is dropped, not kept.
+                    news.append({"chat": None, "problem": f"Paket verworfen: {error}"})
+                done.append(item["id"])
+            if not done:
+                return news
+            self.save()
         self.server.call("POST", "/v1/messages/ack", {"ids": done})
         if joined:
             # Each welcome used up a key package of the supply: replace it (state saved before offering).
-            packages = self.device.key_packages(joined)
-            self.save()
+            with self.lock:
+                packages = self.device.key_packages(joined)
+                self.save()
             self.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
         return news
 
