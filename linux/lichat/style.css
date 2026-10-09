@@ -33,6 +33,10 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-unread { background-color: #0a7aff; border-radius: 999px; min-width: 9px; min-height: 9px; }
 .lichat-avatar { border-radius: 999px; color: #ffffff; font-weight: 600; background-image: linear-gradient(#a5abb8, #858994); }
 .lichat-avatar-picture { border-radius: 999px; }
+/* In the chosen row GTK marks the avatar :selected too and paints it like selected text – it stays grey with a white
+   initial (Michelle 73bbcdfc). */
+.lichat-avatar:selected, .lichat-list > row:selected .lichat-avatar {
+  background-color: transparent; background-image: linear-gradient(#a5abb8, #858994); color: #ffffff; }
 .lichat-avatar-small { font-size: 11px; }
 .lichat-avatar-big { font-size: 15px; }
 

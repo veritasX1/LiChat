@@ -113,6 +113,11 @@ def main():
     window.sign_in()
     until(lambda: getattr(window, "list", None) is not None)
     assert "Keine Konversation ausgewählt" in texts(window)
+    # First start: what „im Hintergrund“ means, once, with a way to switch it off (Michelle Z6/Z7).
+    until(lambda: getattr(window, "explained", None) is not None)
+    window.explained.emit("response", "an")
+    window.explained.force_close()
+    assert window.settings["erklaert"] and window.settings["hintergrund"]
     anna = window.account
 
     # Bernd writes to Anna; the list shows it with the blue dot.
@@ -128,17 +133,10 @@ def main():
     assert window.settings["vorschau"] is False
     shot(window, "02-liste-neu.png")
 
-    # Bernd's profile picture arrives end-to-end and shows in the list (our own test picture, never a real photo).
-    from PIL import Image
-    Image.new("RGB", (600, 600), (40, 130, 200)).save(Path(SCRATCH) / "bernd.jpg")
-    bernd.set_picture(Path(SCRATCH) / "bernd.jpg")
-    until(lambda: anna.picture("bernd") is not None)
-    settle(0.3)
-    assert any(w.has_css_class("lichat-avatar-picture") for w in walk(window.list))
-
     # Open it, answer – the blue bubble, Bernd reads it.
     window.list.select_row(window.list.get_row_at_index(0))
     settle(0.2)
+    shot(window, "02b-gewaehlt.png")   # the chosen row keeps the grey circle with „B“ (Michelle 73bbcdfc)
     window.input.set_text("Ja, gern! Ich bringe Kartoffelsalat mit.")
     window.send()
     until(lambda: len(anna.chats[cid]["messages"]) == 2)
@@ -148,6 +146,15 @@ def main():
     settle(0.3)
     assert "Super, bis dann 🙂" in texts(window.bubbles)
     shot(window, "03-gespraech.png")
+
+    # Bernd's profile picture arrives end-to-end and shows in the list (our own test picture, never a real photo).
+    from PIL import Image
+    Image.new("RGB", (600, 600), (230, 140, 40)).save(Path(SCRATCH) / "bernd.jpg")
+    bernd.set_picture(Path(SCRATCH) / "bernd.jpg")
+    until(lambda: anna.picture("bernd") is not None)
+    settle(0.3)
+    assert any(w.has_css_class("lichat-avatar-picture") for w in walk(window.list))
+
 
     # The safety code in the info popover equals Bernd's.
     window.fill_info(window.info)
