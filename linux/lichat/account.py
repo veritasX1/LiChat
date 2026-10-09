@@ -352,9 +352,103 @@ class Account:
             state = self.server.call("GET", f"/v1/kopplung/{urllib.parse.quote(code)}")
             if state.get("device"):
                 self.sync_own_devices()
+                self.own_group()                      # my devices' private group (holds the new one now)
+                self.send_history(state["device"])    # Olaf: „synchronisieren sich einmal und bleiben dann synchronisiert“
                 return state["device"]
             time.sleep(poll)
         raise LiChatError("Das neue Gerät hat sich nicht gemeldet – noch einmal versuchen")
+
+    # ------------------------------------------------------------------------------------------ my devices' own group
+    # A conversation of my devices only (marked „intern“, never shown): the history goes through it once when a device is
+    # linked, and my settings follow on every change – end-to-end like everything else, the server sees opaque packets.
+
+    HISTORY_MAGIC = b"LICHATV1"
+
+    def own_group_id(self):
+        return next((cid for cid, chat in self.chats.items() if chat.get("intern") and not chat.get("removed")), None)
+
+    def visible_chats(self):
+        """The conversations people see (without my devices' own group)."""
+        return {cid: chat for cid, chat in self.chats.items() if not chat.get("intern")}
+
+    def own_group(self):
+        """My devices' own group – made when there is a second device and none yet (sync_own_devices keeps it complete)."""
+        cid = self.own_group_id()
+        if cid:
+            return cid
+        listed = self.directory(self.username)
+        packages, devices = [], []
+        for device in sorted(set(listed) - {self.device_id}):
+            for item in self.server.call("POST", f"/v1/key-packages/{urllib.parse.quote(self.username)}", {"device": device})["key_packages"]:
+                package = unb64(item["key_package"])
+                owner, key = lichat_core.Device.key_package_owner(package)
+                if item["device"] == device and owner == self.username and listed.get(device) == bytes(key):
+                    packages.append(package)
+                    devices.append(device)
+        if not packages:
+            return None
+        roster = {self.username: sorted([self.device_id] + devices)}
+        with self.lock:
+            conversation, welcome = self.device.start_conversation(packages)
+            cid = bytes(conversation).hex()
+            self.chats[cid] = {"title": "", "roster": roster, "messages": [], "intern": True}
+            hello = self.device.encrypt(bytes(conversation), self._payload({"t": "roster", "devices": roster, "title": "", "intern": True}))
+            self.save()
+        self.server.call("POST", "/v1/messages", {"to": devices, "blob": b64(WELCOME + bytes(welcome))})
+        self.server.call("POST", "/v1/messages", {"to": devices, "blob": b64(MLS + bytes(hello))})
+        return cid
+
+    def _tell_own_devices(self, payload):
+        """A note to my other devices (settings), if I have any."""
+        cid = self.own_group_id()
+        if cid and self.targets(cid):
+            self._group_message(cid, payload)
+
+    def send_history(self, device):
+        """Everything I have – conversations with their messages, names, pictures, settings – once to my new device:
+        sealed with a fresh key, put on the server as an attachment, the key only inside my devices' own group."""
+        cid = self.own_group_id()
+        if not cid:
+            return False
+        import zlib
+        with self.lock:
+            archive = {"chats": {c: {k: chat.get(k) for k in ("title", "bild", "stumm", "messages")}
+                                 for c, chat in self.visible_chats().items()},
+                       "profile": {k: v for k, v in self.profiles.items() if k not in ("gekoppelt", "geraetename")}}
+        data = zlib.compress(json.dumps(archive, ensure_ascii=False).encode(), 9)
+        key, nonce = os.urandom(32), os.urandom(12)
+        sealed = nonce + AESGCM(key).encrypt(nonce, data, self.HISTORY_MAGIC)
+        if len(sealed) > ATTACHMENT_MAX:
+            raise LiChatError("Der Verlauf ist zu groß für eine Übertragung")
+        attachment = json.loads(self.server.raw("PUT", "/v1/anhaenge", sealed))["id"]
+        self._group_message(cid, {"t": "verlauf", "fuer": device, "id": attachment, "schluessel": b64(key),
+                                  "sha256": hashlib.sha256(sealed).hexdigest()})
+        return True
+
+    def _take_history(self, data):
+        """On the new device: the history from my other device, merged in front of what came since."""
+        import zlib
+        sealed = self.server.raw("GET", f"/v1/anhaenge/{data['id']}")
+        if hashlib.sha256(sealed).hexdigest() != data.get("sha256"):
+            raise LiChatError("Verlauf verändert – nicht übernommen")
+        archive = json.loads(zlib.decompress(AESGCM(unb64(data["schluessel"])).decrypt(sealed[:12], sealed[12:], self.HISTORY_MAGIC)))
+        for cid, old in archive.get("chats", {}).items():
+            chat = self.chats.setdefault(cid, {"title": "", "roster": {}, "messages": []})
+            kept = [m for m in chat["messages"] if m.get("text") != "Ältere Nachrichten gibt es nur auf deinen anderen Geräten."]
+            known = {m.get("mid") for m in old.get("messages") or [] if m.get("mid")}
+            chat["messages"] = list(old.get("messages") or []) + [m for m in kept if not m.get("mid") or m["mid"] not in known]
+            for key in ("title", "bild"):
+                if old.get(key) and not chat.get(key):
+                    chat[key] = old[key]
+            if old.get("stumm"):
+                chat["stumm"] = True
+        profile = archive.get("profile", {})
+        for key, value in profile.items():
+            if key in ("people", "names", "kontakte") and isinstance(value, dict):
+                self.profiles.setdefault(key, {}).update(value)
+            elif key not in self.profiles or self.profiles.get(key) in (None, {}, ""):
+                self.profiles[key] = value
+        return [{"chat": None, "synced": True}]
 
     def my_devices(self):
         """My devices: [{device, since, this, name}] – the time each signed in; a name only for this one (it stays here)."""
@@ -404,6 +498,8 @@ class Account:
                     commit, welcome = self.device.add_members(bytes.fromhex(cid), packages)
                     chat["roster"][self.username] = sorted(set(chat["roster"].get(self.username, [])) | set(adding))
                     payloads = [{"t": "roster", "devices": chat["roster"], "title": chat.get("title", "")}]
+                    if chat.get("intern"):
+                        payloads[0]["intern"] = True      # a third device knows it as my devices' group, never shown
                     if chat.get("bild"):
                         payloads.append({"t": "gruppenbild", "bild": chat["bild"]})
                     packets = [self.device.encrypt(bytes.fromhex(cid), self._payload(p)) for p in payloads]
@@ -597,10 +693,11 @@ class Account:
             self.save()
 
     def mute(self, cid, on):
-        """Stummschalten: no notifications for this conversation (only on this device)."""
+        """Stummschalten: no notifications for this conversation – on all my devices (their own group)."""
         with self.lock:
             self.chats[cid]["stumm"] = bool(on)
             self.save()
+        self._tell_own_devices({"t": "stumm", "chat": cid, "an": bool(on)})
 
     def group_picture(self, cid):
         value = self.chats.get(cid, {}).get("bild")
@@ -898,6 +995,7 @@ class Account:
         with self.lock:
             self.profiles["lesebestaetigungen"] = bool(on)
             self.save()
+        self._tell_own_devices({"t": "einstellungen", "lesebestaetigungen": bool(on)})
 
     # ------------------------------------------------------------------------------------------ typing (884f7c8a)
     # Olaf 09.10.: „… tippt“ only with the switch on (off by default, privacy) and mutual like read receipts – off means I
@@ -913,6 +1011,7 @@ class Account:
             if not on:
                 self._typing.clear()
             self.save()
+        self._tell_own_devices({"t": "einstellungen", "tippanzeige": bool(on)})
 
     def typing(self, cid):
         """I am typing in this chat: tell the others (rate-limited; nothing when switched off)."""
@@ -1235,6 +1334,32 @@ class Account:
             data = json.loads(bytes(received["payload"]))
         except ValueError:
             return [{"chat": cid, "problem": f"unlesbare Nachricht von {sender}"}]
+        if chat.get("intern") or data.get("intern"):
+            # My devices' own group: only I may write in it (MLS says who sent it).
+            if sender != self.username:
+                return [{"chat": cid, "problem": "fremde Nachricht in der Gerätegruppe – verworfen"}]
+            chat["intern"] = True
+            if data.get("t") == "roster":
+                chat["roster"] = {self.username: list((data.get("devices") or {}).get(self.username, []))}
+                return []
+            if data.get("t") == "verlauf":
+                return self._take_history(data) if data.get("fuer") == self.device_id else []
+            if data.get("t") == "einstellungen":
+                for key in ("lesebestaetigungen", "tippanzeige"):
+                    if key in data:
+                        self.profiles[key] = bool(data[key])
+                return [{"chat": None, "settings": True}]
+            if data.get("t") == "stumm" and data.get("chat") in self.chats:
+                self.chats[data["chat"]]["stumm"] = bool(data.get("an"))
+                return [{"chat": None, "settings": True}]
+            if data.get("t") == "name":
+                self.profiles["name"] = {"vorname": str(data.get("vorname") or "")[:40], "nachname": str(data.get("nachname") or "")[:40]}
+                self.profiles.setdefault("names", {})[sender] = self.profiles["name"]
+                return [{"chat": None, "settings": True}]
+            if data.get("t") == "profile":
+                self.profiles["me"] = data.get("bild") or None
+                return [{"chat": None, "settings": True}]
+            return []
         if data.get("t") == "roster":
             devices = data.get("devices") or {}
             # Only names that really are in the MLS group may get packets (a member cannot add a stranger's device).
