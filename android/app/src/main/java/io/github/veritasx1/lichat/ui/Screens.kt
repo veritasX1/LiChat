@@ -223,11 +223,15 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
 @Composable
 fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, onBack: () -> Unit, onInfo: () -> Unit,
                onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
-               onReact: (String, String) -> Unit = { _, _ -> }) {
+               onReact: (String, String) -> Unit = { _, _ -> }, onEdit: (String, String) -> Unit = { _, _ -> },
+               onUnsend: (String) -> Unit = {}) {
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
     var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    // Editing one of my messages (card 4ceca163): its text in the input line, „Nachricht bearbeiten“ above it.
+    var editing by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    var versionsOf by remember(cid) { mutableStateOf<String?>(null) }
     // Where each bubble is on screen: its menu opens right there, the bubble lifted above the dimmed transcript.
     val bounds = remember(cid) { mutableMapOf<String, androidx.compose.ui.geometry.Rect>() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -301,13 +305,21 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     return@items
                 }
                 val mine = m.optString("from") == account.username
+                if (m.optBoolean("zurueckgerufen")) {
+                    // Called back (iOS): a grey line where the bubble was – for everyone.
+                    BasicText(if (mine) "Du hast eine Nachricht widerrufen." else "${account.display(m.optString("from"))} hat eine Nachricht widerrufen.",
+                        style = style(13f, 400, colors.secondary).copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                            textAlign = if (mine) TextAlign.End else TextAlign.Start),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp))
+                    return@Column
+                }
                 if (!mine && others.size > 1 && previous?.optString("from") != m.optString("from"))
                     BasicText(account.display(m.optString("from")), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
                 m.optJSONObject("antwort")?.let { quoted ->
                     // The message this answers, small above the bubble; a tap jumps to it.
                     val target = list.indexOfFirst { it.optString("mid") == quoted.optString("mid") }
                     Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else account.display(quoted.optString("from"))}: ${quoted.optString("text")}",
+                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else account.display(quoted.optString("from"))}: ${if (quoted.optBoolean("zurueckgerufen")) "Nachricht widerrufen" else quoted.optString("text")}",
                             style = style(13f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, colors.fill, RoundedCornerShape(12.dp))
                                 .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(list.size - 1 - target + (if (chat.optString("removed").isEmpty()) 0 else 1) + (if (typing.isEmpty()) 0 else 1)) } }
@@ -329,6 +341,14 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             androidx.compose.ui.semantics.CustomAccessibilityAction("Reagieren") { menuFor = m; true })
                     }
                 val info = m.optJSONObject("anhang")
+                val versions = m.optJSONArray("bearbeitet")
+                if (versions != null && versionsOf == mid) {
+                    // The earlier versions, small and grey above the bubble (iOS: tap „Bearbeitet“).
+                    for (k in 0 until versions.length()) {
+                        BasicText(versions.getJSONObject(k).optString("text"), style = style(13f, 400, colors.secondary).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp))
+                    }
+                }
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
@@ -338,6 +358,10 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
                             playing = info != null && actions.playing == info.optString("id"), open = actions.open)
                     }
+                }
+                if (versions != null) {
+                    BasicText(if (versionsOf == mid) "Frühere Versionen ausblenden" else "Bearbeitet", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
+                        modifier = Modifier.fillMaxWidth().clickable { versionsOf = if (versionsOf == mid) null else mid }.padding(horizontal = 12.dp, vertical = 2.dp))
                 }
                 if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             } }
@@ -362,14 +386,31 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
             }
         }
-        if (chat.optString("removed").isEmpty()) InputBar({ text -> onSend(text, replyTo?.optString("mid")); replyTo = null }, actions)
+        editing?.let { message ->
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(3.dp, 32.dp).background(colors.blue))
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    BasicText("Nachricht bearbeiten", style = style(13f, 600, colors.blue))
+                    BasicText(message.optString("text"), style = style(13f, 400, colors.secondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable { editing = null }.semantics { contentDescription = "Bearbeiten abbrechen" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
+            }
+        }
+        if (chat.optString("removed").isEmpty()) InputBar({ text ->
+            val edited = editing
+            if (edited != null) { onEdit(edited.optString("mid"), text); editing = null }
+            else { onSend(text, replyTo?.optString("mid")); replyTo = null }
+        }, actions, preset = editing?.optString("text"))
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
         val mine = m.optString("from") == account.username
         MessageMenu(m, account, mine, bounds[m.optString("mid")], { Reacted(m, account) { Bubble(m, mine) } }, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
             onReply = { replyTo = m; menuFor = null }, onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.optString("text"))); menuFor = null },
-            onClose = { menuFor = null })
+            onClose = { menuFor = null },
+            onEdit = if (account.canEdit(m)) ({ replyTo = null; editing = m; menuFor = null }) else null,
+            onUnsend = if (account.canUnsend(m)) ({ onUnsend(m.optString("mid")); menuFor = null }) else null)
     }
 }
 
@@ -447,7 +488,8 @@ fun ReactionBadge(reactions: JSONObject, account: Account, modifier: Modifier = 
  *  tapbacks right above it and Antworten / Kopieren / who reacted right below – on the bubble's side (Michelle a7d9d987). */
 @Composable
 fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androidx.compose.ui.geometry.Rect?, bubble: @Composable () -> Unit,
-                onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit) {
+                onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit,
+                onEdit: (() -> Unit)? = null, onUnsend: (() -> Unit)? = null) {
     val colors = palette()
     val me = account.username
     val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
@@ -491,6 +533,14 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                 if (message.optString("text").isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
                     BasicText("Kopieren", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onCopy).padding(14.dp))
+                }
+                onEdit?.let { edit ->
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Bearbeiten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = edit).padding(14.dp))
+                }
+                onUnsend?.let { unsend ->
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Senden widerrufen", style = style(17f, 400, colors.red), modifier = Modifier.fillMaxWidth().clickable(onClick = unsend).padding(14.dp))
                 }
                 if (reactions.length() > 0) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
@@ -577,9 +627,10 @@ fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
 /** The input line like iOS 18: ⊕ on the left, the rounded field „LiChat“, inside it 🎤 while empty and the blue ↑ with
  *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
 @Composable
-fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions()) {
+fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null) {
     val colors = palette()
     var text by remember { mutableStateOf("") }
+    LaunchedEffect(preset) { if (preset != null) text = preset }     // „Bearbeiten“: the message's text to correct
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),

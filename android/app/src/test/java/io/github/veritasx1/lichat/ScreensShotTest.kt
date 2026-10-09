@@ -124,6 +124,25 @@ httpd.serve_forever()
     }
 
     /** Card 884f7c8a / 0c01f599: Bernd types – „•••“ at the very bottom, in view (the list is anchored at its end). */
+    /** 4ceca163: „Bearbeitet“ under a corrected bubble (a tap shows the earlier versions), a grey line for one called back,
+     *  „Bearbeiten“ and „Senden widerrufen“ in the menu of a fresh message of mine. */
+    @Test
+    fun editedAndUnsent() {
+        anna.send(cid, "Ich bringe Kartoffelsalat")
+        val list = anna.chat(cid).getJSONArray("messages")
+        val salad = list.getJSONObject(list.length() - 1)
+        anna.edit(cid, salad.getString("mid"), "Ich bringe Nudelsalat")
+        anna.send(cid, "Ups")
+        anna.unsend(cid, list.getJSONObject(list.length() - 1).getString("mid"))
+        shot("2h-bearbeitet") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        compose.onNodeWithText("Du hast eine Nachricht widerrufen.").assertExists()
+        compose.onNodeWithText("Bearbeitet").performClick()
+        compose.onNodeWithText("Ich bringe Kartoffelsalat").assertExists()
+        compose.onNodeWithText("Ich bringe Nudelsalat").performTouchInput { longClick() }
+        compose.onNodeWithText("Bearbeiten").assertExists()
+        compose.onNodeWithText("Senden widerrufen").assertExists()
+    }
+
     /** „+“ (a7d9d987): the keyboard opens, the first emoji typed is the reaction. */
     @Test
     fun anyEmoji() {

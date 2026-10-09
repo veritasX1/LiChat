@@ -105,6 +105,41 @@ def short(conversation):
     return conversation.hex()[:8]
 
 
+def _pictographic(cp):
+    """Roughly Unicode's Extended_Pictographic: the emoji blocks, the symbol ranges (❤ ✅ ‼ ⁉ ™ …), © ®, minus letters."""
+    import unicodedata
+    if cp >= 0x1F000 or cp in (0x00A9, 0x00AE, 0x3030, 0x303D, 0x3297, 0x3299, 0x2139):
+        return True
+    return 0x2000 <= cp <= 0x2BFF and unicodedata.category(chr(cp))[0] not in "LNZ"
+
+
+def single_emoji(text):
+    """Exactly one emoji – also as a sequence (👍🏽, 👩‍👩‍👧‍👦, 🇫🇷, 1️⃣, ❤️) – and nothing else (Michelle 09.10.: a reaction must
+    not be „Gelesen“ or „OK“, else anyone could fake a status under a bubble)."""
+    cps = [ord(c) for c in text]
+    if not cps or len(text) > 16:
+        return False
+    joins = lambda cp: cp in (0xFE0F, 0xFE0E, 0x20E3) or 0x1F3FB <= cp <= 0x1F3FF or 0xE0020 <= cp <= 0xE007F  # noqa: E731
+    regional = lambda cp: 0x1F1E6 <= cp <= 0x1F1FF  # noqa: E731
+    first = cps[0]
+    keycap = (first in range(0x30, 0x3A) or first in (0x23, 0x2A)) and len(cps) > 1 and cps[1] in (0xFE0F, 0x20E3)
+    if not keycap and not _pictographic(first):
+        return False
+    end = 1
+    if regional(first):
+        if len(cps) < 2 or not regional(cps[1]):
+            return False
+        end = 2
+    while end < len(cps):
+        if joins(cps[end]):
+            end += 1
+        elif cps[end] == 0x200D and end + 1 < len(cps) and _pictographic(cps[end + 1]):
+            end += 2
+        else:
+            return False
+    return True
+
+
 def default_folder(profile):
     base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     return base / "lichat-cli" / profile
@@ -605,7 +640,9 @@ class Account:
 
     def react(self, cid, mid, emoji):
         """My reaction on a message (one per person, like iOS); "" takes it back."""
-        emoji = str(emoji).strip()[:16]     # any emoji (Olaf: „+“), ZWJ sequences like 👩‍👩‍👧 included
+        emoji = str(emoji).strip()          # any emoji (Olaf: „+“), ZWJ sequences like 👩‍👩‍👧 included – but only an emoji
+        if emoji and not single_emoji(emoji):
+            raise LiChatError("Als Reaktion geht genau ein Emoji")
         with self.lock:
             target = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
             reactions = target.setdefault("reaktionen", {})
@@ -633,7 +670,7 @@ class Account:
         versions – end-to-end like the message itself."""
         text = text.strip()
         if not text:
-            raise LiChatError("Leere Nachricht – zum Entfernen „Zurückrufen“")
+            raise LiChatError("Leere Nachricht – zum Entfernen „Senden widerrufen“")
         with self.lock:
             message = self._mine(cid, mid)
             if not self.can_edit(message):
@@ -648,7 +685,7 @@ class Account:
         with self.lock:
             message = self._mine(cid, mid)
             if not self.can_unsend(message):
-                raise LiChatError("Zurückrufen geht nur in den ersten zwei Minuten")
+                raise LiChatError("Widerrufen geht nur in den ersten zwei Minuten")
             self._apply_unsend(self.chats[cid], message)
             self.save()
         self._group_message(cid, {"t": "zurueckrufen", "mid": mid, "at": int(time.time())})
@@ -931,7 +968,7 @@ class Account:
     def describe(message):
         """One line for the list and notifications: the text, or what the attachment is."""
         if message.get("zurueckgerufen"):
-            return "Nachricht zurückgerufen"
+            return "Nachricht widerrufen"
         info = message.get("anhang")
         if not info:
             return message.get("text", "")
@@ -1110,10 +1147,10 @@ class Account:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
         if data.get("t") == "reaktion":
-            mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "").strip()[:16]
+            mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "").strip()
             target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
-            if target is None:
-                return []
+            if target is None or (emoji and not single_emoji(emoji)):
+                return []           # no text dressed up as a reaction („Gelesen“, „OK“)
             reactions = target.setdefault("reaktionen", {})
             before = reactions.get(sender, "")
             if emoji:

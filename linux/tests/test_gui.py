@@ -221,6 +221,26 @@ def main():
     chooser.emit("emoji-picked", "🦄")
     until(lambda: any((m.get("reaktionen") or {}).get("anna") == "🦄" for m in anna.chats[cid]["messages"]))
 
+    # Bearbeiten / Senden widerrufen (4ceca163): from the menu, the input line takes the text; „Bearbeitet“ shows up.
+    anna.send(cid, "Grillen um 6")
+    window.show_conversation()
+    mine_now = [m for m in anna.chats[cid]["messages"] if m.get("text") == "Grillen um 6"][0]
+    window.start_edit(mine_now)
+    assert window.input.get_text() == "Grillen um 6" and "bearbeiten" in window.reply_label.get_label()
+    window.input.set_text("Grillen um 7")
+    window.send()
+    until(lambda: mine_now["mid"] in [m.get("mid") for m in anna.chats[cid]["messages"] if m.get("text") == "Grillen um 7"])
+    window.show_conversation()
+    settle(0.2)
+    assert "Bearbeitet" in [w.get_label() for w in walk(window.bubbles) if isinstance(w, Gtk.Button)]
+    anna.send(cid, "Ups")
+    window.unsend(cid, anna.chats[cid]["messages"][-1]["mid"])
+    until(lambda: anna.chats[cid]["messages"][-1].get("zurueckgerufen"))
+    window.show_conversation()
+    settle(0.2)
+    assert "Du hast eine Nachricht widerrufen." in texts(window.bubbles)
+    shot(window, "03e-bearbeitet.png")
+
     # „… tippt“ (card 884f7c8a): off by default; with both switched on Bernd's typing shows as a grey „•••“ bubble.
     assert not window.lookup_action("tippanzeige").get_state().get_boolean()
     window.lookup_action("tippanzeige").change_state(GLib.Variant.new_boolean(True))
@@ -334,7 +354,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 9  # + „Noch was: Grillkohle?“
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 11  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

@@ -223,6 +223,42 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("tippt") })
     }
 
+    /** Card 4ceca163, like iOS: edit 15 min / 5×, the earlier versions travel; „Senden widerrufen“ 2 min, quotes emptied. */
+    @Test
+    fun editAndUnsend() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.send(cid, "Treffen um 18 Uhr")
+        val list = anna.chat(cid).getJSONArray("messages")
+        val mid = list.getJSONObject(list.length() - 1).getString("mid")
+        bernd.fetch()
+        anna.edit(cid, mid, "Treffen um 19 Uhr")
+        assertTrue(bernd.fetch().any { it.kind == News.Kind.Edited })
+        val theirs = bernd.findMessage(cid, mid)!!
+        assertEquals("Treffen um 19 Uhr", theirs.getString("text"))
+        assertEquals("Treffen um 18 Uhr", theirs.getJSONArray("bearbeitet").getJSONObject(0).getString("text"))
+        repeat(4) { anna.edit(cid, mid, "Treffen um ${20 + it} Uhr") }
+        try { anna.edit(cid, mid, "sechstes Mal"); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        assertFalse(bernd.canEdit(theirs))                       // not mine
+        anna.send(cid, "Ups, falscher Chat")
+        val oops = list.getJSONObject(list.length() - 1).getString("mid")
+        bernd.fetch()
+        bernd.send(cid, "Hä?", oops)
+        anna.fetch()
+        anna.unsend(cid, oops)
+        bernd.fetch()
+        val gone = bernd.findMessage(cid, oops)!!
+        assertTrue(gone.optBoolean("zurueckgerufen"))
+        assertEquals("Nachricht widerrufen", io.github.veritasx1.lichat.core.describe(gone))
+        val theirList = bernd.chat(cid).getJSONArray("messages")
+        assertTrue(theirList.getJSONObject(theirList.length() - 1).getJSONObject("antwort").optBoolean("zurueckgerufen"))
+        assertFalse(bernd.chat(cid).toString().contains("falscher Chat"))
+        assertFalse(anna.chat(cid).toString().contains("falscher Chat"))
+        // Only an emoji is a reaction (Michelle): „Gelesen“ is refused already when sending
+        try { bernd.react(cid, mid, "Gelesen"); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+    }
+
     /** Card db70d358: ✓ sent, ✓✓ delivered, blue ✓✓ read – read receipts off by default and mutual; a failed send is marked. */
     @Test
     fun ticks() {
