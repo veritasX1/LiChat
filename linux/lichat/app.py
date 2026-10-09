@@ -281,12 +281,17 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Im Hintergrund empfangen und beim Anmelden starten", "win.hintergrund")
         menu.append("Absender und Text in Mitteilungen zeigen", "win.vorschau")
+        menu.append("Lesebestätigungen senden", "win.lesebestaetigungen")
         menu.append("Profilbild wählen …", "win.bild")
         menu.append("LiChat beenden", "win.beenden")
         for name in ("hintergrund", "vorschau"):
             action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(self.settings[name]))
             action.connect("change-state", self.on_setting)
             self.add_action(action)
+        # Read receipts (Olaf: off by default like the iPhone, on with a tap) – mutual: off means no blue ticks either.
+        receipts = Gio.SimpleAction.new_stateful("lesebestaetigungen", None, GLib.Variant.new_boolean(self.account.read_receipts))
+        receipts.connect("change-state", self.on_receipts)
+        self.add_action(receipts)
         picture_action = Gio.SimpleAction.new("bild", None)
         picture_action.connect("activate", lambda *_: self.choose_picture())
         self.add_action(picture_action)
@@ -453,14 +458,18 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(Gtk.Label(label=m["from"], css_classes=["lichat-sender"], xalign=0))
             if m.get("anhang"):
                 self.bubbles.append(self.attachment_bubble(m["anhang"], mine))
-                previous = m
-                continue
-            bubble = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
-                               max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
-                               halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
-            self.bubbles.append(bubble)
+            else:
+                bubble = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
+                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
+                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+                self.bubbles.append(bubble)
+            if mine:
+                self.bubbles.append(self.tick_line(cid, m))
             previous = m
         self.seen[cid] = len(chat["messages"])
+        if self.is_active() and self.get_visible():
+            account = self.account
+            self.worker.do(lambda: account.mark_read(cid))
         if chat.get("removed"):
             # Taken out of the group: the history stays readable, nothing more can be written.
             self.bubbles.append(Gtk.Label(label=f"{chat['removed']} hat dich aus dem Gespräch entfernt.", css_classes=["lichat-stamp"]))
@@ -539,6 +548,10 @@ class Window(Adw.ApplicationWindow):
             self.input.grab_focus()
             self.show_notice(error)
             if error:
+                if not self.composing:
+                    # The message is kept with „Nicht gesendet“ under it – a click there sends it again.
+                    self.input.set_text("")
+                    self.show_conversation()
                 return
             self.input.set_text("")
             self.composing = False
@@ -554,7 +567,7 @@ class Window(Adw.ApplicationWindow):
             return
         self.fill_list()
         if self.current and any(n.get("chat") == self.current for n in news):
-            self.show_conversation()
+            self.show_conversation()   # new bubbles, or ticks that moved
         for item in news:
             if item.get("text") is None or item.get("system") or item["from"] == self.account.username:
                 continue
@@ -603,6 +616,54 @@ class Window(Adw.ApplicationWindow):
         self.set_setting("erklaert", True)
         if response == "aus":
             self.activate_action("win.hintergrund", None)
+
+    # ------------------------------------------------------------------------------------------ ticks (card db70d358)
+
+    def tick_line(self, cid, message):
+        """Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with
+        Jaques). Not sent: a red line, a click sends it again."""
+        state, at = self.account.tick(cid, message)
+        if state == "fehler":
+            retry = Gtk.Button(label="Nicht gesendet – klicken zum Wiederholen", css_classes=["flat", "lichat-failed"], halign=Gtk.Align.END)
+            retry.connect("clicked", lambda *_: self.retry(cid, message["mid"]))
+            return retry
+        line = Gtk.Box(spacing=3, halign=Gtk.Align.END, css_classes=["lichat-meta"])
+        line.append(Gtk.Label(label=time.strftime("%H:%M", time.localtime(message["at"])), css_classes=["lichat-meta"]))
+        mark = Gtk.DrawingArea(content_width=17, content_height=11)
+        mark.set_draw_func(self.draw_tick, state)
+        line.append(mark)
+        words = {"wartet": "Wird gesendet", "gesendet": "Gesendet", "zugestellt": "Zugestellt", "gelesen": "Gelesen"}[state]
+        line.set_tooltip_text(f"{words} {time.strftime('%H:%M', time.localtime(at))}")
+        line.update_property([Gtk.AccessibleProperty.LABEL], [f"{words} {time.strftime('%H:%M', time.localtime(at))}"])
+        return line
+
+    def draw_tick(self, area, cr, width, height, state):
+        dark = self.has_css_class("lichat-dark")
+        if state == "gelesen":
+            cr.set_source_rgb(*((0.04, 0.52, 1.0) if dark else (0.0, 0.48, 1.0)))
+        else:
+            cr.set_source_rgba(*((0.92, 0.92, 0.96, 0.6) if dark else (0.24, 0.24, 0.26, 0.6)))
+        cr.set_line_cap(1)   # round
+        cr.set_line_join(1)
+        cr.set_line_width(1.3 if state == "wartet" else 1.6)
+        if state == "wartet":            # a small clock
+            cr.arc(8.5, 5.5, 4.3, 0, 6.2832)
+            cr.move_to(8.5, 3.2); cr.line_to(8.5, 5.7); cr.line_to(10.1, 6.7)
+        elif state == "gesendet":        # one tick
+            cr.move_to(4, 5.8); cr.line_to(6.6, 8.4); cr.line_to(12.6, 2.4)
+        else:                            # two ticks
+            cr.move_to(1.2, 5.8); cr.line_to(3.8, 8.4); cr.line_to(9.8, 2.4)
+            cr.move_to(7.4, 8.1); cr.line_to(7.7, 8.4); cr.line_to(13.7, 2.4)
+        cr.stroke()
+
+    def retry(self, cid, mid):
+        account = self.account
+
+        def done(_r, error):
+            self.show_notice(error)
+            self.show_conversation()
+
+        self.worker.do(lambda: account.retry(cid, mid), done)
 
     # ------------------------------------------------------------------------------------------ attachments
 
@@ -715,6 +776,11 @@ class Window(Adw.ApplicationWindow):
             self.show_conversation()
 
         self.worker.do(lambda: account.remove(cid, [name]), done)
+
+    def on_receipts(self, action, value):
+        action.set_state(value)
+        account = self.account
+        self.worker.do(lambda: account.set_read_receipts(value.get_boolean()), lambda *_: self.show_conversation())
 
     def choose_picture(self):
         dialog = Gtk.FileDialog(title="Profilbild wählen")
