@@ -128,6 +128,14 @@ def main():
     assert window.settings["vorschau"] is False
     shot(window, "02-liste-neu.png")
 
+    # Bernd's profile picture arrives end-to-end and shows in the list (our own test picture, never a real photo).
+    from PIL import Image
+    Image.new("RGB", (600, 600), (40, 130, 200)).save(Path(SCRATCH) / "bernd.jpg")
+    bernd.set_picture(Path(SCRATCH) / "bernd.jpg")
+    until(lambda: anna.picture("bernd") is not None)
+    settle(0.3)
+    assert any(w.has_css_class("lichat-avatar-picture") for w in walk(window.list))
+
     # Open it, answer – the blue bubble, Bernd reads it.
     window.list.select_row(window.list.get_row_at_index(0))
     settle(0.2)
@@ -153,6 +161,9 @@ def main():
     window.start_composing()
     window.to_entry.set_text("bernd, erna")
     window.input.set_text("Wer bringt Getränke mit?")
+    Image.new("RGB", (800, 500), (220, 90, 120)).save(Path(SCRATCH) / "anna.jpg")
+    window.set_picture(str(Path(SCRATCH) / "anna.jpg"))
+    until(lambda: anna.picture("anna") is not None)
     shot(window, "05-neue-nachricht.png")
     window.send()
     until(lambda: len(anna.chats) == 2)

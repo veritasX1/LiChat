@@ -3,6 +3,7 @@
     cd linux && python3 -m unittest discover -s tests
 """
 
+import io
 import json
 import os
 import stat
@@ -130,6 +131,68 @@ class Groups(Base):
         self.assertEqual([n["text"] for n in bernd.fetch()], ["Ich bringe Salat mit"])
         self.assertEqual(sorted(erna.members(cid)), ["anna", "bernd", "erna"])
         self.assertTrue(anna.safety_code(cid) == bernd.safety_code(cid) == erna.safety_code(cid))
+
+
+def test_image(path, size=(1200, 800), gps=True):
+    """Our own test picture (never a real photo): a coloured surface, with camera and GPS data in its EXIF."""
+    from PIL import Image
+    image = Image.new("RGB", size, (200, 120, 40))
+    exif = Image.Exif()
+    exif[0x010F] = "Testkamera"          # Make
+    if gps:
+        exif[0x8825] = {1: "N", 2: (52.0, 31.0, 12.0), 3: "E", 4: (13.0, 24.0, 18.0)}   # GPSInfo: Berlin
+    image.save(path, "JPEG", exif=exif.tobytes())
+    return path
+
+
+class Pictures(Base):
+    def test_picture_travels_end_to_end_without_exif(self):
+        from PIL import Image
+        anna, bernd = self.person("anna"), self.person("bernd")
+        source = test_image(self.root / "anna.jpg")
+        self.assertIn(b"Testkamera", source.read_bytes())
+        anna.set_picture(source)
+        cid = anna.start(["bernd"])
+        news = bernd.fetch()
+        self.assertIn({"chat": cid, "picture": "anna"}, news)
+        got = bernd.picture("anna")
+        self.assertNotIn(b"Testkamera", got)
+        with Image.open(io.BytesIO(got)) as image:
+            self.assertEqual(image.size, (512, 512))
+            self.assertEqual(len(image.getexif()), 0, "EXIF muss weg sein")
+        # Nothing of the picture on the server or in the clear on disk.
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(got[:64], server_files)
+        self.assertNotIn(got[:64], (bernd.folder / "profile.bin").read_bytes())
+
+        # Bernd joined – once he knows who is in the conversation, Anna gets his picture; then he removes it.
+        bernd.set_picture(test_image(self.root / "bernd.jpg", size=(300, 900), gps=False))
+        bernd.fetch()
+        anna.fetch()
+        self.assertIsNotNone(anna.picture("bernd"))
+        bernd.set_picture(None)
+        anna.fetch()
+        self.assertIsNone(anna.picture("bernd"))
+        self.assertIsNotNone(self.reopen(bernd).picture("anna"), "nach Neustart noch da")
+
+    def test_joiner_sends_its_picture_after_the_roster(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        bernd.set_picture(test_image(self.root / "b.jpg"))
+        anna.start(["bernd"])
+        bernd.fetch()          # joins, learns the roster, sends its picture
+        anna.fetch()
+        self.assertIsNotNone(anna.picture("bernd"))
+
+    def test_a_too_big_or_foreign_picture_is_not_kept(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        for fake in (b"\xff\xd8\xff" + b"x" * (160 * 1024), b"<svg onload=alert(1)>"):
+            packet = anna.device.encrypt(bytes.fromhex(cid), json.dumps({"t": "profile", "bild": account_module.b64(fake)}).encode())
+            anna.server.call("POST", "/v1/messages", {"to": [bernd.device_id], "blob": account_module.b64(b"M" + bytes(packet))})
+        news = bernd.fetch()
+        self.assertEqual(sum("Profilbild" in n.get("problem", "") for n in news), 2)
+        self.assertIsNone(bernd.picture("anna"))
 
 
 class Supply(Base):

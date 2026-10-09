@@ -49,7 +49,21 @@ def initials(name):
     return ("".join(p[0] for p in parts[:2]) or "?").upper()
 
 
-def avatar(name, size):
+def avatar(name, size, picture=None):
+    """A round picture – the person's profile picture (end-to-end, account.picture) or their initials."""
+    if picture:
+        try:
+            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(picture))
+        except GLib.Error:
+            texture = None
+        if texture is not None:
+            image = Gtk.Image.new_from_paintable(texture)   # pixel_size keeps it at [size] (a Picture asks for 512 px)
+            image.set_pixel_size(size)
+            frame = Gtk.Box(css_classes=["lichat-avatar-picture"], overflow=Gtk.Overflow.HIDDEN,
+                            valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+            frame.set_size_request(size, size)
+            frame.append(image)
+            return frame
     label = Gtk.Label(label=initials(name), css_classes=["lichat-avatar", "lichat-avatar-big" if size > 36 else "lichat-avatar-small"])
     label.set_size_request(size, size)
     label.set_valign(Gtk.Align.CENTER)
@@ -267,11 +281,15 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Im Hintergrund empfangen und beim Anmelden starten", "win.hintergrund")
         menu.append("Absender und Text in Mitteilungen zeigen", "win.vorschau")
+        menu.append("Profilbild wählen …", "win.bild")
         menu.append("LiChat beenden", "win.beenden")
         for name in ("hintergrund", "vorschau"):
             action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(self.settings[name]))
             action.connect("change-state", self.on_setting)
             self.add_action(action)
+        picture_action = Gio.SimpleAction.new("bild", None)
+        picture_action.connect("activate", lambda *_: self.choose_picture())
+        self.add_action(picture_action)
         quit_action = Gio.SimpleAction.new("beenden", None)
         quit_action.connect("activate", lambda *_: self.quit_all())
         self.add_action(quit_action)
@@ -360,7 +378,8 @@ class Window(Adw.ApplicationWindow):
             dot = Gtk.Box(css_classes=["lichat-unread"], valign=Gtk.Align.CENTER,
                           opacity=1 if len(chat["messages"]) > self.seen.get(cid, 0) and cid != self.current else 0)
             box.append(dot)
-            box.append(avatar(title, 40))
+            others = [u for u in chat["roster"] if u != self.account.username]
+            box.append(avatar(title, 40, self.account.picture(others[0]) if len(others) == 1 else None))
             text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, spacing=1)
             head = Gtk.Box()
             head.append(Gtk.Label(label=title, css_classes=["lichat-name"], xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
@@ -440,7 +459,7 @@ class Window(Adw.ApplicationWindow):
         box.append(Gtk.Label(label=self.account.title(cid), css_classes=["lichat-title"]))
         for name in self.account.members(cid):
             row = Gtk.Box(spacing=8)
-            row.append(avatar(name, 24))
+            row.append(avatar(name, 24, self.account.picture(name)))
             row.append(Gtk.Label(label=name + (" (ich)" if name == self.account.username else ""), xalign=0))
             box.append(row)
         box.append(Gtk.Label(label="Sicherheitscode", css_classes=["lichat-subtitle"], xalign=0, margin_top=8))
@@ -537,6 +556,32 @@ class Window(Adw.ApplicationWindow):
         self.set_setting(action.get_name(), value.get_boolean())
         if action.get_name() == "hintergrund":
             autostart(value.get_boolean())
+
+    def choose_picture(self):
+        dialog = Gtk.FileDialog(title="Profilbild wählen")
+        images = Gtk.FileFilter(name="Bilder")
+        images.add_mime_type("image/*")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(images)
+        dialog.set_filters(filters)
+        dialog.open(self, None, self.on_picture_chosen)
+
+    def on_picture_chosen(self, dialog, result):
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return   # cancelled
+        self.set_picture(file.get_path())
+
+    def set_picture(self, path):
+        """Made small and without EXIF, then sent end-to-end into every conversation (account.set_picture)."""
+        account = self.account
+
+        def done(_result, error):
+            self.show_notice(error)
+            self.fill_list()
+
+        self.worker.do(lambda: account.set_picture(path), done)
 
     def quit_all(self):
         self.stop()
