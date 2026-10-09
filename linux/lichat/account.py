@@ -612,6 +612,10 @@ class Account:
     def _deliver(self, cid, message, payload):
         """Encrypts and posts one of my messages; its status follows: wartet → gesendet, or fehler (a red line, retry)."""
         try:
+            if not self.targets(cid):
+                # Just joined: the welcome is there, the roster (who has which devices) comes with the next fetch.
+                # Fetching here would swallow news meant for the app's listener – so say it plainly (Jean-Marie 09.10.).
+                raise LiChatError("Das Gespräch wird gerade noch eingerichtet – in ein paar Sekunden noch einmal senden")
             with self.lock:
                 packet = self.device.encrypt(bytes.fromhex(cid), self._payload(payload))
                 self.save()

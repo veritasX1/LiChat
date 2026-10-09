@@ -421,6 +421,9 @@ class Account(val folder: File, private val key: ByteArray) {
         val answer = try {
             val packet: ByteArray
             val targets: List<String>
+            // Just joined: the roster (devices) comes with the next fetch – say so instead of the server's 400 (Jean-Marie 09.10.).
+            if (synchronized(lock) { targets(cid) }.isEmpty())
+                throw LiChatException("Das Gespräch wird gerade noch eingerichtet – in ein paar Sekunden noch einmal senden")
             synchronized(lock) {
                 packet = device.encrypt(cid.unhex(), payload(content))
                 save()
