@@ -1441,6 +1441,7 @@ fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
 
 @Composable
 fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLink: (String) -> Unit = {}, onLinkCancel: () -> Unit = {},
+                suggestions: List<String> = emptyList(),
                 onSignIn: (String, String, String, String, String) -> Unit) {
     val colors = palette()
     // Our own server as a default (Tante Erna types nothing) – any other one can be entered.
@@ -1507,6 +1508,14 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
         BasicText("Der Benutzername ist deine Kennung zum Finden (klein, ohne Leerzeichen). Deinen Namen sehen nur deine Gesprächspartner.",
             style = style(13f, 400, colors.secondary), modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 6.dp))
         if (problem != null) BasicText(problem, style = style(13f, 400, colors.red).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))
+        // ebc3d629: the name is taken – free ones to tap, then „Anmelden“ again
+        var picked by remember(suggestions) { mutableStateOf<String?>(null) }
+        if (suggestions.isNotEmpty() && picked == null) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+            suggestions.forEach { free ->
+                BasicText(free, style = style(15f, 400, colors.blue), modifier = Modifier.clip(CircleShape).background(colors.cell)
+                    .clickable(role = Role.Button) { name = free; nameTouched = true; picked = free }.padding(horizontal = 12.dp, vertical = 7.dp))
+            }
+        }
         val ready = !busy && server.length > 8 && invite.isNotBlank() && name.isNotBlank()
         Box(Modifier.padding(16.dp).fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(if (ready) colors.blue else colors.fill)
             .clickable(enabled = ready, role = Role.Button) { onSignIn(server, invite.trim(), name.trim(), first.trim(), last.trim()) }, contentAlignment = Alignment.Center) {

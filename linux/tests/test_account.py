@@ -1051,6 +1051,16 @@ class Supply(Base):
 
 
 class Server(Base):
+    def test_taken_user_name_brings_free_suggestions(self):
+        """ebc3d629: the name is taken – free ones come back, from the real name first; the invitation stays usable."""
+        self.person("anna")
+        invite = self.app.store.create_invite("zweite")
+        with self.assertRaises(LiChatError) as caught:
+            Account.register(self.root / "geraete" / "anna2", self.url, invite, "anna", first="Anna", last="Müller")
+        self.assertEqual(caught.exception.suggestions, ["anna.mueller", "anna.m", "a.mueller"])
+        account = Account.register(self.root / "geraete" / "anna2", self.url, invite, caught.exception.suggestions[0])
+        self.assertEqual(account.username, "anna.mueller")
+
     def test_a_foreign_key_package_is_refused(self):
         """The server hands out Erna's key package as one of Bernd's devices – the conversation is not started."""
         anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")

@@ -468,6 +468,17 @@ httpd.serve_forever()
     @Test
     fun setup() = shot("7-anmelden") { SetupScreen(false, null) { _, _, _, _, _ -> } }
 
+    /** ebc3d629: a taken user name – free ones to tap; the tapped one is what „Anmelden“ sends. */
+    @Test
+    fun setupSuggestions() {
+        var sent = ""
+        shot("7d-name-vergeben") { SetupScreen(false, "„anna“ ist schon vergeben. Frei wären:", suggestions = listOf("anna.mueller", "anna.m", "anna2")) { _, _, n, _, _ -> sent = n } }
+        compose.onNodeWithText("anna.m").performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Einladung")).performTextInput("ABCD-EFGH")
+        compose.onNodeWithText("Anmelden").performClick()
+        org.junit.Assert.assertEquals("anna.m", sent)
+    }
+
     @Test
     fun explain() = shot("8-erklaerung") { ChatList(anna, 0, emptyMap(), null, false, {}, {}, {}, {}); Explain({}, {}) }
 }

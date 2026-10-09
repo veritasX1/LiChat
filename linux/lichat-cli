@@ -61,7 +61,12 @@ def main(argv):
     if command == "register":
         if len(args) != 3:
             raise LiChatError("register <server> <einladung> <benutzername>")
-        account = Account.register(folder, *args)
+        try:
+            account = Account.register(folder, *args)
+        except LiChatError as error:
+            if error.suggestions:          # ebc3d629
+                raise LiChatError(f"{error} – frei wären: {', '.join(error.suggestions)}") from None
+            raise
         print(f"Angemeldet als {account.username} (Gerät {account.device_id}) bei {account.info['server']}")
         return 0
 

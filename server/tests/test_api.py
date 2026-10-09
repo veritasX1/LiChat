@@ -169,6 +169,22 @@ class ApiTest(unittest.TestCase):
         status, _ = self.call("POST", "/v1/register", {"invite": code, "username": "olaf.winkler", "identity": b64(b"x" * 32)})
         self.assertEqual(status, 200, "die Einladung gilt nach einem vergebenen Namen noch")
 
+    def test_taken_name_comes_with_free_suggestions(self):
+        """ebc3d629: free alternatives – from the real name first; never without a valid invitation."""
+        self.account("anna")
+        self.account("anna.mueller")
+        status, data = self.call("POST", "/v1/register", {"invite": "falsch", "username": "anna", "identity": b64(b"x" * 32)})
+        self.assertEqual((status, data.get("vorschlaege")), (403, None), "ohne gültige Einladung nichts")
+        code = self.app.store.create_invite()
+        status, data = self.call("POST", "/v1/register", {"invite": code, "username": "anna", "vorname": "Anna", "nachname": "Müller",
+                                                          "identity": b64(b"x" * 32)})
+        self.assertEqual(status, 409)
+        self.assertEqual(data["vorschlaege"], ["anna.m", "a.mueller", "annamueller"])
+        status, data = self.call("POST", "/v1/register", {"invite": code, "username": "anna", "identity": b64(b"x" * 32)})
+        self.assertEqual(data["vorschlaege"][:2], ["anna2", "anna3"])
+        status, _ = self.call("POST", "/v1/register", {"invite": code, "username": data["vorschlaege"][0], "identity": b64(b"x" * 32)})
+        self.assertEqual(status, 200, "ein Vorschlag ist wirklich frei")
+
     def test_contact_pin_once_and_short_lived(self):
         _, anna = self.account("anna")
         _, bernd = self.account("bernd")

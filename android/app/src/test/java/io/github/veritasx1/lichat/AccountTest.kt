@@ -334,6 +334,17 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         try { anna.sendAttachment(cid, byteArrayOf(1), "a.pdf", "application/pdf", "datei", once = true); throw AssertionError("nur Fotos") } catch (e: LiChatException) { }
     }
 
+    /** ebc3d629: a taken user name brings free ones, from the real name first; the invitation stays usable. */
+    @Test
+    fun takenNameSuggestions() {
+        person("anna")
+        val invite = invites.removeFirst()
+        val folder = File(root, "anna-zwei")
+        val error = try { Account.register(folder, url, invite, "anna", KeyVault.Plain.create(folder), "Anna", "Müller"); null } catch (e: LiChatException) { e }
+        assertEquals(listOf("anna.mueller", "anna.m", "a.mueller"), error!!.suggestions)
+        assertEquals("anna.mueller", Account.register(folder, url, invite, error.suggestions[0], KeyVault.Plain.create(folder)).username)
+    }
+
     /** Michelle's Mac points: unread marker + „als ungelesen“, receipts per chat, blocking + filters, „Zuletzt gelöscht“. */
     @Test
     fun macPoints() {

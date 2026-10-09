@@ -370,6 +370,10 @@ class Window(Adw.ApplicationWindow):
         box.append(Gtk.Label(label="Der Benutzername ist deine Kennung zum Finden (klein, ohne Leerzeichen). Deinen Namen sehen nur deine Gesprächspartner.",
                              wrap=True, max_width_chars=44, css_classes=["lichat-subtitle"], xalign=0))
         box.append(self.setup_note)
+        # A taken user name: free ones to click (ebc3d629)
+        self.setup_suggestions = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, halign=Gtk.Align.CENTER, max_children_per_line=3,
+                                             column_spacing=6, visible=False)
+        box.append(self.setup_suggestions)
         self.setup_button = Gtk.Button(label="Anmelden", css_classes=["lichat-blue"], halign=Gtk.Align.END)
         self.setup_button.connect("clicked", lambda *_: self.sign_in())
         box.append(self.setup_button)
@@ -538,13 +542,28 @@ class Window(Adw.ApplicationWindow):
 
         def job():
             key = store.create(folder) if store else None
-            account = Account.register(folder, server, invite, name, key)
+            try:
+                account = Account.register(folder, server, invite, name, key, first, last)
+            except LiChatError as error:
+                if error.suggestions:
+                    return error.suggestions
+                raise
             if first or last:
                 account.set_name(first, last)
             return account
 
         def done(account, error):
             self.setup_button.set_sensitive(True)
+            self.setup_suggestions.remove_all()
+            self.setup_suggestions.set_visible(isinstance(account, list))
+            if isinstance(account, list):
+                self.setup_note.set_label(f"„{name}“ ist schon vergeben. Frei wären:")
+                for free in account:
+                    choice = Gtk.Button(label=free, css_classes=["pill", "lichat-suggestion"])
+                    choice.connect("clicked", lambda _b, n=free: (self.f_name.set_text(n), setattr(self, "name_touched", True),
+                                                                  self.setup_suggestions.set_visible(False), self.setup_note.set_label("")))
+                    self.setup_suggestions.append(choice)
+                return
             if error:
                 self.setup_note.set_label(error)
                 return
