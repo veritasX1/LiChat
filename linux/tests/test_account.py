@@ -332,6 +332,31 @@ class Ticks(Base):
         self.assertNotIn(b"quittung", server_files)
         self.assertNotIn(b"gelesen", server_files)
 
+    def test_typing_off_by_default_mutual_and_fleeting(self):
+        """Card 884f7c8a: „… tippt“ only when both have it on, at most every 3 s, gone with the message, never stored."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        self.assertFalse(anna.typing(cid), "ab Werk aus: nichts geht hinaus")
+        anna.set_typing_indicator(True)
+        self.assertTrue(anna.typing(cid))
+        self.assertFalse(anna.typing(cid), "höchstens alle 3 s")
+        self.assertEqual(bernd.fetch(), [], "Bernd hat sie aus: er sieht nichts")
+        self.assertEqual(bernd.typing_now(cid), [])
+        bernd.set_typing_indicator(True)
+        anna._typed.clear()
+        anna.typing(cid)
+        self.assertEqual(bernd.fetch(), [{"chat": cid, "typing": "anna"}])
+        self.assertEqual(bernd.typing_now(cid), ["anna"])
+        anna.send(cid, "Fertig getippt")
+        bernd.fetch()
+        self.assertEqual(bernd.typing_now(cid), [], "die Nachricht beendet das Tippen")
+        bernd._typing[cid] = {"anna": 0}
+        self.assertEqual(bernd.typing_now(cid), [], "nach ein paar Sekunden vorbei")
+        self.assertEqual([m["text"] for m in bernd.chats[cid]["messages"]], ["Fertig getippt"])
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(b"tippt", server_files)
+
     def test_group_needs_everyone(self):
         anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
         cid = anna.start(["bernd", "erna"])

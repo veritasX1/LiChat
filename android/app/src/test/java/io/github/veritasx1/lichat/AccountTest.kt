@@ -4,6 +4,7 @@ import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
 import io.github.veritasx1.lichat.core.LiChatException
 import io.github.veritasx1.lichat.core.News
+import io.github.veritasx1.lichat.core.TYPING_EVERY_MS
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -197,6 +198,29 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(out, 0, process.waitFor())
         val news = anna.fetch().filter { it.attachment != null }
         assertEquals("Kohle, Wuerstchen", String(anna.openAttachment(news.single().attachment!!)))
+    }
+
+    /** Card 884f7c8a: „… tippt“ off by default, mutual, at most every 3 s, ended by the message, never stored. */
+    @Test
+    fun typing() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        assertFalse("ab Werk aus", anna.typing(cid))
+        anna.typingIndicator = true
+        assertTrue(anna.typing(cid))
+        assertFalse("höchstens alle 3 s", anna.typing(cid))
+        assertTrue("Bernd hat sie aus", bernd.fetch().none { it.kind == News.Kind.Typing })
+        bernd.typingIndicator = true
+        Thread.sleep(TYPING_EVERY_MS + 50)
+        assertTrue(anna.typing(cid))
+        assertEquals(listOf("anna"), bernd.fetch().filter { it.kind == News.Kind.Typing }.map { it.from })
+        assertEquals(listOf("anna"), bernd.typingNow(cid))
+        anna.send(cid, "Fertig getippt")
+        bernd.fetch()
+        assertEquals(emptyList<String>(), bernd.typingNow(cid))
+        assertEquals(1, bernd.chat(cid).getJSONArray("messages").length())
+        assertFalse(File(root, "server").walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("tippt") })
     }
 
     /** Card db70d358: ✓ sent, ✓✓ delivered, blue ✓✓ read – read receipts off by default and mutual; a failed send is marked. */

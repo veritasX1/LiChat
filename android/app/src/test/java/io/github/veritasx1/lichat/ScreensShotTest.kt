@@ -6,6 +6,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -44,6 +45,7 @@ class ScreensShotTest {
     private lateinit var anna: Account
     private lateinit var cid: String
     private lateinit var group: String
+    private lateinit var bernd: Account
 
     @Before
     fun conversations() {
@@ -66,7 +68,7 @@ httpd.serve_forever()
         val first = server.inputStream.bufferedReader().readLine().split(" ")
         val url = "http://127.0.0.1:${first[0]}"
         fun person(name: String, invite: String) = File(root, name).let { Account.register(it, url, invite, name, KeyVault.Plain.create(it)) }
-        anna = person("anna", first[1]); val bernd = person("bernd", first[2]); val erna = person("erna", first[3])
+        anna = person("anna", first[1]); bernd = person("bernd", first[2]); val erna = person("erna", first[3])
         cid = bernd.start(listOf("anna"))
         bernd.send(cid, "Hallo Anna! Kommst du Samstag zum Grillen?")
         anna.fetch()
@@ -115,6 +117,24 @@ httpd.serve_forever()
     fun notificationsOffSettings() {
         shot("6b-einstellungen-mitteilungen-aus") { SettingsScreen(anna, false, true, {}, {}, {}, {}, notifying = false) }
         compose.onNodeWithText("Android zeigt für LiChat keine Mitteilungen", substring = true).assertExists()
+    }
+
+    /** Card 884f7c8a / 0c01f599: Bernd types – „•••“ at the very bottom, in view (the list is anchored at its end). */
+    @Test
+    fun typing() {
+        anna.typingIndicator = true; bernd.typingIndicator = true
+        org.junit.Assert.assertTrue(bernd.typing(cid))
+        anna.fetch()
+        shot("2e-tippt") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        compose.onNodeWithText("•••", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("tippt", substring = true)).assertExists()
+    }
+
+    @Test
+    fun typingSwitch() {
+        shot("6c-einstellungen-tippen") { SettingsScreen(anna, false, true, {}, {}, {}, {}, typing = true) }
+        compose.onNode(androidx.compose.ui.test.isToggleable().and(androidx.compose.ui.test.hasAnyDescendant(androidx.compose.ui.test.hasText("Tipp-Anzeige senden")))
+            .or(androidx.compose.ui.test.isToggleable().and(androidx.compose.ui.test.hasText("Tipp-Anzeige senden")))).assertIsOn()
     }
 
     @Test

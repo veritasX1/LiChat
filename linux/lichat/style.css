@@ -77,3 +77,5 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-blue { background-color: #0a7aff; color: #ffffff; border-radius: 6px; font-weight: 600; min-height: 28px; padding: 0 14px; }
 .lichat-blue:disabled { background-color: rgba(120, 120, 128, 0.2); color: rgba(255, 255, 255, 0.8); }
 .lichat-code { font-family: "Inter", monospace; font-feature-settings: "tnum"; font-size: 15px; letter-spacing: 1px; }
+.lichat-typing { color: #8e8e93; letter-spacing: 2px; }
+.lichat-new-pill { background-color: #007aff; color: #ffffff; border-radius: 16px; padding: 4px 14px; font-weight: 600; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); }

@@ -75,6 +75,9 @@ ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
+TYPING_EVERY = 3     # s between two „tippt“ of mine
+TYPING_FRESH = 6     # s a „tippt“ stays shown after it arrived
+TYPING_LATE = 30     # s after which an arriving „tippt“ is ignored (fetched late; allows for clocks a little apart)
 SUPPLY = 20          # key packages uploaded at the start
 TIMEOUT = 20
 
@@ -211,6 +214,8 @@ class Account:
         self.lock = ProfileLock(self)
         self._seen = self._disk_mark()
         self._owe_picture = set()   # chats that learn my picture once their roster is known
+        self._typing = {}           # chat → {sender: when their „tippt“ came} – only in memory, never saved (884f7c8a)
+        self._typed = {}            # chat → when I last said „tippt“ there
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
         self._owe_removal = {}      # chat → people who left and whose devices I take out of the MLS group
         self.server = Server(self.info["server"], self.info["token"])
@@ -643,6 +648,41 @@ class Account:
             self.profiles["lesebestaetigungen"] = bool(on)
             self.save()
 
+    # ------------------------------------------------------------------------------------------ typing (884f7c8a)
+    # Olaf 09.10.: „… tippt“ only with the switch on (off by default, privacy) and mutual like read receipts – off means I
+    # neither send it nor see it. {"t": "tippt", "at"} travels end-to-end, at most every TYPING_EVERY s, nothing is stored.
+
+    @property
+    def typing_indicator(self):
+        return bool(self.profiles.get("tippanzeige", False))
+
+    def set_typing_indicator(self, on):
+        with self.lock:
+            self.profiles["tippanzeige"] = bool(on)
+            if not on:
+                self._typing.clear()
+            self.save()
+
+    def typing(self, cid):
+        """I am typing in this chat: tell the others (rate-limited; nothing when switched off)."""
+        now = time.monotonic()
+        if not self.typing_indicator or self.chats[cid].get("removed") or now - self._typed.get(cid, -TYPING_EVERY) < TYPING_EVERY:
+            return False
+        self._typed[cid] = now
+        with self.lock:
+            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "tippt", "at": int(time.time())}))
+            self.save()
+            targets = self.targets(cid)
+        self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+        return True
+
+    def typing_now(self, cid):
+        """Who is typing in this chat right now (shown as „…“ under the last bubble)."""
+        if not self.typing_indicator:
+            return []
+        now = time.time()
+        return sorted(u for u, at in self._typing.get(cid, {}).items() if now - at < TYPING_FRESH)
+
     def _receipt(self, cid, kind, mids):
         if not mids or self.chats[cid].get("removed"):
             return None
@@ -994,6 +1034,12 @@ class Account:
             else:
                 reactions.pop(sender, None)
             return [{"chat": cid, "reaction": emoji, "from": sender, "target": (self.describe(target) or target.get("text", ""))[:60]}]
+        if data.get("t") == "tippt":
+            # Late ones (fetched after a while offline) mean nothing any more.
+            if sender == self.username or not self.typing_indicator or abs(time.time() - int(data.get("at") or 0)) > TYPING_LATE:
+                return []
+            self._typing.setdefault(cid, {})[sender] = time.time()
+            return [{"chat": cid, "typing": sender}]
         if data.get("t") == "quittung":
             kind = data.get("art")
             mids = {str(m) for m in (data.get("mids") or []) if isinstance(m, str)}
@@ -1015,6 +1061,7 @@ class Account:
                 return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
             info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
             message = {"from": sender, "text": "", "at": int(data.get("at") or time.time()), "anhang": info}
+            self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             return [{"chat": cid, "from": sender, "text": self.describe(message), "at": message["at"], "anhang": info}]
@@ -1023,6 +1070,7 @@ class Account:
             answer = data.get("antwort")
             if isinstance(answer, dict) and re.fullmatch(r"[0-9a-f]{16}", str(answer.get("mid", ""))):
                 message["antwort"] = {"mid": answer["mid"], "from": str(answer.get("from", ""))[:40], "text": str(answer.get("text", ""))[:120]}
+            self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             return [{"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}]

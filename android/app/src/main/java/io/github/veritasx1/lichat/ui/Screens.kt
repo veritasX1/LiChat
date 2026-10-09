@@ -229,8 +229,21 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     val title = account.title(cid)
     val others = account.others(cid)
     val list = messages(chat)
+    // Newest at the bottom and the list anchored there (reverseLayout): the keyboard, a growing input line and a long
+    // last bubble never hide the end (card 0c01f599). Item 0 is the newest message.
     val listState = rememberLazyListState()
-    LaunchedEffect(list.size) { if (list.isNotEmpty()) listState.scrollToItem(list.size - 1) }
+    val atEnd by remember { androidx.compose.runtime.derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 40 } }
+    var unseen by remember(cid) { mutableStateOf(0) }
+    var known by remember(cid) { mutableStateOf(list.size) }
+    LaunchedEffect(list.size) {
+        // A new message: follow it when I am at the end or wrote it myself, otherwise offer „↓ Neue Nachricht“ (card be8f93c3).
+        val added = list.size - known
+        known = list.size
+        if (added <= 0) return@LaunchedEffect
+        val fromMe = list.lastOrNull()?.optString("from") == account.username
+        if (fromMe || listState.firstVisibleItemIndex <= added) { unseen = 0; listState.animateScrollToItem(0) } else unseen += added
+    }
+    LaunchedEffect(atEnd) { if (atEnd) unseen = 0 }
     Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.statusBars)) {
         // Top: back, the person's picture and name in the middle – a tap shows the details (iOS 18 Messages).
         Box(Modifier.fillMaxWidth().background(colors.bar)) {
@@ -248,9 +261,28 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             }
         }
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), state = listState) {
-            item { Spacer(Modifier.height(8.dp)) }
-            items(list.size) { i ->
+        Box(Modifier.weight(1f)) {
+        // „•••“ while someone types – it fades a few seconds after the last sign (card 884f7c8a).
+        var clock by remember { mutableStateOf(0L) }
+        val typing = remember(version, cid, clock) { account.typingNow(cid) }
+        LaunchedEffect(typing) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
+        LaunchedEffect(typing.isNotEmpty()) { if (typing.isNotEmpty() && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
+        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), state = listState, reverseLayout = true) {
+            if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
+                val who = typing.joinToString(", ") { account.display(it) }
+                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp).semantics(mergeDescendants = true) { contentDescription = "$who tippt" }) {
+                    if (others.size > 1) BasicText(who, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                    BasicText("•••", style = style(17f, 700, colors.secondary).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(2f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                        modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(colors.theirs).padding(horizontal = 14.dp, vertical = 7.dp))
+                }
+            }
+            chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
+                item { BasicText("$by hat dich aus der Unterhaltung entfernt.", style = style(11f, 400, colors.secondary).copy(textAlign = TextAlign.Center),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) }
+            }
+            // One Column per item: with reverseLayout the parts of an item would otherwise stack upside down too.
+            items(list.size, key = { list[list.size - 1 - it].optString("mid").ifEmpty { "n${list.size - 1 - it}" } }) { row -> Column {
+                val i = list.size - 1 - row
                 val m = list[i]
                 val previous = list.getOrNull(i - 1)
                 if (previous == null || m.optLong("at") - previous.optLong("at") > 15 * 60) {
@@ -271,7 +303,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                         BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else quoted.optString("from")}: ${quoted.optString("text")}",
                             style = style(13f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, colors.fill, RoundedCornerShape(12.dp))
-                                .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(target + 1) } }
+                                .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(list.size - 1 - target + (if (chat.optString("removed").isEmpty()) 0 else 1) + (if (typing.isEmpty()) 0 else 1)) } }
                                 .padding(horizontal = 10.dp, vertical = 5.dp))
                     }
                 }
@@ -310,11 +342,14 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 }
                 Reactions(m, mine)
                 if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
-            }
-            chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
-                item { BasicText("$by hat dich aus der Unterhaltung entfernt.", style = style(11f, 400, colors.secondary).copy(textAlign = TextAlign.Center),
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) }
-            }
+            } }
+            item { Spacer(Modifier.height(8.dp)) }
+        }
+        if (unseen > 0) {
+            BasicText(if (unseen == 1) "↓ Neue Nachricht" else "↓ $unseen neue Nachrichten", style = style(15f, 600, Color.White),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).clip(RoundedCornerShape(18.dp)).background(colors.blue)
+                    .clickable { unseen = 0; scope.launch { listState.animateScrollToItem(0) } }.padding(horizontal = 14.dp, vertical = 7.dp))
+        }
         }
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
         replyTo?.let { quoted ->
@@ -403,6 +438,8 @@ class AttachmentActions(
     val playing: String? = null,
     /** „Nicht gesendet“ tapped: send that message (its mid) again. */
     val retry: (String) -> Unit = {},
+    /** Something was typed (with the switch on the others see „…“, card 884f7c8a). */
+    val typing: () -> Unit = {},
 )
 
 /** Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with Jaques,
@@ -445,11 +482,13 @@ fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
 fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions()) {
     val colors = palette()
     var text by remember { mutableStateOf("") }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Bottom) {
         actions.plus?.let { plus ->
             Box(Modifier.padding(end = 8.dp, bottom = 1.dp).size(34.dp).clip(CircleShape).background(colors.fill)
-                .clickable(role = Role.Button, onClick = plus).semantics { contentDescription = "Anhang" }, contentAlignment = Alignment.Center) {
+                .clickable(role = Role.Button) { keyboard?.hide(); focus.clearFocus(); plus() }.semantics { contentDescription = "Anhang" }, contentAlignment = Alignment.Center) {
                 GlyphIcon(Glyph.Plus, colors.secondary, 20.dp)
             }
         }
@@ -469,7 +508,7 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
         Box(Modifier.weight(1f).heightIn(min = 36.dp).clip(RoundedCornerShape(18.dp)).background(colors.background)
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
-            BasicTextField(text, { text = it }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+            BasicTextField(text, { text = it; if (it.isNotEmpty()) actions.typing() }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 40.dp, top = 8.dp, bottom = 8.dp).semantics { contentDescription = "Nachricht" },
                 decorationBox = { inner -> Box { if (text.isEmpty()) BasicText("LiChat", style = style(17f, 400, colors.tertiary)); inner() } })
             if (text.isNotBlank()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
@@ -680,7 +719,8 @@ fun Section(header: String?, footer: String? = null, content: @Composable () -> 
 @Composable
 fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, onPreview: (Boolean) -> Unit, onPicture: () -> Unit,
                    onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {},
-                   receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> }) {
+                   receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> },
+                   typing: Boolean = false, onTyping: (Boolean) -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -719,9 +759,11 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             SwitchRow("Absender und Text zeigen", preview, onPreview)
         }
-        Section("NACHRICHTEN", footer = "Wenn eingeschaltet, sehen andere, dass du ihre Nachrichten gelesen hast – und du siehst es bei ihnen " +
-            "(blaue Haken). Ausgeschaltet gilt beides nicht. „Zugestellt“ gibt es immer.") {
+        Section("NACHRICHTEN", footer = "Wenn eingeschaltet, sehen andere, dass du ihre Nachrichten gelesen hast oder gerade schreibst – und " +
+            "du siehst es bei ihnen (blaue Haken, „•••“). Ausgeschaltet gilt beides nicht. „Zugestellt“ gibt es immer.") {
             SwitchRow("Lesebestätigungen senden", receipts, onReceipts)
+            Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+            SwitchRow("Tipp-Anzeige senden", typing, onTyping)
         }
         Section("VERBINDUNG", footer = "LiChat hält selbst eine Verbindung zu deinem Server – kein anderer Dienst erfährt, wann du Nachrichten bekommst. " +
             "Solange Android LiChat beim Akku einschränkt, können Nachrichten verspätet kommen.") {

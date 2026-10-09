@@ -37,6 +37,9 @@ private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
+const val TYPING_EVERY_MS = 3_000L   // between two „tippt“ of mine
+const val TYPING_FRESH_MS = 6_000L   // a „tippt“ stays shown this long after it arrived
+private const val TYPING_LATE_S = 30 // an older one (fetched late) is ignored
 
 fun b64(data: ByteArray): String = Base64.getEncoder().encodeToString(data)
 fun unb64(text: String): ByteArray = Base64.getDecoder().decode(text)
@@ -46,7 +49,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
                 val attachment: JSONObject? = null) {
-    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction }
+    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing }
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
@@ -177,6 +180,8 @@ class Account(val folder: File, private val key: ByteArray) {
     private val owePicture = mutableSetOf<String>()
     /** Chat → mids that arrived and still get their „zugestellt“ (card db70d358). */
     private val oweDelivered = mutableMapOf<String, MutableList<String>>()
+    private val typingSeen = mutableMapOf<String, MutableMap<String, Long>>()   // chat → sender → when (ms), never saved
+    private val typed = mutableMapOf<String, Long>()                              // chat → when I last said „tippt“
     /** Chat → people who left and whose devices I take out of the MLS group (the first remaining member does it). */
     private val oweRemoval = mutableMapOf<String, MutableSet<String>>()
 
@@ -447,6 +452,36 @@ class Account(val folder: File, private val key: ByteArray) {
     var readReceipts: Boolean
         get() = profiles.optBoolean("lesebestaetigungen", false)
         set(on) = synchronized(lock) { profiles.put("lesebestaetigungen", on); save() }
+
+    // ------------------------------------------------------------------------------------------ typing (884f7c8a)
+
+    /** „… tippt“ (Olaf 09.10.): off by default for privacy, mutual like read receipts; flüchtig – never stored. */
+    var typingIndicator: Boolean
+        get() = profiles.optBoolean("tippanzeige", false)
+        set(on) = synchronized(lock) { profiles.put("tippanzeige", on); if (!on) typingSeen.clear(); save() }
+
+    /** I am typing in this chat: the others see „…“ – at most every 3 s, nothing when switched off. */
+    fun typing(cid: String): Boolean {
+        val now = System.nanoTime() / 1_000_000
+        if (!typingIndicator || chat(cid).optString("removed").isNotEmpty() || now - (typed[cid] ?: -TYPING_EVERY_MS) < TYPING_EVERY_MS) return false
+        typed[cid] = now
+        val packet: ByteArray
+        val targets: List<String>
+        synchronized(lock) {
+            packet = device.encrypt(cid.unhex(), payload(JSONObject().put("t", "tippt").put("at", System.currentTimeMillis() / 1000)))
+            save()
+            targets = targets(cid)
+        }
+        post(targets, byteArrayOf(MLS) + packet)
+        return true
+    }
+
+    /** Who is typing in this chat right now. */
+    fun typingNow(cid: String): List<String> = synchronized(lock) {
+        if (!typingIndicator) return emptyList()
+        val now = System.currentTimeMillis()
+        typingSeen[cid]?.filterValues { now - it < TYPING_FRESH_MS }?.keys?.sorted() ?: emptyList()
+    }
 
     private fun receipt(cid: String, kind: String, mids: List<String>) {
         if (mids.isEmpty() || chat(cid).optString("removed").isNotEmpty()) return
@@ -795,6 +830,12 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (emoji.isEmpty()) reactions.remove(sender) else reactions.put(sender, emoji)
                         return listOf(News(cid, News.Kind.Reaction, from = sender, text = emoji, received = at))
                     }
+                    "tippt" -> {
+                        val late = kotlin.math.abs(System.currentTimeMillis() / 1000 - data.optLong("at")) > TYPING_LATE_S
+                        if (sender == username || !typingIndicator || late) return emptyList()
+                        typingSeen.getOrPut(cid) { mutableMapOf() }[sender] = System.currentTimeMillis()
+                        return listOf(News(cid, News.Kind.Typing, from = sender, received = at))
+                    }
                     "quittung" -> {
                         val kind = data.optString("art")
                         val mids = data.optJSONArray("mids")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
@@ -820,6 +861,7 @@ class Account(val folder: File, private val key: ByteArray) {
                         info.put("name", info.optString("name", "Datei").take(200).replace('/', '_'))
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", "").put("at", sent).put("anhang", info)
+                        typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = describe(message), at = sent, received = at, attachment = info))
@@ -832,6 +874,7 @@ class Account(val folder: File, private val key: ByteArray) {
                             message.put("antwort", JSONObject().put("mid", a.optString("mid")).put("from", a.optString("from").take(40))
                                 .put("text", a.optString("text").take(120)))
                         }
+                        typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at))
