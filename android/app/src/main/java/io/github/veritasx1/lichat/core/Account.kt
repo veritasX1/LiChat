@@ -87,9 +87,10 @@ class Server(url: String, var token: String? = null) {
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.use { String(it.readBytes()) } ?: ""
-            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
-            if (code !in 200..299) throw LiChatException("Server: ${json.optString("error").ifBlank { "Fehler" }} ($code)")
-            return json
+            // nginx answers a restart with an HTML page (502) – that is a server error, never a crash (Michelle 09.10.).
+            val json = runCatching { if (text.isBlank()) JSONObject() else JSONObject(text) }.getOrNull()
+            if (code !in 200..299) throw LiChatException("Server: ${json?.optString("error")?.ifBlank { null } ?: "Fehler"} ($code)")
+            return json ?: throw LiChatException("Server: unverständliche Antwort ($code)")
         } catch (e: java.io.IOException) {
             throw LiChatException("Server nicht erreichbar: ${e.message}")
         } finally {
