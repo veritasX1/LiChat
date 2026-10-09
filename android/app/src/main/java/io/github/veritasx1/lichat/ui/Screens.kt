@@ -83,6 +83,16 @@ fun Avatar(name: String, picture: ByteArray?, size: Dp) {
     }
 }
 
+/** The app's own icon (the white speech bubble on blue), rounded like an iOS app icon. */
+@Composable
+fun AppIcon(size: Dp) {
+    Box(Modifier.size(size).clip(RoundedCornerShape(size * 0.225f))
+        .background(Brush.verticalGradient(listOf(Color(0xFF5AC8FA), Color(0xFF0A7AFF))))) {
+        Image(androidx.compose.ui.res.painterResource(io.github.veritasx1.lichat.R.drawable.ic_launcher_foreground), contentDescription = "LiChat",
+            modifier = Modifier.fillMaxSize())
+    }
+}
+
 @Composable
 fun TextButton(text: String, color: Color, weight: Int = 400, enabled: Boolean = true, onClick: () -> Unit) {
     BasicText(text, style = style(17f, weight, if (enabled) color else palette().tertiary),
@@ -402,7 +412,7 @@ fun SetupScreen(busy: Boolean, problem: String?, onSignIn: (String, String, Stri
     var name by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.ime))
         .verticalScroll(rememberScrollState()).padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Avatar("Li Chat", null, 88.dp)
+        AppIcon(88.dp)
         BasicText("Bei LiChat anmelden", style = style(28f, 700, colors.label), modifier = Modifier.padding(top = 16.dp))
         BasicText("Mit der Einladung deines Servers. Alles, was du schreibst, ist Ende-zu-Ende verschlüsselt.", style = style(15f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp, vertical = 10.dp))
         Section(null) {
