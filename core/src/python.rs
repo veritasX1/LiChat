@@ -48,6 +48,17 @@ impl Device {
         Ok(self.inner.key_packages(count).map_err(err)?.iter().map(|k| PyBytes::new(py, k)).collect())
     }
 
+    fn last_resort_key_package<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.last_resort_key_package().map_err(err)?))
+    }
+
+    /// -> (user name, public signature key) of a claimed key package, its signature checked.
+    #[staticmethod]
+    fn key_package_owner<'py>(py: Python<'py>, key_package: &[u8]) -> PyResult<(String, Bound<'py, PyBytes>)> {
+        let (identity, key) = Core::key_package_owner(key_package).map_err(err)?;
+        Ok((identity, PyBytes::new(py, &key)))
+    }
+
     /// -> (conversation id, welcome)
     fn start_conversation<'py>(&mut self, py: Python<'py>, key_packages: Vec<Vec<u8>>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         let started = self.inner.start_conversation(&key_packages).map_err(err)?;

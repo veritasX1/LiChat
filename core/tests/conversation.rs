@@ -119,3 +119,31 @@ fn save_and_load() {
     let late = erna.start_conversation(&spare[1..]).unwrap();
     assert!(bernd.join(&late.welcome).is_ok());
 }
+
+#[test]
+fn last_resort_and_owner() {
+    let mut anna = Device::new("anna").unwrap();
+    let mut erna = Device::new("erna").unwrap();
+    let bernd = Device::new("bernd").unwrap();
+
+    // Who a key package belongs to – the app checks it against the directory.
+    let reserve = bernd.last_resort_key_package().unwrap();
+    assert_eq!(Device::key_package_owner(&reserve).unwrap(), ("bernd".to_string(), bernd.identity_key()));
+    let mut forged = reserve.clone();
+    let last = forged.len() - 1;
+    forged[last] ^= 1;
+    assert!(Device::key_package_owner(&forged).is_err());
+
+    // The reserve can start more than one conversation (an ordinary key package only one).
+    let mut bernd = bernd;
+    let first = anna.start_conversation(&[reserve.clone()]).unwrap();
+    assert_eq!(bernd.join(&first.welcome).unwrap(), first.conversation);
+    let second = erna.start_conversation(&[reserve]).unwrap();
+    assert_eq!(bernd.join(&second.welcome).unwrap(), second.conversation);
+
+    let once = bernd.key_packages(1).unwrap();
+    let a = anna.start_conversation(&once).unwrap();
+    bernd.join(&a.welcome).unwrap();
+    let b = erna.start_conversation(&once).unwrap();
+    assert!(bernd.join(&b.welcome).is_err(), "gewöhnliches Key-Package zweimal benutzt");
+}

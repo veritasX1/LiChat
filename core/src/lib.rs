@@ -124,6 +124,33 @@ impl Device {
             .collect()
     }
 
+    /// The „letzte Reserve“ (server: PUT /v1/key-packages/last-resort): a key package that stays usable after a
+    /// conversation was started with it, so a device is reachable even when someone emptied its supply.
+    pub fn last_resort_key_package(&self) -> Result<Vec<u8>, Error> {
+        // The leaf has to name the extension it carries, or every validation refuses it („UnsupportedExtension“).
+        let capabilities = Capabilities::new(None, None, Some(&[ExtensionType::LastResort]), None, None);
+        let bundle = KeyPackage::builder()
+            .leaf_node_capabilities(capabilities)
+            .mark_as_last_resort()
+            .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+            .map_err(mls)?;
+        bundle.key_package().tls_serialize_detached().map_err(mls)
+    }
+
+    /// Whose a claimed key package is: (user name, public signature key) after checking its signature. The app compares
+    /// both with the directory (GET /v1/users/<name>) – the server cannot hand out a key package of a device of its own.
+    pub fn key_package_owner(bytes: &[u8]) -> Result<(String, Vec<u8>), Error> {
+        let provider = OpenMlsRustCrypto::default();
+        let incoming = KeyPackageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;
+        let package = incoming
+            .validate(provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| Error::InvalidKeyPackage(format!("{e:?}")))?;
+        let leaf = package.leaf_node();
+        let credential = BasicCredential::try_from(leaf.credential().clone()).map_err(|e| Error::Malformed(format!("{e:?}")))?;
+        let identity = String::from_utf8(credential.identity().to_vec()).map_err(|_| Error::Malformed("Name kein UTF-8".into()))?;
+        Ok((identity, leaf.signature_key().as_slice().to_vec()))
+    }
+
     fn create_config() -> MlsGroupCreateConfig {
         MlsGroupCreateConfig::builder().ciphersuite(CIPHERSUITE).use_ratchet_tree_extension(true).build()
     }
