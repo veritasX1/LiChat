@@ -22,6 +22,8 @@
     lichat-cli [--profil NAME] kontakt-hinzufuegen <link>     # Kontakt-Link/QR-Text eines anderen (prüft den Schlüssel)
     lichat-cli [--profil NAME] pin | pin-einloesen <pin>      # Kontakt per PIN (10 min, einmal)
     lichat-cli [--profil NAME] kontakte
+    lichat-cli [--profil NAME] tippanzeige an|aus             # „…“ senden und sehen (ab Werk aus, gegenseitig)
+    lichat-cli [--profil NAME] tippen <gespräch> [sekunden]   # „tippt“ schicken, mit Sekunden alle 3 s wiederholt (zum Testen)
     lichat-cli [--profil NAME] bild <datei>|--weg           # Profilbild (512 px, ohne EXIF, nur in den Gesprächen)
 
 Daten: $XDG_DATA_HOME/lichat-cli/<profil> (Standard „standard“, oder LICHAT_PROFIL). Ein <gespräch> ist die kurze
@@ -35,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lichat.account import Account, LiChatError, default_folder, short  # noqa: E402
+from lichat.account import TYPING_EVERY, Account, LiChatError, default_folder, short  # noqa: E402
 
 
 def when(at):
@@ -110,7 +112,10 @@ def main(argv):
             elif item.get("removed"):
                 print(f"[{chat}] {item['removed']} hat dich aus dem Gespräch entfernt")
             elif "reaction" in item:
-                print(f"[{chat}] {item['from']} reagiert {item['reaction'] or '(nimmt Reaktion zurück)'} auf „{item.get('target', '')}“")
+                if item["reaction"]:
+                    print(f"[{chat}] {item['from']} reagiert {item['reaction']} auf „{item.get('target', '')}“")
+                else:
+                    print(f"[{chat}] {item['from']} nimmt die Reaktion {item.get('before') or ''} auf „{item.get('target', '')}“ zurück".replace("  ", " "))
             elif item.get("picture"):
                 print(f"[{chat}] neues Profilbild von {item['picture']}")
             elif item.get("problem"):
@@ -219,6 +224,26 @@ def main(argv):
             print(f"{account.display(name)} ({name})" + ("  ✓ verifiziert" if contact.get("verifiziert") else ""))
         if not account.contacts:
             print("noch keine Kontakte")
+    elif command == "tippanzeige":
+        if args[:1] not in (["an"], ["aus"]):
+            raise LiChatError(f"tippanzeige an|aus (jetzt: {'an' if account.typing_indicator else 'aus'})")
+        account.set_typing_indicator(args[0] == "an")
+        print(f"Tipp-Anzeige {args[0]} (gegenseitig: aus heißt auch, dass du sie bei anderen nicht siehst)")
+    elif command == "tippen":
+        if not args:
+            raise LiChatError("tippen <gespräch> [sekunden]")
+        if not account.typing_indicator:
+            raise LiChatError("Die Tipp-Anzeige ist aus – erst „lichat-cli tippanzeige an“")
+        cid = account.chat(args[0])
+        until = time.time() + (float(args[1]) if len(args) > 1 else 0)
+        sent = 0
+        while True:
+            account._typed.pop(cid, None)
+            sent += account.typing(cid)
+            if time.time() + TYPING_EVERY > until:
+                break
+            time.sleep(TYPING_EVERY)
+        print(f"„tippt“ {sent}× geschickt")
     elif command == "bild":
         if not args:
             raise LiChatError("bild <datei> | bild --weg")

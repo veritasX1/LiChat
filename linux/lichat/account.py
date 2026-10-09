@@ -1029,11 +1029,13 @@ class Account:
             if target is None:
                 return []
             reactions = target.setdefault("reaktionen", {})
+            before = reactions.get(sender, "")
             if emoji:
                 reactions[sender] = emoji
             else:
                 reactions.pop(sender, None)
-            return [{"chat": cid, "reaction": emoji, "from": sender, "target": (self.describe(target) or target.get("text", ""))[:60]}]
+            return [{"chat": cid, "reaction": emoji, "before": before, "from": sender,
+                     "target": (self.describe(target) or target.get("text", ""))[:60]}]
         if data.get("t") == "tippt":
             # Late ones (fetched after a while offline) mean nothing any more.
             if sender == self.username or not self.typing_indicator or abs(time.time() - int(data.get("at") or 0)) > TYPING_LATE:
