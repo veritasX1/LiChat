@@ -278,6 +278,51 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(cli("anna3", "abholen").contains("Ohne Tablet"))
     }
 
+    /** Michelle's Mac points: unread marker + „als ungelesen“, receipts per chat, blocking + filters, „Zuletzt gelöscht“. */
+    @Test
+    fun macPoints() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = bernd.start(listOf("anna"))
+        bernd.send(cid, "eins")
+        anna.fetch(); anna.markRead(cid)
+        assertEquals(0, anna.unread(cid))
+        bernd.send(cid, "zwei"); bernd.send(cid, "drei")
+        anna.fetch()
+        assertEquals(2, anna.unread(cid))
+        assertEquals("zwei", anna.findMessage(cid, anna.firstUnread(cid)!!)!!.getString("text"))
+        assertEquals(listOf(cid), anna.filtered("ungelesen"))
+        anna.markRead(cid); anna.markUnread(cid)
+        assertEquals(1, anna.unread(cid))
+        anna.markRead(cid)
+        // receipts per chat (general off)
+        anna.setReceiptsFor(cid, true)
+        assertTrue(anna.receiptsFor(cid))
+        anna.setReceiptsFor(cid, null)
+        assertFalse(anna.receiptsFor(cid))
+        // blocked: nothing arrives
+        anna.block("bernd")
+        bernd.send(cid, "Hallo?")
+        assertTrue(anna.fetch().none { it.kind == News.Kind.Text })
+        anna.block("bernd", false)
+        // bernd wrote, anna never: unknown; after anna writes: known
+        assertEquals(listOf(cid), anna.filtered("unbekannt"))
+        anna.send(cid, "Hi")
+        assertEquals(listOf(cid), anna.filtered("bekannt"))
+        // pinned
+        anna.pin(cid, true)
+        assertEquals(listOf(cid), anna.pinned())
+        // „Zuletzt gelöscht“: a new message brings it back, the old ones stay deleted; 30 days later gone
+        anna.deleteChat(cid)
+        assertEquals(emptyList<String>(), anna.filtered("alle"))
+        assertEquals(listOf(cid), anna.filtered("geloescht"))
+        bernd.send(cid, "Noch da?")
+        anna.fetch()
+        assertEquals(listOf(cid), anna.filtered("alle"))
+        anna.purge(now = System.currentTimeMillis() / 1000 + 31L * 86400)
+        val left = anna.chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it).optString("text") } }
+        assertEquals(listOf("Noch da?"), left)
+    }
+
     /** Card d54175ed: „@name“ members only, „@alle“ everyone, a mention of me is flagged (notifies even when muted). */
     @Test
     fun mentions() {

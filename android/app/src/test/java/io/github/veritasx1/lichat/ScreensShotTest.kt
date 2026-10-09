@@ -154,16 +154,70 @@ httpd.serve_forever()
         compose.onNodeWithText("Senden widerrufen").assertExists()
     }
 
-    /** „+“ (a7d9d987): the keyboard opens, the first emoji typed is the reaction. */
+    /** „+“ (20eb5cc5): our own emoji picker – a German word finds it, a tap is the reaction; categories too. */
     @Test
     fun anyEmoji() {
         var reacted = ""
         val m = anna.chat(cid).getJSONArray("messages").getJSONObject(1)
-        shot("2g-plus") { io.github.veritasx1.lichat.ui.MessageMenu(m, anna, true, null, {}, { reacted = it }, {}, {}, {}) }
+        compose.setContent { CompositionLocalProvider(LocalPalette provides Palette(false)) { io.github.veritasx1.lichat.ui.MessageMenu(m, anna, true, null, {}, { reacted = it }, {}, {}, {}) } }
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Anderes Emoji")).performClick()
-        compose.onNodeWithText("Emoji wählen:").assertExists()
-        compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("🦄")
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Emoji suchen")).performTextInput("einhorn")
+        compose.waitForIdle()
+        if (out != null) captureScreenRoboImage("$out/2g-emoji-suche.png")
+        compose.onNodeWithText("🦄").performClick()
         org.junit.Assert.assertEquals("🦄", reacted)
+    }
+
+    @Test
+    fun emojiCategories() {
+        var reacted = ""
+        shot("2g-emoji") { io.github.veritasx1.lichat.ui.EmojiPicker({ reacted = it }) }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Tiere & Natur")).performClick()
+        compose.onAllNodesWithText("🐶").fetchSemanticsNodes().size.let { org.junit.Assert.assertEquals(2, it) }   // tab + grid
+        compose.onAllNodesWithText("🐶")[1].performClick()
+        org.junit.Assert.assertEquals("🐶", reacted)
+    }
+
+    /** 20eb5cc5: a long message lifted for its menu is cut to six lines, the original hidden. */
+    @Test
+    fun longBubbleLifted() {
+        anna.send(cid, (1..40).joinToString(" ") { "Zeile $it mit etwas mehr Text damit sie umbricht" })
+        val list = anna.chat(cid).getJSONArray("messages")
+        val long = list.getJSONObject(list.length() - 1).getString("text")
+        shot("2i-lang") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        compose.onNodeWithText(long).performTouchInput { longClick(androidx.compose.ui.geometry.Offset(centerX, bottom - 60f)) }   // taller than the screen
+        compose.waitForIdle()
+        if (out != null) captureScreenRoboImage("$out/2i-lang-menue.png")
+        // The lifted text sits inside the menu's merged node – the unmerged tree shows each text alone.
+        val lifted = compose.onAllNodesWithText(long, useUnmergedTree = true).fetchSemanticsNodes().map { it.boundsInRoot }.minBy { it.height }
+        org.junit.Assert.assertTrue("höchstens ~6 Zeilen: ${lifted.height}", lifted.height < 6.5f * 22 * 3)
+        compose.onNodeWithText("Antworten").assertExists()
+    }
+
+    /** 206118bf / 1f800b4f: pinned on top as big pictures; „Filter“ offers Messages' choices; long press offers the actions. */
+    @Test
+    fun pinnedAndFilter() {
+        anna.pin(cid, true)
+        var action = ""
+        shot("1c-angeheftet") { ChatList(anna, 0, emptyMap(), null, true, {}, {}, {}, {}, onAction = { _, a -> action = a }) }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("bernd, angeheftet", substring = true)).assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("bernd, angeheftet", substring = true)).performTouchInput { longClick() }
+        compose.onNodeWithText("Nicht mehr anheften").performClick()
+        org.junit.Assert.assertEquals("loesen", action)
+        compose.onNodeWithText("Filter").performClick()
+        compose.onNodeWithText("Zuletzt gelöscht").assertExists()
+        compose.onNodeWithText("Ungelesene Nachrichten").performClick()
+        compose.onNodeWithText("Ungelesene Nachrichten").assertExists()      // the title says which filter is on
+    }
+
+    @Test
+    fun detailsReceiptsAndBlock() {
+        var receipts: Boolean? = null; var blocked = ""
+        shot("4b-info-einzeln") { Details(anna, cid, 0, {}, {}, io.github.veritasx1.lichat.ui.GroupActions(receipts = { receipts = it }, block = { p, _ -> blocked = p })) }
+        compose.onNodeWithText("Lesebestätigungen senden").performScrollTo().performClick()
+        org.junit.Assert.assertEquals(true, receipts)
+        compose.onNodeWithText("bernd blockieren").performScrollTo().performClick()
+        org.junit.Assert.assertEquals("bernd", blocked)
     }
 
     @Test

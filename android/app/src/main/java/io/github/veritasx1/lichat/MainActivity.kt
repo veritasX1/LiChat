@@ -192,6 +192,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         if (granted) startRecording() else problem = "LiChat darf das Mikrofon nicht benutzen – in den Android-Einstellungen erlauben."
     }
     val actions = AttachmentActions(
+        load = { info -> account?.openAttachment(info) ?: throw LiChatException("kein Konto") },
         plus = { sheet = true },
         micStart = {
             if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -294,19 +295,32 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         Navigation(page, onBack = { page = it }) { p -> when (p) {
             Page.List -> ChatList(acc, version, seen, serverProblem, unrestricted,
                 onOpen = { page = Page.Chat(it) }, onNew = { problem = null; page = Page.New }, onSettings = { page = Page.Settings },
-                onUnrestrict = { askBattery() }, notifying = notifying, onNotifications = { openNotificationSettings() })
+                onUnrestrict = { askBattery() }, notifying = notifying, onNotifications = { openNotificationSettings() },
+                onAction = { cid, action ->
+                    work({
+                        when (action) {
+                            "anheften" -> acc.pin(cid, true); "loesen" -> acc.pin(cid, false)
+                            "ungelesen" -> acc.markUnread(cid); "gelesen" -> acc.markRead(cid)
+                            "stumm" -> acc.mute(cid, true); "laut" -> acc.mute(cid, false)
+                            "loeschen" -> acc.deleteChat(cid); "wiederherstellen" -> acc.restore(cid); "endgueltig" -> acc.purge(cid)
+                        }
+                    }) { _, error -> problem = error; Hub.changed() }
+                })
             is Page.Chat -> {
+                LaunchedEffect(p.cid) { Notifications.cancel(context, p.cid) }    // opened = read (2e35e6a3)
                 LaunchedEffect(version, p.cid) {
                     seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() }
                     // On screen = read (only reported with read receipts on, card db70d358).
-                    if (receipts) work({ acc.markRead(p.cid) }) { _, _ -> }
+                    // read up to here on all my devices; receipts only if on for this chat (inside markRead)
+                    work({ acc.markRead(p.cid) }) { _, _ -> }
                 }
                 ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) },
                     onSend = { text, replyTo -> work({ acc.send(p.cid, text, replyTo) }) { _, error -> problem = error; Hub.changed() } },
                     actions = actions,
                     onReact = { mid, emoji -> work({ acc.react(p.cid, mid, emoji) }) { _, error -> problem = error; Hub.changed() } },
                     onEdit = { mid, text -> work({ acc.edit(p.cid, mid, text) }) { _, error -> problem = error; Hub.changed() } },
-                    onUnsend = { mid -> work({ acc.unsend(p.cid, mid) }) { _, error -> problem = error; Hub.changed() } })
+                    onUnsend = { mid -> work({ acc.unsend(p.cid, mid) }) { _, error -> problem = error; Hub.changed() } },
+                    onDelete = { mid -> work({ acc.deleteMessage(p.cid, mid) }) { _, error -> problem = error; Hub.changed() } })
             }
             Page.New -> {
                 NewMessage(problem, onCancel = { page = Page.List }) { names, text ->
@@ -325,6 +339,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         picture = { groupPictureFor = p.cid; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         add = { names -> groupWork { acc.add(p.cid, names) } },
                         mute = { on -> groupWork { acc.mute(p.cid, on) } },
+                        receipts = { on -> groupWork { acc.setReceiptsFor(p.cid, on) } },
+                        block = { person, on -> groupWork { acc.block(person, on) } },
                         leave = { groupWork { acc.leave(p.cid) }; page = Page.Chat(p.cid) },
                     ))
             }
