@@ -102,7 +102,8 @@ object Notifications {
             .build()
 
     fun message(context: Context, news: News) {
-        val text = if (Settings.preview(context)) "${news.from}: ${news.text}" else "Neue Nachricht"
+        val text = if (Settings.preview(context)) (if (news.mention) "${news.from} hat dich erwähnt: ${news.text}" else "${news.from}: ${news.text}")
+            else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
         val notification = Notification.Builder(context, MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lichat)
             .setContentTitle("LiChat")
@@ -209,7 +210,7 @@ class LiChatService : Service() {
         for (item in news) {
             if (item.kind != News.Kind.Text || item.from == account.username) continue
             if (Hub.visible && Hub.openChat == item.chat) continue
-            if (item.chat != null && account.muted(item.chat)) continue   // muted (card d45b319a)
+            if (item.chat != null && account.muted(item.chat) && !item.mention) continue   // muted – but a mention comes through (d54175ed)
             val shown = Settings.notifying(this)
             if (shown) Notifications.message(this, item)
             if (debuggable) {

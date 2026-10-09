@@ -297,6 +297,20 @@ def main():
     assert "erna" in texts(window.bubbles)          # the sender's name over the bubble in a group
     shot(window, "06-gruppe.png")
 
+    # @Erwähnungen (d54175ed): „@er“ suggests erna, a click writes „@erna “; the bubble shows it bold; erna's notice says so.
+    window.input.set_text("Super, @er")
+    settle(0.1)
+    assert window.suggestions.get_visible()
+    next(w for w in walk(window.suggestions) if isinstance(w, Gtk.Button)).emit("clicked")
+    assert window.input.get_text() == "Super, @erna "
+    window.input.set_text(window.input.get_text() + "danke!")
+    window.send()
+    until(lambda: any("@erna" in (m.get("text") or "") for m in anna.chats[group]["messages"]))
+    assert [n for n in erna.fetch() if n.get("text") == "Super, @erna danke!"][0].get("mention") is True
+    window.show_conversation()
+    settle(0.2)
+    assert any("<b>@erna</b>" in (w.get_label() or "") for w in walk(window.bubbles) if isinstance(w, Gtk.Label))
+
     # Group life (card d45b319a): rename and picture end to end, the info popover offers add/mute/leave.
     window.current = group
     window.group_job(lambda acc: acc.rename(group, "Grillabend"))
@@ -305,7 +319,7 @@ def main():
     assert bernd.title(group) == "Grillabend"
     window.fill_info(window.info)
     labels = " ".join(w.get_label() or "" for w in walk(window.info.get_popover()) if isinstance(w, (Gtk.Label, Gtk.Button, Gtk.CheckButton)))
-    assert "Unterhaltung verlassen" in labels and "stummschalten" in labels, labels
+    assert "Unterhaltung verlassen" in labels and "Nur bei Erwähnung benachrichtigen" in labels, labels
     assert any(w.has_css_class("lichat-avatar") for w in walk(window.bubbles)), "Absenderbild in der Gruppe"
 
     # Take Erna out of the group (test plan S2): her side shows it, the input is gone.

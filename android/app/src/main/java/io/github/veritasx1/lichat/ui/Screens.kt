@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -401,7 +402,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             val edited = editing
             if (edited != null) { onEdit(edited.optString("mid"), text); editing = null }
             else { onSend(text, replyTo?.optString("mid")); replyTo = null }
-        }, actions, preset = editing?.optString("text"))
+        }, actions, preset = editing?.optString("text"),
+            mentions = if (others.size > 1) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null)
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
@@ -454,9 +456,22 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
     val colors = palette()
     val info = m.optJSONObject("anhang")
     if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing) { open(info) } }
-    else BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
+    else BasicText(withMentions(m.optString("text")), style = style(17f, 400, if (mine) Color.White else colors.label),
         modifier = modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
             .then(interact).padding(horizontal = 12.dp, vertical = 7.dp))
+}
+
+/** „@name“ bold in a bubble (card d54175ed). */
+fun withMentions(text: String): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
+    var last = 0
+    for (match in io.github.veritasx1.lichat.core.MENTION.findAll(text)) {
+        append(text.substring(last, match.range.first))
+        pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
+        append(match.value)
+        pop()
+        last = match.range.last + 1
+    }
+    append(text.substring(last))
 }
 
 /** The bubble with its reactions small at its lower right corner (Olaf: „unten rechts“ – for every bubble, Michelle a7d9d987). */
@@ -627,9 +642,22 @@ fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
 /** The input line like iOS 18: ⊕ on the left, the rounded field „LiChat“, inside it 🎤 while empty and the blue ↑ with
  *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
 @Composable
-fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null) {
+fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null,
+             mentions: ((String) -> List<Pair<String, String>>)? = null) {
     val colors = palette()
     var text by remember { mutableStateOf("") }
+    // „@…“ at the end in a group: the members that fit as a row above the input, a tap writes „@name “ (card d54175ed).
+    val typedMention = mentions?.let { Regex("(?:^|\\s)@([\\w.-]*)$").find(text) }
+    val suggestions = typedMention?.let { mentions(it.groupValues[1]) }.orEmpty()
+    if (suggestions.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 6.dp)) {
+        suggestions.forEach { (user, name) ->
+            BasicText(name, style = style(15f, 600, colors.blue), modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(16.dp))
+                .background(colors.fill).clickable {
+                    val start = text.lastIndexOf('@')
+                    text = text.substring(0, start) + "@$user "
+                }.padding(horizontal = 12.dp, vertical = 6.dp).semantics { contentDescription = "$name erwähnen" })
+        }
+    }
     LaunchedEffect(preset) { if (preset != null) text = preset }     // „Bearbeiten“: the message's text to correct
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
@@ -832,7 +860,8 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
             }
         }
         if (active) Section(null) {
-            SwitchRow("Mitteilungen stummschalten", account.muted(cid), group.mute)
+            // In a group a muted chat still notifies when someone writes @me or @alle (iOS, card d54175ed).
+            SwitchRow(if (isGroup) "Nur bei Erwähnung benachrichtigen" else "Mitteilungen stummschalten", account.muted(cid), group.mute)
             if (isGroup) {
                 Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
                 BasicText("Unterhaltung verlassen", style = style(17f, 400, colors.red),
