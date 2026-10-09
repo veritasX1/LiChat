@@ -2,6 +2,8 @@
 """LiChat ohne Oberfläche – fürs Team und zum Ausprobieren gegen den eigenen Server.
 
     lichat-cli [--profil NAME] register <server> <einladung> <benutzername>
+    lichat-cli [--profil NAME] koppeln <server> [name]          # dieses Gerät zu einem vorhandenen Konto (zeigt einen Code)
+    lichat-cli [--profil NAME] geraete | geraet-hinzufuegen <code> | geraet-entfernen <gerät>   # meine Geräte
     lichat-cli [--profil NAME] ich                          # Benutzer, Gerät, Server
     lichat-cli [--profil NAME] neu [--titel T] <person …>   # Gespräch beginnen (auch Gruppe)
     lichat-cli [--profil NAME] senden [--sofort] <gespräch> <text …>   # tippt so lange wie ein Mensch (mit „…“)
@@ -61,6 +63,18 @@ def main(argv):
             raise LiChatError("register <server> <einladung> <benutzername>")
         account = Account.register(folder, *args)
         print(f"Angemeldet als {account.username} (Gerät {account.device_id}) bei {account.info['server']}")
+        return 0
+
+    if command == "koppeln":
+        # Neues Gerät (card da5cbfcb): zeigt einen Code, ein vorhandenes Gerät nimmt ihn an („geraet-hinzufuegen“).
+        if not args:
+            raise LiChatError("koppeln <server> [gerätename]")
+        url, code = Account.link_open(args[0])
+        print(f"Code für dein anderes Gerät: {code}   (10 Minuten; dort „Gerät hinzufügen“)", flush=True)
+        while not Account.link_state(url, code).get("username"):
+            time.sleep(2)
+        account = Account.link_finish(folder, url, code, " ".join(args[1:]) or "Konsole")
+        print(f"Gekoppelt als {account.username} (Gerät {account.device_id}) – Ältere Nachrichten bleiben auf den anderen Geräten.")
         return 0
 
     account = Account(folder)
@@ -197,6 +211,20 @@ def main(argv):
         else:
             account.unsend(cid, mine[-1]["mid"])
             print("widerrufen")
+    elif command == "geraete":
+        for d in account.my_devices():
+            print(f"{d['device']}  {d['name'] or '(ohne Namen)'}{'  ← dieses Gerät' if d['this'] else ''}")
+    elif command == "geraet-hinzufuegen":
+        if not args:
+            raise LiChatError("geraet-hinzufuegen <code vom neuen Gerät>")
+        print("Warte auf das neue Gerät …", flush=True)
+        device = account.accept_link(args[0])
+        print(f"Neues Gerät {device} ist in allen Gesprächen")
+    elif command == "geraet-entfernen":
+        if not args:
+            raise LiChatError("geraet-entfernen <gerät> (siehe „geraete“)")
+        account.remove_my_device(args[0])
+        print("Gerät abgemeldet und aus allen Gesprächen genommen")
     elif command == "mitglieder":
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":

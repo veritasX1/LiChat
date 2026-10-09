@@ -135,6 +135,14 @@ impl Device {
         self.with(|d| d.remove_members(&conversation, &identities))
     }
 
+    pub fn remove_device(&self, conversation: Vec<u8>, signature_key: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+        self.with(|d| d.remove_device(&conversation, &signature_key))
+    }
+
+    pub fn device_keys(&self, conversation: Vec<u8>, identity: String) -> Result<Vec<Vec<u8>>, CoreError> {
+        self.with(|d| d.device_keys(&conversation, &identity))
+    }
+
     pub fn members(&self, conversation: Vec<u8>) -> Result<Vec<String>, CoreError> {
         self.with(|d| d.members(&conversation))
     }

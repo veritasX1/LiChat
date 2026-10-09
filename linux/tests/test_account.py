@@ -665,6 +665,73 @@ class GroupLife(Base):
         self.assertTrue(self.reopen(anna).chats[cid]["stumm"])
 
 
+class Devices(Base):
+    """Card da5cbfcb: several devices per person – linked by a code, in every conversation, own messages everywhere."""
+
+    def link(self, account, name="Ubuntu"):
+        url, code = Account.link_open(self.url)
+        result = {}
+        accept = threading.Thread(target=lambda: result.setdefault("device", account.accept_link(code, poll=0.1)))
+        accept.start()
+        for _ in range(100):
+            if Account.link_state(url, code).get("username"):
+                break
+            time.sleep(0.05)
+        second = Account.link_finish(self.root / "geraete" / f"{account.username}-{name}", url, code, name)
+        accept.join(10)
+        self.assertEqual(result["device"], second.device_id)
+        return second
+
+    def test_second_device(self):
+        phone, bernd = self.person("anna"), self.person("bernd")
+        cid = phone.start(["bernd"])
+        bernd.fetch()
+        bernd.send(cid, "Vor dem Laptop")
+        phone.fetch()
+        laptop = self.link(phone)
+        self.assertEqual(laptop.username, "anna")
+        self.assertEqual([(d["name"], d["this"]) for d in phone.my_devices()], [("", True), ("Ubuntu", False)])
+        laptop.fetch()
+        self.assertIn(cid, laptop.chats)
+        self.assertEqual([m["text"] for m in laptop.chats[cid]["messages"]], ["Ältere Nachrichten gibt es nur auf deinen anderen Geräten."])
+        self.assertIn("anna benutzt jetzt ein weiteres Gerät.", [n.get("system") for n in bernd.fetch()])
+        # to both of Anna's devices
+        bernd.send(cid, "Hallo an beide")
+        self.assertEqual([n["text"] for n in phone.fetch() if n.get("text")], ["Hallo an beide"])
+        self.assertEqual([n["text"] for n in laptop.fetch() if n.get("text")], ["Hallo an beide"])
+        # written on the laptop: Bernd gets it, the phone shows it as mine
+        laptop.send(cid, "Vom Laptop")
+        self.assertEqual([n["text"] for n in bernd.fetch() if n.get("text")], ["Vom Laptop"])
+        phone.fetch()
+        mine = phone.chats[cid]["messages"][-1]
+        self.assertEqual((mine["from"], mine["text"]), ("anna", "Vom Laptop"))
+        # a new conversation reaches both devices
+        erna = self.person("erna")
+        new = erna.start(["anna"])
+        phone.fetch(); laptop.fetch()
+        self.assertIn(new, phone.chats)
+        self.assertIn(new, laptop.chats)
+        # signed out from the phone: out of every group, cannot fetch, reads nothing that follows
+        phone.remove_my_device(laptop.device_id)
+        self.assertEqual(len(phone.chats[cid]["roster"]["anna"]), 1)
+        bernd.fetch()
+        bernd.send(cid, "Nur noch das Handy")
+        self.assertEqual([n["text"] for n in phone.fetch() if n.get("text")], ["Nur noch das Handy"])
+        with self.assertRaises(LiChatError):
+            laptop.fetch()
+
+    def test_the_server_cannot_slip_in_a_device(self):
+        """A roster naming more devices than the person has in the MLS group is refused."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        roster = dict(anna.chats[cid]["roster"])
+        roster["anna"] = roster["anna"] + ["deadbeefdeadbeef"]
+        anna._group_message(cid, {"t": "roster", "devices": roster, "title": ""})
+        self.assertIn("passt nicht zur Gruppe", " ".join(n.get("problem", "") for n in bernd.fetch()))
+        self.assertEqual(len(bernd.chats[cid]["roster"]["anna"]), 1)
+
+
 class TwoProcesses(Base):
     """Michelle 09.10.: „warten“ and „abholen“ on one profile at once overwrote each other's state (NoMatchingKeyPackage)."""
 
@@ -804,6 +871,16 @@ class Cli(Base):
         self.assertIn("Test", self.run_cli("anna", "gespraeche")[1])
         self.assertIn("bernd: Hallo aus der Konsole", self.run_cli("anna", "verlauf", chat)[1])
         self.assertEqual(self.run_cli("anna", "code", chat)[1], self.run_cli("bernd", "code", chat)[1])
+        # koppeln / geraet-hinzufuegen / geraete (da5cbfcb): a second device for anna from the console
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"), LICHAT_SOFORT="1")
+        second = subprocess.Popen([sys.executable, str(ROOT / "linux" / "lichat-cli"), "--profil", "anna2", "koppeln", self.url, "Laptop"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        first_line = second.stdout.readline()
+        code = first_line.split(":")[1].split()[0]
+        self.assertIn("in allen Gesprächen", self.run_cli("anna", "geraet-hinzufuegen", code)[1])
+        self.assertIn("Gekoppelt als anna", second.communicate(timeout=30)[0])
+        self.assertIn("Laptop", self.run_cli("anna", "geraete")[1])
+        self.assertIn("neues Gespräch", self.run_cli("anna2", "abholen")[1])
         # reagieren / zuruecknehmen / bearbeiten / zurueckrufen – Michelles Tests ohne Handy
         self.assertIn("reagiert 👍🏽", self.run_cli("anna", "reagieren", chat, "Konsole", "👍🏽")[1])
         self.assertIn("anna reagiert 👍🏽", self.run_cli("bernd", "abholen")[1])

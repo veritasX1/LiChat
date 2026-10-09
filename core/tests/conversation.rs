@@ -207,3 +207,33 @@ fn a_message_crossing_a_change_stays_readable() {
     assert!(matches!(anna.receive(&crossing).unwrap(), Received::Message { payload, .. } if payload == b"zwei"));
     bernd.receive(&added.conversation).unwrap();
 }
+
+/// Card da5cbfcb: a person with two devices (both „anna“) – the second joins later, reads what follows, and can be
+/// taken out alone by its key while the first stays.
+#[test]
+fn two_devices_of_one_person() {
+    let mut phone = Device::new("anna").unwrap();
+    let mut laptop = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let started = phone.start_conversation(&bernd.key_packages(1).unwrap()).unwrap();
+    let cid = started.conversation.clone();
+    bernd.join(&started.welcome).unwrap();
+    let added = phone.add_members(&cid, &laptop.key_packages(1).unwrap()).unwrap();
+    bernd.receive(&added.conversation).unwrap();
+    laptop.join(&added.welcome).unwrap();
+    assert_eq!(phone.device_keys(&cid, "anna").unwrap().len(), 2);
+    let hello = bernd.encrypt(&cid, b"an beide").unwrap();
+    for device in [&mut phone, &mut laptop] {
+        assert!(matches!(device.receive(&hello).unwrap(), Received::Message { payload, .. } if payload == b"an beide"));
+    }
+    let mine = laptop.encrypt(&cid, b"vom Laptop").unwrap();
+    assert!(matches!(phone.receive(&mine).unwrap(), Received::Message { sender, .. } if sender == "anna"));
+    bernd.receive(&mine).unwrap();
+    let commit = phone.remove_device(&cid, &laptop.identity_key()).unwrap();
+    assert_eq!(phone.device_keys(&cid, "anna").unwrap(), vec![phone.identity_key()]);
+    bernd.receive(&commit).unwrap();
+    assert_eq!(laptop.receive(&commit).unwrap(), Received::Removed { conversation: cid.clone(), by: "anna".into() });
+    let after = bernd.encrypt(&cid, b"nur Handy").unwrap();
+    assert!(phone.receive(&after).is_ok());
+    assert!(phone.remove_device(&cid, &laptop.identity_key()).is_err());
+}

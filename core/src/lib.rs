@@ -258,6 +258,34 @@ impl Device {
         commit.tls_serialize_detached().map_err(mls)
     }
 
+    /// Removes one device – the leaf with this signature key (card da5cbfcb: a person signs out one of several devices; the
+    /// identity is the user name, the same on all of them, so only the key tells them apart).
+    pub fn remove_device(&mut self, conversation: &[u8], signature_key: &[u8]) -> Result<Vec<u8>, Error> {
+        let group = self.conversations.get_mut(conversation).ok_or(Error::UnknownConversation)?;
+        let own = group.own_leaf_index();
+        let leaves: Vec<LeafNodeIndex> = group
+            .members()
+            .filter(|m| m.index != own && m.signature_key.as_slice() == signature_key)
+            .map(|m| m.index)
+            .collect();
+        if leaves.is_empty() {
+            return Err(Error::Malformed("dieses Gerät ist nicht im Gespräch".into()));
+        }
+        let (commit, _welcome, _info) = group.remove_members(&self.provider, &self.signer, &leaves).map_err(mls)?;
+        group.merge_pending_commit(&self.provider).map_err(mls)?;
+        commit.tls_serialize_detached().map_err(mls)
+    }
+
+    /// The signature keys of a person's devices in a conversation (to see which of their devices are in it).
+    pub fn device_keys(&self, conversation: &[u8], identity: &str) -> Result<Vec<Vec<u8>>, Error> {
+        let group = self.conversations.get(conversation).ok_or(Error::UnknownConversation)?;
+        Ok(group
+            .members()
+            .filter(|m| BasicCredential::try_from(m.credential.clone()).map(|c| c.identity() == identity.as_bytes()).unwrap_or(false))
+            .map(|m| m.signature_key.clone())
+            .collect())
+    }
+
     /// Handles one message from the mailbox (application message or commit of a conversation this device is in).
     pub fn receive(&mut self, bytes: &[u8]) -> Result<Received, Error> {
         let message = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| Error::Malformed(format!("{e:?}")))?;

@@ -113,6 +113,14 @@ impl Device {
         Ok(PyBytes::new(py, &self.inner.remove_members(conversation, &identities).map_err(err)?))
     }
 
+    fn remove_device<'py>(&mut self, py: Python<'py>, conversation: &[u8], signature_key: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.remove_device(conversation, signature_key).map_err(err)?))
+    }
+
+    fn device_keys<'py>(&self, py: Python<'py>, conversation: &[u8], identity: &str) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+        Ok(self.inner.device_keys(conversation, identity).map_err(err)?.iter().map(|k| PyBytes::new(py, k)).collect())
+    }
+
     fn members(&self, conversation: &[u8]) -> PyResult<Vec<String>> {
         self.inner.members(conversation).map_err(err)
     }

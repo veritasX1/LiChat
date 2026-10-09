@@ -294,6 +294,126 @@ class Account:
         account.server.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(reserve)})
         return account
 
+    # ------------------------------------------------------------------------------------------ linking (card da5cbfcb)
+    # Like Signal/WhatsApp: the NEW device shows a code (QR + 8 signs), an existing device of the person accepts it, then
+    # the new device makes its keys for that name and signs in once. The existing device then puts it into every
+    # conversation (MLS add); it reads what comes after – older messages stay on the other devices.
+
+    @staticmethod
+    def link_open(server):
+        """New device, step 1: a code to show. Returns (server url, code)."""
+        anonymous = Server(server)
+        return anonymous.url, anonymous.call("POST", "/v1/kopplung", {})["code"]
+
+    @staticmethod
+    def link_state(server, code):
+        """{} while waiting, {username} once an existing device accepted, {username, device} once signed in."""
+        return Server(server).call("GET", f"/v1/kopplung/{urllib.parse.quote(code)}")
+
+    @classmethod
+    def link_finish(cls, folder, server, code, name="", key=None):
+        """New device, step 3 (after an existing device accepted): own keys for that name, signed in once."""
+        folder = Path(folder)
+        if (folder / "account.json").exists():
+            raise LiChatError(f"In {folder} gibt es schon ein Konto")
+        anonymous = Server(server)
+        username = anonymous.call("GET", f"/v1/kopplung/{urllib.parse.quote(code)}").get("username")
+        if not username:
+            raise LiChatError("Noch nicht angenommen – auf dem anderen Gerät „Gerät hinzufügen“ und den Code eingeben")
+        folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder, 0o700)
+        device = lichat_core.Device(username)
+        own_key = key is None
+        key = os.urandom(32) if own_key else key
+        answer = anonymous.call("POST", f"/v1/kopplung/{urllib.parse.quote(code)}/geraet",
+                                {"identity": b64(device.identity_key()), "name": name})
+        info = {"server": anonymous.url, "username": username, "device": answer["device"], "token": answer["token"]}
+        packages = device.key_packages(SUPPLY)
+        reserve = device.last_resort_key_package()
+        if own_key:
+            write_private(folder / "key", key)
+        write_private(folder / "state.bin", bytes(device.save(key)))
+        write_private(folder / "account.json", json.dumps(info, indent=1).encode())
+        account = cls(folder, None if own_key else key)
+        account.profiles["gekoppelt"] = int(time.time())
+        account.save()
+        account.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
+        account.server.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(reserve)})
+        return account
+
+    def accept_link(self, code, wait=600, poll=2.0):
+        """Existing device: that code is my new device. Waits until it signed in, then puts it into every conversation.
+        Returns the new device's id."""
+        self.server.call("POST", "/v1/kopplung/annehmen", {"code": code})
+        end = time.time() + wait
+        while time.time() < end:
+            state = self.server.call("GET", f"/v1/kopplung/{urllib.parse.quote(code)}")
+            if state.get("device"):
+                self.sync_own_devices()
+                return state["device"]
+            time.sleep(poll)
+        raise LiChatError("Das neue Gerät hat sich nicht gemeldet – noch einmal versuchen")
+
+    def my_devices(self):
+        """My devices as the server lists them: [{device, name, this}]."""
+        listed = self.server.call("GET", f"/v1/users/{urllib.parse.quote(self.username)}")["devices"]
+        return [{"device": d["device"], "name": d.get("name") or "", "this": d["device"] == self.device_id} for d in listed]
+
+    def remove_my_device(self, device):
+        """Signs out another of my devices and takes it out of every conversation – it reads nothing that follows."""
+        if device == self.device_id:
+            raise LiChatError("Dieses Gerät meldest du in seinen eigenen Einstellungen ab")
+        self.server.call("DELETE", f"/v1/devices/{device}")
+        self.sync_own_devices()
+
+    def sync_own_devices(self):
+        """Every conversation holds exactly my devices from the directory: new ones are added (MLS), signed-out ones
+        taken out. Cheap when nothing changed (one directory call). Returns how many conversations changed."""
+        listed = self.directory(self.username)
+        changed = 0
+        for cid in list(self.chats):
+            chat = self.chats[cid]
+            if chat.get("removed") or cid not in {bytes(c).hex() for c in self.device.conversations()}:
+                continue
+            have = set(chat["roster"].get(self.username, []))
+            missing = sorted(set(listed) - have)
+            gone_keys = [bytes(k) for k in self.device.device_keys(bytes.fromhex(cid), self.username)
+                         if bytes(k) not in set(listed.values())]
+            for key in gone_keys:
+                with self.lock:
+                    before = self.targets(cid)
+                    commit = self.device.remove_device(bytes.fromhex(cid), key)
+                    chat["roster"][self.username] = [d for d in chat["roster"].get(self.username, []) if d in listed]
+                    self.save()
+                self.server.call("POST", "/v1/messages", {"to": before, "blob": b64(MLS + bytes(commit))})
+            packages, adding = [], []
+            for device in missing:
+                claimed = self.server.call("POST", f"/v1/key-packages/{urllib.parse.quote(self.username)}", {"device": device})["key_packages"]
+                for item in claimed:
+                    package = unb64(item["key_package"])
+                    owner, key = lichat_core.Device.key_package_owner(package)
+                    if item["device"] == device and owner == self.username and listed.get(device) == bytes(key):
+                        packages.append(package)
+                        adding.append(device)
+            if packages:
+                with self.lock:
+                    before = self.targets(cid)
+                    commit, welcome = self.device.add_members(bytes.fromhex(cid), packages)
+                    chat["roster"][self.username] = sorted(set(chat["roster"].get(self.username, [])) | set(adding))
+                    payloads = [{"t": "roster", "devices": chat["roster"], "title": chat.get("title", "")}]
+                    if chat.get("bild"):
+                        payloads.append({"t": "gruppenbild", "bild": chat["bild"]})
+                    packets = [self.device.encrypt(bytes.fromhex(cid), self._payload(p)) for p in payloads]
+                    self.save()
+                    everyone = self.targets(cid)
+                self.server.call("POST", "/v1/messages", {"to": before, "blob": b64(MLS + bytes(commit))})
+                self.server.call("POST", "/v1/messages", {"to": adding, "blob": b64(WELCOME + bytes(welcome))})
+                for packet in packets:
+                    self.server.call("POST", "/v1/messages", {"to": everyone, "blob": b64(MLS + bytes(packet))})
+            if packages or gone_keys:
+                changed += 1
+        return changed
+
     @property
     def username(self):
         return self.info["username"]
@@ -386,6 +506,7 @@ class Account:
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(WELCOME + bytes(welcome))})
         for packet in packets:
             self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+        self.sync_own_devices()      # my other devices belong in it too (card da5cbfcb)
         return cid
 
     def _claim(self, users):
@@ -1115,12 +1236,25 @@ class Account:
             # Only names that really are in the MLS group may get packets (a member cannot add a stranger's device).
             if set(devices) != set(self.members(cid)) or not all(isinstance(v, list) for v in devices.values()):
                 return [{"chat": cid, "problem": f"Teilnehmerliste von {sender} passt nicht zur Gruppe – nicht übernommen"}]
+            # Per device too (card da5cbfcb): as many devices per person as the MLS group has leaves for them – the server
+            # cannot slip in a device that is not in the group.
+            for name, listed in devices.items():
+                if len(set(listed)) != len(self.device.device_keys(bytes.fromhex(cid), name)):
+                    return [{"chat": cid, "problem": f"Geräteliste von {name} passt nicht zur Gruppe – nicht übernommen"}]
             known = set(chat["roster"])
             news = []
             if known:    # not the first roster after joining: say who came in, like Messages
                 for name in sorted(set(devices) - known):
                     line = self._system(chat, f"{sender} hat {name} hinzugefügt." if name != self.username else f"{sender} hat dich hinzugefügt.")
                     news.append({"chat": cid, "system": line["text"]})
+                for name in sorted(set(devices) & known):
+                    # Another device of someone I write with – worth knowing, like a changed safety code.
+                    if name != self.username and len(devices[name]) > len(chat["roster"].get(name, [])):
+                        line = self._system(chat, f"{self.display(name)} benutzt jetzt ein weiteres Gerät.")
+                        news.append({"chat": cid, "system": line["text"]})
+            elif self.profiles.get("gekoppelt") and len(devices.get(self.username, [])) > 1 and not chat["messages"]:
+                # This device came later: what was written before stays on my other devices (MLS – no copies).
+                self._system(chat, "Ältere Nachrichten gibt es nur auf deinen anderen Geräten.")
             chat["roster"] = devices
             chat["title"] = str(data.get("title") or chat["title"])
             if (self.profiles["me"] or self.profiles.get("name")) and sender != self.username:
@@ -1252,7 +1386,8 @@ class Account:
         mid = data.get("mid")
         if isinstance(mid, str) and re.fullmatch(r"[0-9a-f]{16}", mid):
             message["mid"] = mid
-            self._owe_delivered.setdefault(cid, []).append(mid)
+            if message.get("from") != self.username:      # my own, written on another of my devices: no receipt
+                self._owe_delivered.setdefault(cid, []).append(mid)
 
     def title(self, cid):
         chat = self.chats[cid]
