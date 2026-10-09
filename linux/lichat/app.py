@@ -179,6 +179,8 @@ class Window(Adw.ApplicationWindow):
         self.current = None        # the chosen conversation (hex id)
         self.composing = False     # „Neue Nachricht“: the An: line instead of a transcript
         self.seen = {}             # chat → number of messages already looked at (the blue dot)
+        self.full_images = {}      # attachment id → the photo itself (sharp in the bubble, ed0686a1)
+        self.loading_images = set()
         self.listener = None
         self.settings = self.load_settings()
         self.connect("close-request", self.on_close)
@@ -247,9 +249,14 @@ class Window(Adw.ApplicationWindow):
         self.f_server = Gtk.Entry(text="https://lichat.lisoftware.de", placeholder_text="Server (https://…)", css_classes=["lichat-field"])
         self.f_invite = Gtk.Entry(placeholder_text="Einladung", css_classes=["lichat-field"])
         # Name as people write it (Olaf: capitals, spaces) – the user name is made from it, and can still be changed.
-        self.f_first = Gtk.Entry(placeholder_text="Vorname", css_classes=["lichat-field"])
-        self.f_last = Gtk.Entry(placeholder_text="Nachname (freiwillig)", css_classes=["lichat-field"])
-        self.f_name = Gtk.Entry(placeholder_text="Benutzername", css_classes=["lichat-field"])
+        words = Gtk.InputHints.UPPERCASE_WORDS
+        plain = Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.LOWERCASE
+        self.f_first = Gtk.Entry(placeholder_text="Vorname", css_classes=["lichat-field"], input_hints=words, input_purpose=Gtk.InputPurpose.NAME)
+        self.f_last = Gtk.Entry(placeholder_text="Nachname (freiwillig)", css_classes=["lichat-field"], input_hints=words, input_purpose=Gtk.InputPurpose.NAME)
+        self.f_name = Gtk.Entry(placeholder_text="Benutzername", css_classes=["lichat-field"], input_hints=plain)
+        self.f_server.set_input_purpose(Gtk.InputPurpose.URL)
+        self.f_server.set_input_hints(Gtk.InputHints.NO_SPELLCHECK)
+        self.f_invite.set_input_hints(Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.UPPERCASE_CHARS)
         self.name_touched = False
 
         def suggest(*_):
@@ -609,7 +616,8 @@ class Window(Adw.ApplicationWindow):
         self.pane.append(Gtk.Box(css_classes=["lichat-hairline"]))
         self.to_line = Gtk.Box(spacing=6, margin_start=16, margin_end=16, margin_top=8, margin_bottom=8, visible=False)
         self.to_line.append(Gtk.Label(label="An:", css_classes=["lichat-to"]))
-        self.to_entry = Gtk.Entry(placeholder_text="Benutzernamen, durch Komma getrennt", hexpand=True, css_classes=["lichat-to-entry"])
+        self.to_entry = Gtk.Entry(placeholder_text="Benutzernamen, durch Komma getrennt", hexpand=True, css_classes=["lichat-to-entry"],
+                                  input_hints=Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.LOWERCASE)
         self.to_entry.connect("activate", lambda *_: self.input.grab_focus())
         self.to_line.append(self.to_entry)
         self.pane.append(self.to_line)
@@ -652,7 +660,9 @@ class Window(Adw.ApplicationWindow):
                             valign=Gtk.Align.CENTER)
         attach.connect("clicked", lambda *_: self.choose_attachment())
         line.append(attach)
-        self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"])
+        # Capital letters at the start of a sentence, spelling checked (Olaf c81920e8: the keyboard wrote everything small).
+        self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"],
+                               input_hints=Gtk.InputHints.UPPERCASE_SENTENCES | Gtk.InputHints.SPELLCHECK | Gtk.InputHints.EMOJI)
         self.input.connect("activate", lambda *_: self.send())
         self.input.connect("changed", self.typed)
         self.input.connect("changed", self.suggest_mentions)
@@ -949,6 +959,8 @@ class Window(Adw.ApplicationWindow):
                 GLib.source_remove(self.typing_timer)
             self.typing_timer = GLib.timeout_add(TYPING_FRESH * 1000 + 100, self.typing_over, cid)
         self.seen[cid] = len(chat["messages"])
+        if self.is_active() and self.get_visible() and self.get_application():
+            self.get_application().withdraw_notification(f"lichat-{cid}")     # read: its notification goes (2e35e6a3)
         if self.is_active() and self.get_visible():
             account = self.account
             self.worker.do(lambda: account.mark_read(cid))
@@ -1061,7 +1073,8 @@ class Window(Adw.ApplicationWindow):
         box.append(top)
         if group and not self.account.chats[cid].get("removed"):
             # Name and picture of the group (card d45b319a) – end to end, never on the server.
-            name = Gtk.Entry(text=self.account.chats[cid].get("title", ""), placeholder_text="Gruppenname", css_classes=["lichat-field"])
+            name = Gtk.Entry(text=self.account.chats[cid].get("title", ""), placeholder_text="Gruppenname", css_classes=["lichat-field"],
+                             input_hints=Gtk.InputHints.UPPERCASE_WORDS)
             name.connect("activate", lambda e: (button.popdown(), self.group_job(lambda a: a.rename(cid, e.get_text()))))
             box.append(name)
             picture = Gtk.Button(label="Gruppenbild wählen …", css_classes=["flat"])
@@ -1378,8 +1391,24 @@ class Window(Adw.ApplicationWindow):
         button = Gtk.Button(css_classes=["lichat-attachment", "flat"], tooltip_text=info.get("name"))
         if kind in ("bild", "video") and info.get("vorschau"):
             try:
-                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info["vorschau"])))
+                texture = self.full_images.get(info.get("id")) or Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info["vorschau"])))
                 picture = Gtk.Picture(paintable=texture, can_shrink=True, content_fit=Gtk.ContentFit.COVER)
+                if (kind == "bild" and info.get("id") not in self.full_images and info.get("id") not in self.loading_images
+                        and (info.get("groesse") or 0) <= 15 * 1024 * 1024):
+                    self.loading_images.add(info.get("id"))
+                    # The photo itself replaces the 320 px preview (Olaf ed0686a1: blurry) – loaded once, kept while LiChat runs.
+                    account = self.account
+
+                    def loaded(data, error, p=picture, key=info.get("id")):
+                        if data:
+                            try:
+                                sharp = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+                            except GLib.Error:
+                                return
+                            self.full_images[key] = sharp
+                            p.set_paintable(sharp)
+                            self.show_conversation()     # every bubble of it sharp (the widget may have been rebuilt)
+                    Worker.wait(lambda i=info: account.open_attachment(i), loaded)
                 width, height = texture.get_width(), texture.get_height()
                 scale = min(240 / max(width, 1), 240 / max(height, 1))
                 picture.set_size_request(int(width * scale), int(height * scale))
@@ -1507,8 +1536,8 @@ class Window(Adw.ApplicationWindow):
         mine = self.account.profiles.get("name") or {}
         dialog = Adw.AlertDialog(heading="Dein Name", body=f"So sehen dich deine Gesprächspartner. Dein Benutzername bleibt „{self.account.username}“.")
         fields = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        first = Gtk.Entry(text=mine.get("vorname", ""), placeholder_text="Vorname")
-        last = Gtk.Entry(text=mine.get("nachname", ""), placeholder_text="Nachname")
+        first = Gtk.Entry(text=mine.get("vorname", ""), placeholder_text="Vorname", input_hints=Gtk.InputHints.UPPERCASE_WORDS)
+        last = Gtk.Entry(text=mine.get("nachname", ""), placeholder_text="Nachname", input_hints=Gtk.InputHints.UPPERCASE_WORDS)
         fields.append(first)
         fields.append(last)
         dialog.set_extra_child(fields)

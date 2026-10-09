@@ -183,6 +183,8 @@ def main():
     opened = Path(launched[0])
     assert opened.read_text() == "Kohle, Würstchen" and oct(opened.stat().st_mode & 0o777) == "0o600"
     assert str(opened).startswith(os.environ.get("XDG_RUNTIME_DIR", "/tmp")), opened
+    # ed0686a1: the photo itself replaces the small preview in the bubble (sharp), loaded once
+    until(lambda: any(t.get_width() > 320 for t in window.full_images.values()))
     shot(window, "03b-anhaenge.png")
 
     # Ticks (card db70d358): my last message is delivered once Bernd fetched it – two grey ticks under the bubble.

@@ -51,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -137,19 +138,27 @@ fun whenShort(at: Long): String {
     }
 }
 
+/** The messages shown – without those in „Zuletzt gelöscht“ (a0ceee6e). */
 private fun messages(chat: JSONObject) = chat.getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+    .filter { !it.has("geloescht") }
 
 // ---------------------------------------------------------------------------------------------- list
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: String?, unrestricted: Boolean,
              onOpen: (String) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, onUnrestrict: () -> Unit,
-             notifying: Boolean = true, onNotifications: () -> Unit = {}) {
+             notifying: Boolean = true, onNotifications: () -> Unit = {}, onAction: (String, String) -> Unit = { _, _ -> }) {
     val colors = palette()
     var query by remember { mutableStateOf("") }
-    val all = remember(version) {
+    // Filter like Messages (1f800b4f, a0ceee6e): Alle / Bekannte / Unbekannte / Ungelesen / Zuletzt gelöscht.
+    var filter by remember { mutableStateOf("alle") }
+    var choosingFilter by remember { mutableStateOf(false) }
+    var rowMenu by remember { mutableStateOf<String?>(null) }
+    val pinned = remember(version, filter) { if (filter == "alle") synchronized(account.lock) { account.pinned() } else emptyList() }
+    val all = remember(version, filter) {
         synchronized(account.lock) {
-            account.visibleChats().asSequence().map { cid ->   // without my devices' own group
+            account.filtered(filter).filter { it !in pinned }.asSequence().map { cid ->   // without my devices' own group and the pinned
                 val chat = account.chat(cid)
                 val list = messages(chat)
                 Triple(cid, list.lastOrNull(), list.size)
@@ -165,16 +174,17 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
         Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton("Einstellungen", colors.blue, onClick = onSettings)
             Spacer(Modifier.weight(1f))
+            TextButton("Filter", colors.blue) { choosingFilter = true }
             IconButton(Glyph.Compose, "Neue Nachricht", colors.blue, onNew)
         }
         LazyColumn(Modifier.weight(1f)) {
             item {
-                LargeTitle("Nachrichten")
+                LargeTitle(FILTERS.first { it.first == filter }.second.let { if (filter == "alle") "Nachrichten" else it })
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().height(36.dp).clip(RoundedCornerShape(10.dp))
                     .background(colors.fill).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     GlyphIcon(Glyph.Search, colors.secondary, 17.dp)
                     Spacer(Modifier.width(6.dp))
-                    BasicTextField(query, { query = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                    BasicTextField(query, { query = it }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                         modifier = Modifier.weight(1f).semantics { contentDescription = "Suchen" },
                         decorationBox = { inner -> Box { if (query.isEmpty()) BasicText("Suchen", style = style(17f, 400, colors.secondary)); inner() } })
                 }
@@ -185,16 +195,42 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                     style = style(13f, 400, colors.blue), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).clickable(onClick = onUnrestrict))
                 if (problem != null) BasicText(problem, style = style(13f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             }
-            if (rows.isEmpty()) item {
+            if (pinned.isNotEmpty() && query.isBlank()) item {
+                // Pinned as big round pictures, three in a row (206118bf).
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    pinned.chunked(3).forEach { row ->
+                        Row(Modifier.fillMaxWidth()) {
+                            row.forEach { cid ->
+                                val title = account.title(cid)
+                                val others = account.others(cid)
+                                Column(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
+                                    .combinedClickable(onClick = { onOpen(cid) }, onLongClick = { rowMenu = cid }).padding(vertical = 8.dp)
+                                    .semantics { contentDescription = "$title, angeheftet" + if (account.unread(cid) > 0) ", ungelesen" else "" },
+                                    horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Box {
+                                        Avatar(title, if (others.size == 1) account.picture(others[0]) else account.groupPicture(cid), 72.dp)
+                                        if (account.unread(cid) > 0) Box(Modifier.align(Alignment.TopStart).size(14.dp).clip(CircleShape).background(colors.blue))
+                                    }
+                                    BasicText(title, style = style(13f, 400, colors.label).copy(textAlign = TextAlign.Center), maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp))
+                                }
+                            }
+                            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
+                }
+            }
+            if (rows.isEmpty() && pinned.isEmpty()) item {
                 BasicText("Noch keine Unterhaltungen", style = style(17f, 600, colors.secondary).copy(textAlign = TextAlign.Center),
                     modifier = Modifier.fillMaxWidth().padding(top = 120.dp))
             }
             items(rows, key = { it.first }) { (cid, last, count) ->
                 val title = account.title(cid)
                 val others = account.others(cid)
-                Row(Modifier.fillMaxWidth().clickable { onOpen(cid) }.padding(start = 6.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+                Row(Modifier.fillMaxWidth().combinedClickable(onClick = { if (filter == "geloescht") rowMenu = cid else onOpen(cid) },
+                    onLongClick = { rowMenu = cid }).padding(start = 6.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(10.dp).clip(CircleShape).background(if (count > (seen[cid] ?: 0)) colors.blue else Color.Transparent))
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(if (account.unread(cid) > 0) colors.blue else Color.Transparent))
                     Spacer(Modifier.width(6.dp))
                     Avatar(title, if (others.size == 1) account.picture(others[0]) else account.groupPicture(cid), 44.dp)
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -216,6 +252,44 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
             }
         }
     }
+    if (choosingFilter) ChoiceSheet(FILTERS.map { it.second }, FILTERS.indexOfFirst { it.first == filter },
+        onChoose = { filter = FILTERS[it].first; choosingFilter = false }, onCancel = { choosingFilter = false })
+    rowMenu?.let { cid ->
+        // Long press on a conversation, like iOS: anheften, (un)gelesen, Hinweise, löschen – in „Zuletzt gelöscht“ wiederherstellen.
+        val chat = account.chat(cid)
+        val actions = if (filter == "geloescht") listOf("wiederherstellen" to "Wiederherstellen", "endgueltig" to "Endgültig löschen")
+            else listOf((if (chat.has("angeheftet")) "loesen" to "Nicht mehr anheften" else "anheften" to "Anheften"),
+                (if (account.unread(cid) > 0) "gelesen" to "Als gelesen markieren" else "ungelesen" to "Als ungelesen markieren"),
+                (if (chat.optBoolean("stumm")) "laut" to "Hinweise einblenden" else "stumm" to "Hinweise ausblenden"),
+                "loeschen" to "Löschen")
+        ChoiceSheet(actions.map { it.second }, -1, destructive = actions.indexOfFirst { it.first in setOf("loeschen", "endgueltig") },
+            onChoose = { onAction(cid, actions[it].first); rowMenu = null }, onCancel = { rowMenu = null })
+    }
+}
+
+val FILTERS = listOf("alle" to "Alle Nachrichten", "bekannt" to "Bekannte Absender", "unbekannt" to "Unbekannte Absender",
+    "ungelesen" to "Ungelesene Nachrichten", "geloescht" to "Zuletzt gelöscht")
+
+/** An iOS action sheet: choices from the bottom, „Abbrechen“ apart; the chosen one with a check. */
+@Composable
+fun ChoiceSheet(choices: List<String>, chosen: Int, destructive: Int = -1, onChoose: (Int) -> Unit, onCancel: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    Box(Modifier.fillMaxSize().background(Color(0x66000000)).clickable(onClick = onCancel), contentAlignment = Alignment.BottomCenter) {
+        Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(8.dp)) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
+                choices.forEachIndexed { i, label ->
+                    if (i > 0) Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    Row(Modifier.fillMaxWidth().clickable { onChoose(i) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BasicText(label, style = style(17f, 400, if (i == destructive) colors.red else colors.blue).copy(textAlign = TextAlign.Center), modifier = Modifier.weight(1f))
+                        if (i == chosen) BasicText("✓", style = style(17f, 600, colors.blue))
+                    }
+                }
+            }
+            Box(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(onClick = onCancel).padding(16.dp),
+                contentAlignment = Alignment.Center) { BasicText("Abbrechen", style = style(17f, 600, colors.blue)) }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- conversation
@@ -225,7 +299,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
 fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, onBack: () -> Unit, onInfo: () -> Unit,
                onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
                onReact: (String, String) -> Unit = { _, _ -> }, onEdit: (String, String) -> Unit = { _, _ -> },
-               onUnsend: (String) -> Unit = {}) {
+               onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {}) {
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
@@ -248,6 +322,10 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     val listState = rememberLazyListState()
     val atEnd by remember { androidx.compose.runtime.derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 40 } }
     var unseen by remember(cid) { mutableStateOf(0) }
+    // „↑ Zur ersten ungelesenen“ (300129f8): worked out when the chat opens, before it counts as read.
+    val firstUnread = remember(cid) { account.firstUnread(cid) }
+    val unreadCount = remember(cid) { account.unread(cid) }
+    var firstDone by remember(cid) { mutableStateOf(false) }
     var known by remember(cid) { mutableStateOf(list.size) }
     LaunchedEffect(list.size) {
         // A new message: follow it when I am at the end or wrote it myself, otherwise offer „↓ Neue Nachricht“ (card be8f93c3).
@@ -356,10 +434,11 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
                     if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
-                    Reacted(m, account, gestures) {
+                    // While its menu is open the bubble is shown lifted – the original is hidden (Michelle 20eb5cc5).
+                    Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
                             Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
-                            playing = info != null && actions.playing == info.optString("id"), open = actions.open)
+                            playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load)
                     }
                 }
                 if (versions != null) {
@@ -369,6 +448,17 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             } }
             item { Spacer(Modifier.height(8.dp)) }
+        }
+        val firstVisible = firstUnread != null && listState.layoutInfo.visibleItemsInfo.any { it.key == firstUnread }
+        if (firstUnread != null && !firstDone && !firstVisible && unreadCount > 0) {
+            BasicText(if (unreadCount == 1) "↑ 1 ungelesene Nachricht" else "↑ $unreadCount ungelesene Nachrichten", style = style(15f, 600, Color.White),
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp).clip(RoundedCornerShape(18.dp)).background(colors.blue)
+                    .clickable {
+                        firstDone = true
+                        val i = list.indexOfFirst { it.optString("mid") == firstUnread }
+                        val row = list.size - 1 - i + (if (chat.optString("removed").isEmpty()) 0 else 1) + (if (typing.isEmpty()) 0 else 1)
+                        if (i >= 0) scope.launch { listState.animateScrollToItem(row) }
+                    }.padding(horizontal = 14.dp, vertical = 7.dp))
         }
         if (unseen > 0) {
             BasicText(if (unseen == 1) "↓ Neue Nachricht" else "↓ $unseen neue Nachrichten", style = style(15f, 600, Color.White),
@@ -410,10 +500,11 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     }
     menuFor?.let { m ->
         val mine = m.optString("from") == account.username
-        MessageMenu(m, account, mine, bounds[m.optString("mid")], { Reacted(m, account) { Bubble(m, mine) } }, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
+        MessageMenu(m, account, mine, bounds[m.optString("mid")], { Reacted(m, account) { Bubble(m, mine, maxLines = 6) } }, onReact = { emoji -> onReact(m.optString("mid"), emoji); menuFor = null },
             onReply = { replyTo = m; menuFor = null }, onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.optString("text"))); menuFor = null },
             onClose = { menuFor = null },
             onEdit = if (account.canEdit(m)) ({ replyTo = null; editing = m; menuFor = null }) else null,
+            onDelete = { onDelete(m.optString("mid")); menuFor = null },
             onUnsend = if (account.canUnsend(m)) ({ onUnsend(m.optString("mid")); menuFor = null }) else null)
     }
 }
@@ -454,11 +545,12 @@ fun firstEmoji(text: String): String? {
 /** A bubble as it is: text, or the attachment. The same in the transcript and lifted above it while its menu is open. */
 @Composable
 fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
-           open: (JSONObject) -> Unit = {}) {
+           open: (JSONObject) -> Unit = {}, load: ((JSONObject) -> ByteArray)? = null, maxLines: Int = Int.MAX_VALUE) {
     val colors = palette()
     val info = m.optJSONObject("anhang")
-    if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing) { open(info) } }
+    if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing, load) { open(info) } }
     else BasicText(withMentions(m.optString("text")), style = style(17f, 400, if (mine) Color.White else colors.label),
+        maxLines = maxLines, overflow = TextOverflow.Ellipsis,
         modifier = modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
             .then(interact).padding(horizontal = 12.dp, vertical = 7.dp))
 }
@@ -506,44 +598,37 @@ fun ReactionBadge(reactions: JSONObject, account: Account, modifier: Modifier = 
 @Composable
 fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androidx.compose.ui.geometry.Rect?, bubble: @Composable () -> Unit,
                 onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit,
-                onEdit: (() -> Unit)? = null, onUnsend: (() -> Unit)? = null) {
+                onEdit: (() -> Unit)? = null, onUnsend: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
     val colors = palette()
     val me = account.username
     val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
     val chosen = reactions.optString(me)
     var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     var picking by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize().background(Color(0x66000000))
+    // Darker than before (Michelle 20eb5cc5): the lifted bubble stands out clearly.
+    Box(Modifier.fillMaxSize().background(Color(0x99000000))
         .clickable(onClick = onClose).semantics { contentDescription = "Menü schließen" }) {
+        if (picking) {
+            // „+“ (Olaf 20eb5cc5): our own emoji picker at the bottom – categories, recently used, search.
+            EmojiPicker({ onReact(it) }, Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.systemBars).padding(8.dp))
+            return@Box
+        }
         androidx.compose.ui.layout.Layout(content = {
             Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).clickable(enabled = false) {}.padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                if (picking) {
-                    // „+“ (Olaf 09.10., card a7d9d987): the keyboard opens – the first emoji typed is the reaction.
-                    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
-                    var typed by remember { mutableStateOf("") }
-                    LaunchedEffect(Unit) { focus.requestFocus() }
-                    BasicText("Emoji wählen:", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(start = 10.dp, end = 6.dp))
-                    BasicTextField(typed, { text ->
-                        typed = text
-                        firstEmoji(text)?.let { onReact(it) }
-                    }, singleLine = true, textStyle = style(26f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
-                        modifier = Modifier.width(120.dp).height(46.dp).padding(top = 6.dp).focusRequester(focus)
-                            .semantics { contentDescription = "Emoji eingeben" })
-                } else {
-                    val shown = if (chosen.isNotEmpty() && chosen !in TAPBACKS) TAPBACKS + chosen else TAPBACKS
-                    shown.forEach { emoji ->
-                        BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
-                            modifier = Modifier.size(44.dp).clip(CircleShape).background(if (emoji == chosen) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
-                                .clickable { onReact(if (emoji == chosen) "" else emoji) }.padding(top = 5.dp)
-                                .semantics { contentDescription = if (emoji == chosen) "Reaktion ${tapbackWord(emoji)} zurücknehmen" else "Mit ${tapbackWord(emoji)} reagieren" })
-                    }
-                    Box(Modifier.size(36.dp).clip(CircleShape).background(colors.fill).clickable { picking = true }
-                        .semantics { contentDescription = "Anderes Emoji" }, contentAlignment = Alignment.Center) {
-                        GlyphIcon(Glyph.Plus, colors.secondary, 18.dp)
-                    }
+                val shown = if (chosen.isNotEmpty() && chosen !in TAPBACKS) TAPBACKS + chosen else TAPBACKS
+                shown.forEach { emoji ->
+                    BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
+                        modifier = Modifier.size(44.dp).clip(CircleShape).background(if (emoji == chosen) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
+                            .clickable { onReact(if (emoji == chosen) "" else emoji) }.padding(top = 5.dp)
+                            .semantics { contentDescription = if (emoji == chosen) "Reaktion ${tapbackWord(emoji)} zurücknehmen" else "Mit ${tapbackWord(emoji)} reagieren" })
                 }
-            }
+                Box(Modifier.size(36.dp).clip(CircleShape).background(colors.fill).clickable { picking = true }
+                    .semantics { contentDescription = "Anderes Emoji" }, contentAlignment = Alignment.Center) {
+                    GlyphIcon(Glyph.Plus, colors.secondary, 18.dp)
+                }
+                        }
             Box { bubble() }
             Column(Modifier.widthIn(min = 200.dp, max = 260.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(enabled = false) {}) {
                 BasicText("Antworten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onReply).padding(14.dp))
@@ -554,6 +639,10 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                 onEdit?.let { edit ->
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
                     BasicText("Bearbeiten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = edit).padding(14.dp))
+                }
+                onDelete?.let { delete ->
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Löschen", style = style(17f, 400, colors.red), modifier = Modifier.fillMaxWidth().clickable(onClick = delete).padding(14.dp))
                 }
                 onUnsend?.let { unsend ->
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
@@ -605,7 +694,24 @@ class AttachmentActions(
     val retry: (String) -> Unit = {},
     /** Something was typed (with the switch on the others see „…“, card 884f7c8a). */
     val typing: () -> Unit = {},
+    /** The attachment's bytes (downloaded once, kept sealed on the phone) – for photos sharp in the bubble (ed0686a1). */
+    val load: ((JSONObject) -> ByteArray)? = null,
 )
+
+/** Photos in the bubbles at display size (Olaf ed0686a1: the 320 px preview blown up was blurry): decoded once, kept
+ *  here while the app runs (24 photos), the small preview shows until then. */
+object FullImages {
+    val cache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(24)
+    const val PIXELS = 900
+
+    fun decode(bytes: ByteArray, target: Int = PIXELS): androidx.compose.ui.graphics.ImageBitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    }
+}
 
 /** Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with Jaques,
  *  card db70d358). Not sent: a red line, a tap sends it again. */
@@ -690,7 +796,7 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
         Box(Modifier.weight(1f).heightIn(min = 36.dp).clip(RoundedCornerShape(18.dp)).background(colors.background)
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
-            BasicTextField(field, { field = it; if (it.text.isNotEmpty()) actions.typing() }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+            BasicTextField(field, { field = it; if (it.text.isNotEmpty()) actions.typing() }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences, autoCorrectEnabled = true), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 40.dp, top = 8.dp, bottom = 8.dp).semantics { contentDescription = "Nachricht" },
                 decorationBox = { inner -> Box { if (text.isEmpty()) BasicText("LiChat", style = style(17f, 400, colors.tertiary)); inner() } })
             if (text.isNotBlank()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
@@ -706,13 +812,23 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
 
 /** A photo or video as its picture (rounded like a bubble), a voice message with ▶ and its length, a file with its name. */
 @Composable
-fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, onOpen: () -> Unit) {
+fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((JSONObject) -> ByteArray)? = null, onOpen: () -> Unit) {
     val colors = palette()
     val kind = info.optString("art")
-    val preview = remember(info.optString("id")) {
+    val id = info.optString("id")
+    val small = remember(id) {
         info.optString("vorschau").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
             ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
     }
+    // The photo itself at display size replaces the preview (photos up to 15 MB, like Messages loads them).
+    val full by androidx.compose.runtime.produceState(FullImages.cache.get(id), id) {
+        if (value == null && kind == "bild" && load != null && info.optLong("groesse") <= 15L * 1024 * 1024) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { load(info) }.getOrNull()?.let { FullImages.decode(it) }
+            }?.also { FullImages.cache.put(id, it) }
+        }
+    }
+    val preview = full ?: small
     val label = when (kind) { "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"; else -> "Datei ${info.optString("name")}" }
     if ((kind == "bild" || kind == "video") && preview != null) {
         val width = 220.dp
@@ -799,7 +915,7 @@ fun NewMessage(problem: String?, onCancel: () -> Unit, onSend: (List<String>, St
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             BasicText("An:", style = style(17f, 400, colors.secondary))
-            BasicTextField(to, { to = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+            BasicTextField(to, { to = it }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.weight(1f).padding(start = 8.dp).semantics { contentDescription = "An" },
                 decorationBox = { inner -> Box { if (to.isEmpty()) BasicText("Benutzernamen, durch Komma getrennt", style = style(17f, 400, colors.tertiary)); inner() } })
         }
@@ -838,7 +954,8 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
         }
         if (isGroup && active) Section("GRUPPENNAME", footer = "Name und Bild sehen nur die Mitglieder – sie stehen nie im Klartext auf dem Server.") {
             BasicTextField(name, { name = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words,
+                    autoCorrectEnabled = true, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { group.rename(name) }),
                 modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = "Gruppenname" },
                 decorationBox = { inner -> Box { if (name.isEmpty()) BasicText("Gruppenname", style = style(17f, 400, colors.tertiary)); inner() } })
@@ -857,7 +974,7 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
             if (active) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(32.dp).clip(CircleShape).background(colors.fill), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Plus, colors.blue, 18.dp) }
                 BasicTextField(adding, { adding = it.lowercase() }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = {
                         group.add(adding.split(',', ';', ' ').map { it.trim() }.filter { it.isNotEmpty() }); adding = "" }),
                     modifier = Modifier.weight(1f).padding(start = 12.dp).semantics { contentDescription = "Person hinzufügen" },
@@ -867,6 +984,16 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
         if (active) Section(null) {
             // In a group a muted chat still notifies when someone writes @me or @alle (iOS, card d54175ed).
             SwitchRow(if (isGroup) "Nur bei Erwähnung benachrichtigen" else "Mitteilungen stummschalten", account.muted(cid), group.mute)
+            Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+            // Read receipts for this conversation (3c0400ad) – otherwise the general setting applies.
+            SwitchRow("Lesebestätigungen senden", account.receiptsFor(cid), group.receipts)
+            if (!isGroup && others.size == 1) group.block?.let { block ->
+                val person = others[0]
+                val blocked = account.blocked.has(person)
+                Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                BasicText(if (blocked) "${account.display(person)} nicht mehr blockieren" else "${account.display(person)} blockieren", style = style(17f, 400, colors.red),
+                    modifier = Modifier.fillMaxWidth().clickable { block(person, !blocked) }.padding(16.dp))
+            }
             if (isGroup) {
                 Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
                 BasicText("Unterhaltung verlassen", style = style(17f, 400, colors.red),
@@ -887,6 +1014,8 @@ class GroupActions(
     val add: (List<String>) -> Unit = {},
     val mute: (Boolean) -> Unit = {},
     val leave: () -> Unit = {},
+    val receipts: (Boolean) -> Unit = {},
+    val block: ((String, Boolean) -> Unit)? = null,
 )
 
 @Composable
@@ -927,7 +1056,7 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
         Section("NAME", footer = "So sehen dich deine Gesprächspartner – nur Ende-zu-Ende. Dein Benutzername bleibt „${account.username}“.") {
             listOf(Triple("Vorname", first) { v: String -> first = v }, Triple("Nachname", last) { v: String -> last = v }).forEachIndexed { i, (label, value, set) ->
                 BasicTextField(value, set, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words, autoCorrectEnabled = true, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { onName(first, last) }),
                     modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = label },
                     decorationBox = { inner -> Box { if (value.isEmpty()) BasicText(label, style = style(17f, 400, colors.tertiary)); inner() } })
@@ -975,7 +1104,7 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             when {
                 linking != null -> BasicText(linking, style = style(17f, 400, colors.secondary), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                 adding -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    BasicTextField(code, { code = it.uppercase().take(12) }, singleLine = true, textStyle = style(17f, 400, colors.label),
+                    BasicTextField(code, { code = it.uppercase().take(12) }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Characters, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii), textStyle = style(17f, 400, colors.label),
                         cursorBrush = SolidColor(colors.blue), modifier = Modifier.weight(1f).padding(vertical = 6.dp).semantics { contentDescription = "Code vom neuen Gerät" },
                         decorationBox = { inner -> if (code.isEmpty()) BasicText("Code vom neuen Gerät", style = style(17f, 400, colors.tertiary)); inner() })
                     TextButton("Verbinden", colors.blue, 600, enabled = code.replace("-", "").length >= 8) { adding = false; onAddDevice(code.trim()); code = "" }
@@ -1050,7 +1179,7 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
                 Section(null) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         BasicText("Server", style = style(17f, 400, colors.label), modifier = Modifier.width(120.dp))
-                        BasicTextField(server, { server = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                        BasicTextField(server, { server = it }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                             modifier = Modifier.weight(1f).semantics { contentDescription = "Server" })
                     }
                 }
@@ -1092,7 +1221,7 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
                 Triple("Benutzername", name) { v: String -> name = io.github.veritasx1.lichat.core.suggestUsername(v); nameTouched = true }).forEachIndexed { i, (label, value, set) ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     BasicText(label, style = style(17f, 400, colors.label), modifier = Modifier.width(120.dp))
-                    BasicTextField(value, set, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                    BasicTextField(value, set, singleLine = true, keyboardOptions = when (label) { "Vorname", "Nachname" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words, autoCorrectEnabled = true); "Server" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri); "Einladung" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Characters, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii); else -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false) }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                         modifier = Modifier.weight(1f).semantics { contentDescription = label })
                 }
                 if (i < 4) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))

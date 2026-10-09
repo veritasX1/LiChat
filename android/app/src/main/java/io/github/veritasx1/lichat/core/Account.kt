@@ -698,9 +698,124 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     /** Stummschalten – on all my devices (their own group). */
-    fun mute(cid: String, on: Boolean) {
-        synchronized(lock) { chat(cid).put("stumm", on); save() }
-        tellOwnDevices(JSONObject().put("t", "stumm").put("chat", cid).put("an", on))
+    fun mute(cid: String, on: Boolean) = chatSetting(cid, "stumm", on)
+
+    // ------------------------------------------------------------------------------------------ Mac points (Michelle 09.10.)
+    // Twin of Python: pinned (206118bf), unread marker (300129f8), receipts per chat (3c0400ad), blocking + filters
+    // (1f800b4f), „Zuletzt gelöscht“ (a0ceee6e). Chat settings follow on my devices; deleting stays on this one.
+
+    private val syncedChatKeys = setOf("stumm", "angeheftet", "lesebestaetigungen", "ungelesen", "gelesen_mid")
+
+    private fun chatSetting(cid: String, key: String, value: Any?, tell: Boolean = true) {
+        synchronized(lock) { if (value == null) chat(cid).remove(key) else chat(cid).put(key, value); save() }
+        if (tell && key in syncedChatKeys) tellOwnDevices(JSONObject().put("t", "gespraech").put("chat", cid).put("key", key).put("value", value ?: JSONObject.NULL))
+    }
+
+    fun receiptsFor(cid: String): Boolean {
+        val chat = chats.optJSONObject(cid) ?: return readReceipts
+        return if (chat.has("lesebestaetigungen")) chat.optBoolean("lesebestaetigungen") else readReceipts
+    }
+
+    /** null = like the general setting again. */
+    fun setReceiptsFor(cid: String, on: Boolean?) = chatSetting(cid, "lesebestaetigungen", on)
+
+    fun pin(cid: String, on: Boolean) = chatSetting(cid, "angeheftet", if (on) System.currentTimeMillis() / 1000 else null)
+
+    fun pinned(): List<String> = visibleChats().filter { chat(it).has("angeheftet") && !chat(it).has("geloescht") }.sortedBy { chat(it).optLong("angeheftet") }
+
+    private fun liveMessages(cid: String): List<JSONObject> = chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        .filter { !it.has("geloescht") }
+
+    private fun readUpTo(cid: String) {
+        val chat = chat(cid)
+        val last = liveMessages(cid).lastOrNull { it.has("mid") }?.getString("mid")
+        if (chat.optBoolean("ungelesen")) chatSetting(cid, "ungelesen", null)
+        if (last != null && chat.optString("gelesen_mid") != last) chatSetting(cid, "gelesen_mid", last)
+    }
+
+    /** „Als ungelesen markieren“ – the blue dot comes back (on all my devices). */
+    fun markUnread(cid: String) = chatSetting(cid, "ungelesen", true)
+
+    /** Messages of others after the read marker (a chat marked unread counts at least 1). */
+    fun unread(cid: String): Int {
+        val chat = chats.optJSONObject(cid) ?: return 0
+        val messages = liveMessages(cid)
+        val marker = chat.optString("gelesen_mid").ifEmpty { null }
+        val index = messages.indexOfFirst { marker != null && it.optString("mid") == marker }
+        val after = if (index >= 0) messages.drop(index + 1) else if (marker == null) emptyList() else messages
+        val count = after.count { it.optString("from") !in setOf("", username) && !it.optBoolean("system") }
+        return maxOf(count, if (chat.optBoolean("ungelesen")) 1 else 0)
+    }
+
+    /** The mid of the first unread message („↑ Zur ersten ungelesenen“), or null. */
+    fun firstUnread(cid: String): String? {
+        val messages = liveMessages(cid)
+        val marker = chat(cid).optString("gelesen_mid").ifEmpty { return null }
+        val index = messages.indexOfFirst { it.optString("mid") == marker }
+        if (index < 0) return null
+        return messages.drop(index + 1).firstOrNull { it.optString("from") !in setOf("", username) && it.has("mid") }?.getString("mid")
+    }
+
+    val blocked: JSONObject get() = profiles.optJSONObject("blockiert") ?: JSONObject().also { profiles.put("blockiert", it) }
+
+    /** Nothing more from this person: messages, reactions, „tippt“ are dropped, no receipts, no notification. */
+    fun block(user: String, on: Boolean = true) {
+        synchronized(lock) { if (on) blocked.put(user, System.currentTimeMillis() / 1000) else blocked.remove(user); save() }
+        tellOwnDevices(JSONObject().put("t", "blockiert").put("name", user).put("an", on))
+    }
+
+    private val contactsObject: JSONObject get() = profiles.optJSONObject("kontakte") ?: JSONObject()
+
+    /** Bekannt: someone in my contacts, or a chat I wrote in myself; else Unbekannt. */
+    fun known(cid: String): Boolean =
+        others(cid).any { contactsObject.has(it) } || liveMessages(cid).any { it.optString("from") == username && !it.optBoolean("system") }
+
+    /** alle | bekannt | unbekannt | ungelesen | geloescht */
+    fun filtered(which: String = "alle"): List<String> {
+        val chats = visibleChats()
+        if (which == "geloescht") return chats.filter { c -> chat(c).has("geloescht") ||
+            chat(c).getJSONArray("messages").let { a -> (0 until a.length()).any { a.getJSONObject(it).has("geloescht") } } }
+        val shown = chats.filter { !chat(it).has("geloescht") }
+        return when (which) {
+            "bekannt" -> shown.filter { known(it) }
+            "unbekannt" -> shown.filter { !known(it) }
+            "ungelesen" -> shown.filter { unread(it) > 0 }
+            else -> shown
+        }
+    }
+
+    fun deleteChat(cid: String) = chatSetting(cid, "geloescht", System.currentTimeMillis() / 1000, tell = false)
+
+    fun deleteMessage(cid: String, mid: String) = synchronized(lock) { findMessage(cid, mid)?.put("geloescht", System.currentTimeMillis() / 1000); save() }
+
+    /** Back from „Zuletzt gelöscht“: the conversation (and its messages), or one message. */
+    fun restore(cid: String, mid: String? = null) = synchronized(lock) {
+        if (mid == null) {
+            chat(cid).remove("geloescht")
+            liveMessagesAll(cid).forEach { it.remove("geloescht") }
+        } else findMessage(cid, mid)?.remove("geloescht")
+        save()
+    }
+
+    private fun liveMessagesAll(cid: String): List<JSONObject> = chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+
+    /** Gone for good: what was deleted 30 days ago, or now when asked. The conversation stays a member, empty and hidden. */
+    fun purge(cid: String? = null, mid: String? = null, now: Long = System.currentTimeMillis() / 1000) = synchronized(lock) {
+        val limit = now - 30L * 86400
+        for (c in chats.keys().asSequence().toList()) {
+            if (cid != null && c != cid) continue
+            val chat = chat(c)
+            if (chat.has("geloescht") && mid == null && (cid != null || chat.optLong("geloescht") < limit)) {
+                chat.put("messages", JSONArray()); chat.put("geloescht", 1)
+            }
+            val kept = JSONArray()
+            for (m in liveMessagesAll(c)) {
+                val gone = m.has("geloescht") && ((mid != null && m.optString("mid") == mid) || (mid == null && (cid != null || m.optLong("geloescht") < limit)))
+                if (!gone) kept.put(m)
+            }
+            chat.put("messages", kept)
+        }
+        save()
     }
 
     fun muted(cid: String) = chats.optJSONObject(cid)?.optBoolean("stumm") ?: false
@@ -906,7 +1021,8 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** The chat is on screen: with read receipts on, the others learn which of their messages were read. */
     fun markRead(cid: String) {
-        if (!readReceipts) return
+        readUpTo(cid)                      // read up to here, on all my devices (300129f8)
+        if (!receiptsFor(cid)) return      // receipts for this chat, else the general setting (3c0400ad)
         val mids = synchronized(lock) {
             val list = chat(cid).getJSONArray("messages")
             (0 until list.length()).map { list.getJSONObject(it) }
@@ -923,7 +1039,7 @@ class Account(val folder: File, private val key: ByteArray) {
         val others = others(cid)
         val delivered = message.optJSONObject("zugestellt") ?: JSONObject()
         val read = message.optJSONObject("gelesen") ?: JSONObject()
-        if (others.isNotEmpty() && readReceipts && others.all { read.has(it) }) return "gelesen" to others.maxOf { read.getLong(it) }
+        if (others.isNotEmpty() && receiptsFor(cid) && others.all { read.has(it) }) return "gelesen" to others.maxOf { read.getLong(it) }
         if (others.isNotEmpty() && others.all { delivered.has(it) || read.has(it) })
             return "zugestellt" to others.maxOf { if (delivered.has(it)) delivered.getLong(it) else read.getLong(it) }
         return "gesendet" to message.optLong("gesendet", message.optLong("at"))
@@ -1186,6 +1302,16 @@ class Account(val folder: File, private val key: ByteArray) {
                             for (k in listOf("lesebestaetigungen", "tippanzeige")) if (data.has(k)) profiles.put(k, data.getBoolean(k))
                             return listOf(News(null, News.Kind.Settings))
                         }
+                        "gespraech" -> {
+                            val key = data.optString("key")
+                            val target = chats.optJSONObject(data.optString("chat"))
+                            if (target != null && key in syncedChatKeys) { if (data.isNull("value")) target.remove(key) else target.put(key, data.get("value")) }
+                            return listOf(News(null, News.Kind.Settings))
+                        }
+                        "blockiert" -> {
+                            if (data.optBoolean("an")) blocked.put(data.optString("name"), System.currentTimeMillis() / 1000) else blocked.remove(data.optString("name"))
+                            return listOf(News(null, News.Kind.Settings))
+                        }
                         "stumm" -> {
                             chats.optJSONObject(data.optString("chat"))?.put("stumm", data.optBoolean("an"))
                             return listOf(News(null, News.Kind.Settings))
@@ -1202,6 +1328,15 @@ class Account(val folder: File, private val key: ByteArray) {
                         }
                     }
                     return emptyList()
+                }
+                val kind = data.optString("t")
+                if (blocked.has(sender) && kind in setOf("text", "anhang", "reaktion", "tippt", "bearbeiten", "zurueckrufen", "profile", "name"))
+                    return emptyList()     // blocked (1f800b4f): nothing from them, no receipt, no notification
+                if (chat.has("geloescht") && kind in setOf("text", "anhang")) {
+                    // A new message brings a deleted conversation back – what was there stays in „Zuletzt gelöscht“.
+                    val stamp = chat.optLong("geloescht").takeIf { it > 1 } ?: (System.currentTimeMillis() / 1000)
+                    liveMessagesAll(cid).forEach { if (!it.has("geloescht")) it.put("geloescht", stamp) }
+                    chat.remove("geloescht")
                 }
                 when (data.optString("t")) {
                     "roster" -> {

@@ -93,27 +93,48 @@ object Notifications {
         })
     }
 
+    /** „LiChat“ or „LiChat Test“ – the app's own name (Michelle: both said „LiChat ist verbunden“). */
+    fun appName(context: Context) = context.applicationInfo.loadLabel(context.packageManager).toString()
+
     fun connection(context: Context, connected: Boolean): Notification =
         Notification.Builder(context, CONNECTION)
             .setSmallIcon(R.drawable.ic_stat_lichat)
-            .setContentTitle(if (connected) "LiChat ist verbunden" else "LiChat verbindet …")
+            .setContentTitle(if (connected) "${appName(context)} ist verbunden" else "${appName(context)} verbindet …")
             .setOngoing(true)
             .setContentIntent(open(context, null))
             .build()
 
-    fun message(context: Context, news: News, who: String = news.from) {
-        // who: the display name („Testerin Clí Äpfelgrün“), not the user name (Michelle 09.10.)
-        val text = if (Settings.preview(context)) (if (news.mention) "$who hat dich erwähnt: ${news.text}" else "$who: ${news.text}")
-            else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
-        val notification = Notification.Builder(context, MESSAGES)
+    /** The lines of each chat's notification since it was last read (MessagingStyle shows them like Messages). */
+    private val lines = mutableMapOf<String, MutableList<Triple<String, String, Long>>>()
+
+    /** One notification per conversation (Olaf 2e35e6a3): sender (or group) as the title – no „LiChat“ twice – and gone
+     *  as soon as the conversation is read here or on another of my devices. */
+    fun message(context: Context, news: News, who: String = news.from, group: String? = null) {
+        val chat = news.chat ?: return
+        val preview = Settings.preview(context)
+        val text = if (preview) (if (news.mention) "hat dich erwähnt: ${news.text}" else news.text) else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
+        val list = synchronized(lines) { lines.getOrPut(chat) { mutableListOf() }.also { it.add(Triple(if (preview) who else "", text, System.currentTimeMillis())); while (it.size > 6) it.removeAt(0) }.toList() }
+        val builder = Notification.Builder(context, MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lichat)
-            .setContentTitle("LiChat")
-            .setContentText(text)
             .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
-            .setContentIntent(open(context, news.chat))
-            .build()
-        context.getSystemService(NotificationManager::class.java).notify(news.chat.hashCode(), notification)
+            .setContentIntent(open(context, chat))
+        if (preview) {
+            val style = Notification.MessagingStyle(android.app.Person.Builder().setName("Ich").build())
+            if (group != null) { style.conversationTitle = group; style.isGroupConversation = true }
+            list.forEach { (name, line, at) -> style.addMessage(line, at, android.app.Person.Builder().setName(name).build()) }
+            builder.setStyle(style).setContentTitle(group ?: who).setContentText(text)
+        } else {
+            // Without preview only „Neue Nachricht“ (Michelle S4) – the title says nothing either.
+            builder.setContentTitle(appName(context)).setContentText(if (list.size > 1) "${list.size} neue Nachrichten" else text)
+        }
+        context.getSystemService(NotificationManager::class.java).notify(chat.hashCode(), builder.build())
+    }
+
+    /** The conversation was read (here or on another of my devices): its notification goes. */
+    fun cancel(context: Context, chat: String) {
+        synchronized(lines) { lines.remove(chat) }
+        context.getSystemService(NotificationManager::class.java).cancel(chat.hashCode())
     }
 
     private fun open(context: Context, chat: String?): PendingIntent =
@@ -207,13 +228,17 @@ class LiChatService : Service() {
 
     private fun handle(account: Account, news: List<News>) {
         Hub.changed()
+        // Read on another of my devices (its read marker came through my devices' group): the notification goes here too.
+        if (news.any { it.kind == News.Kind.Settings || it.kind == News.Kind.Synced })
+            for (c in account.visibleChats()) if (account.unread(c) == 0) Notifications.cancel(this, c)
         val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         for (item in news) {
             if (item.kind != News.Kind.Text || item.from == account.username) continue
             if (Hub.visible && Hub.openChat == item.chat) continue
             if (item.chat != null && account.muted(item.chat) && !item.mention) continue   // muted – but a mention comes through (d54175ed)
             val shown = Settings.notifying(this)
-            if (shown) Notifications.message(this, item, account.display(item.from))
+            if (shown) Notifications.message(this, item, account.display(item.from),
+                item.chat?.let { c -> if (account.others(c).size > 1 || account.chat(c).optString("title").isNotEmpty()) account.title(c) else null })
             if (debuggable) {
                 // Michelle Z5 a: one line per message, without content and names – only to measure the way. When Android
                 // does not let LiChat notify, it says so instead of a time (24e8f89c).
