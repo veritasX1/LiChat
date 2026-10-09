@@ -12,6 +12,7 @@ window keeps LiChat running in the background (GNOME notifications); it starts a
 """
 
 import json
+import math
 import os
 import re
 import queue
@@ -132,6 +133,39 @@ def autostart(on):
                              f"Exec={sys.executable} {main} --hintergrund\nIcon=mail-message-new\nX-GNOME-Autostart-enabled=true\n")
     elif AUTOSTART.exists():
         AUTOSTART.unlink()
+
+
+def typing_dots(dark=False):
+    """Olaf's template (typing-animation-3x.gif, measured by Michelle, 884f7c8a): a grey capsule, three dots; a wave runs
+    left to right – each dot in turn darker (#B0B2B4 → #606060) and ~38 % bigger, peaks at 380/580/760 ms, a cycle of
+    1.84 s with a rest. Without animations (GNOME „Animationen“ off) the dots stand still."""
+    import cairo  # noqa: F401  (pycairo draws the capsule)
+    area = Gtk.DrawingArea(content_width=58, content_height=34, halign=Gtk.Align.START, margin_top=2)
+    capsule = (0.23, 0.23, 0.24) if dark else (0.925, 0.925, 0.925)
+    rest = (0.49, 0.49, 0.50) if dark else (0.69, 0.70, 0.71)
+    peak = (0.82, 0.82, 0.83) if dark else (0.376, 0.376, 0.376)
+    moving = Gtk.Settings.get_default().get_property("gtk-enable-animations")
+    start = GLib.get_monotonic_time()
+
+    def draw(_area, cr, width, height):
+        radius = height / 2
+        cr.set_source_rgb(*capsule)
+        cr.new_sub_path()
+        cr.arc(radius, radius, radius, math.pi / 2, 3 * math.pi / 2)
+        cr.arc(width - radius, radius, radius, 3 * math.pi / 2, math.pi / 2)
+        cr.close_path()
+        cr.fill()
+        t = ((GLib.get_monotonic_time() - start) / 1000) % 1840 if moving else 0
+        for i, top in enumerate((380, 580, 760)):
+            strength = max(0.0, 1 - abs(t - top) / 200)
+            color = tuple(r + (p - r) * strength for r, p in zip(rest, peak))
+            cr.set_source_rgb(*color)
+            cr.arc(15 + i * 14, radius, 4.5 * (1 + 0.38 * strength), 0, 2 * math.pi)
+            cr.fill()
+    area.set_draw_func(draw)
+    if moving:
+        area.add_tick_callback(lambda widget, _clock: (widget.queue_draw(), True)[1])
+    return area
 
 
 class Worker:
@@ -952,7 +986,7 @@ class Window(Adw.ApplicationWindow):
             # „…“ in a grey bubble, in a group with who it is (card 884f7c8a); gone a few seconds after the last sign.
             if len(others) > 1:
                 self.bubbles.append(Gtk.Label(label=", ".join(self.account.display(u) for u in typing), css_classes=["lichat-sender"], xalign=0))
-            dots = Gtk.Label(label="•••", css_classes=["lichat-bubble", "lichat-theirs", "lichat-typing"], halign=Gtk.Align.START)
+            dots = typing_dots(self.has_css_class("lichat-dark"))
             dots.update_property([Gtk.AccessibleProperty.LABEL], [f"{', '.join(self.account.display(u) for u in typing)} tippt"])
             self.bubbles.append(dots)
             if self.typing_timer:

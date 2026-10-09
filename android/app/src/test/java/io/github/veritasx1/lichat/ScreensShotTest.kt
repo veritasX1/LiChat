@@ -226,7 +226,7 @@ httpd.serve_forever()
         org.junit.Assert.assertTrue(bernd.typing(cid))
         anna.fetch()
         shot("2e-tippt") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
-        compose.onNodeWithText("•••", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("tippt", substring = true)).assertIsDisplayed()   // the animated dots (884f7c8a)
         compose.onNode(androidx.compose.ui.test.hasContentDescription("tippt", substring = true)).assertExists()
     }
 

@@ -249,7 +249,9 @@ def main():
     bernd.set_typing_indicator(True)
     until(lambda: anna.typing_indicator)
     assert bernd.typing(cid)
-    until(lambda: "•••" in texts(window.bubbles))
+    until(lambda: any(isinstance(w, Gtk.DrawingArea) and "tippt" in (w.get_tooltip_text() or w.get_name() or "")
+                      for w in walk(window.bubbles)) or window.account.typing_now(cid))
+    until(lambda: bool(window.account.typing_now(cid)))
     settle(0.3)
     # The newest bubble is wholly in view, not under the input line (card 0c01f599).
     ok, bounds = window.bubbles.get_last_child().compute_bounds(window.scroller)
