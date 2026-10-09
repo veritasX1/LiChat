@@ -120,6 +120,18 @@ class TwoPeople(Base):
 
 
 class Groups(Base):
+    def test_any_emoji_as_reaction(self):
+        """Olaf „+“: any emoji, also long ZWJ sequences, travels whole."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Neuer Hund!")
+        bernd.fetch()
+        mid = bernd.chats[cid]["messages"][-1]["mid"]
+        bernd.react(cid, mid, "👩‍👩‍👧‍👦")
+        anna.fetch()
+        self.assertEqual(anna.chats[cid]["messages"][-1]["reaktionen"], {"bernd": "👩‍👩‍👧‍👦"})
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

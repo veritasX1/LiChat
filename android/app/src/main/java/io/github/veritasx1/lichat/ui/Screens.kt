@@ -43,6 +43,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -378,6 +379,33 @@ val TAPBACKS = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
 val TAPBACK_WORDS = mapOf("❤️" to "Herz", "👍" to "Daumen hoch", "👎" to "Daumen runter", "😂" to "Haha", "‼️" to "Ausrufezeichen", "❓" to "Fragezeichen")
 fun tapbackWord(emoji: String) = TAPBACK_WORDS[emoji] ?: emoji
 
+/** The first emoji in what was typed, whole – 👍🏽, 👩‍👩‍👧, 🇫🇷, 1️⃣ stay one – or null for letters and digits. Put
+ *  together by hand (skin tones, ZWJ, flags, keycaps, variation selectors), the same on every Android and in tests. */
+fun firstEmoji(text: String): String? {
+    val cps = text.codePoints().toArray()
+    fun joins(cp: Int) = cp == 0xFE0F || cp == 0xFE0E || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F
+    fun regional(cp: Int) = cp in 0x1F1E6..0x1F1FF
+    var i = 0
+    while (i < cps.size) {
+        val cp = cps[i]
+        val keycap = (cp in 0x30..0x39 || cp == 0x23 || cp == 0x2A) && cps.getOrNull(i + 1) in setOf(0xFE0F, 0x20E3)
+        if (keycap || (!Character.isLetterOrDigit(cp) && !Character.isWhitespace(cp) && cp > 0x2000)) {
+            var end = i + 1
+            if (regional(cp) && cps.getOrNull(end)?.let { regional(it) } == true) end++
+            while (end < cps.size) {
+                when {
+                    joins(cps[end]) -> end++
+                    cps[end] == 0x200D && end + 1 < cps.size -> end += 2
+                    else -> break
+                }
+            }
+            return String(cps, i, end - i).take(16)
+        }
+        i++
+    }
+    return null
+}
+
 /** A bubble as it is: text, or the attachment. The same in the transcript and lifted above it while its menu is open. */
 @Composable
 fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
@@ -425,15 +453,36 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
     val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
     val chosen = reactions.optString(me)
     var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var picking by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color(0x66000000))
         .clickable(onClick = onClose).semantics { contentDescription = "Menü schließen" }) {
         androidx.compose.ui.layout.Layout(content = {
-            Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).clickable(enabled = false) {}.padding(horizontal = 6.dp, vertical = 4.dp)) {
-                TAPBACKS.forEach { emoji ->
-                    BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
-                        modifier = Modifier.size(46.dp).clip(CircleShape).background(if (emoji == chosen) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
-                            .clickable { onReact(if (emoji == chosen) "" else emoji) }.padding(top = 6.dp)
-                            .semantics { contentDescription = if (emoji == chosen) "Reaktion ${tapbackWord(emoji)} zurücknehmen" else "Mit ${tapbackWord(emoji)} reagieren" })
+            Row(Modifier.clip(RoundedCornerShape(24.dp)).background(colors.cell).clickable(enabled = false) {}.padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (picking) {
+                    // „+“ (Olaf 09.10., card a7d9d987): the keyboard opens – the first emoji typed is the reaction.
+                    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+                    var typed by remember { mutableStateOf("") }
+                    LaunchedEffect(Unit) { focus.requestFocus() }
+                    BasicText("Emoji wählen:", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(start = 10.dp, end = 6.dp))
+                    BasicTextField(typed, { text ->
+                        typed = text
+                        firstEmoji(text)?.let { onReact(it) }
+                    }, singleLine = true, textStyle = style(26f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                        modifier = Modifier.width(120.dp).height(46.dp).padding(top = 6.dp).focusRequester(focus)
+                            .semantics { contentDescription = "Emoji eingeben" })
+                } else {
+                    val shown = if (chosen.isNotEmpty() && chosen !in TAPBACKS) TAPBACKS + chosen else TAPBACKS
+                    shown.forEach { emoji ->
+                        BasicText(emoji, style = style(26f, 400, colors.label).copy(textAlign = TextAlign.Center),
+                            modifier = Modifier.size(44.dp).clip(CircleShape).background(if (emoji == chosen) colors.blue.copy(alpha = 0.25f) else Color.Transparent)
+                                .clickable { onReact(if (emoji == chosen) "" else emoji) }.padding(top = 5.dp)
+                                .semantics { contentDescription = if (emoji == chosen) "Reaktion ${tapbackWord(emoji)} zurücknehmen" else "Mit ${tapbackWord(emoji)} reagieren" })
+                    }
+                    Box(Modifier.size(36.dp).clip(CircleShape).background(colors.fill).clickable { picking = true }
+                        .semantics { contentDescription = "Anderes Emoji" }, contentAlignment = Alignment.Center) {
+                        GlyphIcon(Glyph.Plus, colors.secondary, 18.dp)
+                    }
                 }
             }
             Box { bubble() }

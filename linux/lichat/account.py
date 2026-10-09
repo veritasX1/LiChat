@@ -601,7 +601,7 @@ class Account:
 
     def react(self, cid, mid, emoji):
         """My reaction on a message (one per person, like iOS); "" takes it back."""
-        emoji = str(emoji)[:8]
+        emoji = str(emoji).strip()[:16]     # any emoji (Olaf: „+“), ZWJ sequences like 👩‍👩‍👧 included
         with self.lock:
             target = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
             reactions = target.setdefault("reaktionen", {})
@@ -1049,7 +1049,7 @@ class Account:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
         if data.get("t") == "reaktion":
-            mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "")[:8]
+            mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "").strip()[:16]
             target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
             if target is None:
                 return []

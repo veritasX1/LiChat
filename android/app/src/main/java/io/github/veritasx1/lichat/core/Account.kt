@@ -405,7 +405,7 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** My reaction on a message (one per person, like iOS tapbacks); "" takes it back. */
     fun react(cid: String, mid: String, emoji: String) {
-        val clean = emoji.take(8)
+        val clean = emoji.trim().take(16)   // any emoji (Olaf: „+“), ZWJ sequences included
         synchronized(lock) {
             val target = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
             val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
@@ -828,7 +828,7 @@ class Account(val folder: File, private val key: ByteArray) {
                     }
                     "reaktion" -> {
                         val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
-                        val emoji = data.optString("emoji").take(8)
+                        val emoji = data.optString("emoji").trim().take(16)
                         val reactions = target.optJSONObject("reaktionen") ?: JSONObject().also { target.put("reaktionen", it) }
                         if (emoji.isEmpty()) reactions.remove(sender) else reactions.put(sender, emoji)
                         return listOf(News(cid, News.Kind.Reaction, from = sender, text = emoji, received = at))
