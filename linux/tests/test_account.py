@@ -120,6 +120,23 @@ class TwoPeople(Base):
 
 
 class Groups(Base):
+    def test_send_before_the_roster_says_so_plainly(self):
+        """Jean-Marie 09.10.: right after joining, the roster (devices) may not be there yet – no „400“, a clear word,
+        the message marked „nicht gesendet“ and sent with a retry once the roster came."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        roster = bernd.chats[cid]["roster"]
+        bernd.chats[cid]["roster"] = {}
+        with self.assertRaises(LiChatError) as caught:
+            bernd.send(cid, "Hallo!")
+        self.assertIn("noch eingerichtet", str(caught.exception))
+        mine = bernd.chats[cid]["messages"][-1]
+        self.assertEqual(bernd.tick(cid, mine)[0], "fehler")
+        bernd.chats[cid]["roster"] = roster
+        bernd.retry(cid, mine["mid"])
+        self.assertEqual([n["text"] for n in anna.fetch() if "text" in n], ["Hallo!"])
+
     def test_three_with_title(self):
         anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
         cid = anna.start(["bernd", "erna"], title="Grillabend")
