@@ -179,6 +179,17 @@ httpd.serve_forever()
         org.junit.Assert.assertEquals("🐶", reacted)
     }
 
+    /** 864041bf: a voice message paused at 1 of 4 s – ▶ again, the wave a quarter full, 0:03 left. */
+    @Test
+    fun voicePaused() {
+        val info = org.json.JSONObject().put("id", "v1").put("art", "sprache").put("dauer", 4.0).put("name", "Sprachnachricht.m4a")
+        shot("2k-sprache") {
+            io.github.veritasx1.lichat.ui.AttachmentBubble(info, true, playing = true, paused = true, progress = { 1000 to 4000 }) {}
+        }
+        compose.onNodeWithText("0:03").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Abgespielt 25 Prozent")).assertExists()
+    }
+
     /** 18cfe3d2: a wrapped message's bubble is only as wide as its longest line – no blue space on the right; links tappable. */
     @Test
     fun wrappedBubbleIsTight() {

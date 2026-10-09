@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
@@ -305,6 +306,10 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
     var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    // Like iOS: the menu of a long press closes the keyboard first (Olaf 19020c8c: „Bearbeiten“ was cut off under it).
+    val menuKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val menuFocus = androidx.compose.ui.platform.LocalFocusManager.current
+    LaunchedEffect(menuFor) { if (menuFor != null) { menuKeyboard?.hide(); menuFocus.clearFocus() } }
     // Editing one of my messages (card 4ceca163): its text in the input line, „Nachricht bearbeiten“ above it.
     var editing by remember(cid) { mutableStateOf<JSONObject?>(null) }
     var versionsOf by remember(cid) { mutableStateOf<String?>(null) }
@@ -437,7 +442,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
                             Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
-                            playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load)
+                            playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions)
                     }
                 }
                 if (versions != null) {
@@ -544,10 +549,13 @@ fun firstEmoji(text: String): String? {
 /** A bubble as it is: text, or the attachment. The same in the transcript and lifted above it while its menu is open. */
 @Composable
 fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
-           open: (JSONObject) -> Unit = {}, load: ((JSONObject) -> ByteArray)? = null, maxLines: Int = Int.MAX_VALUE) {
+           open: (JSONObject) -> Unit = {}, load: ((JSONObject) -> ByteArray)? = null, maxLines: Int = Int.MAX_VALUE,
+           actions: AttachmentActions? = null) {
     val colors = palette()
     val info = m.optJSONObject("anhang")
-    if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing, load) { open(info) } }
+    if (info != null) Box(modifier.then(interact)) {
+        AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {}) { open(info) }
+    }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
         val text = withMentions(m.optString("text"), if (mine) Color.White else colors.blue)
@@ -684,7 +692,8 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                         style = style(15f, 400, colors.secondary), modifier = Modifier.fillMaxWidth().padding(14.dp))
                 }
             }
-        }, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).onGloballyPositioned { origin = it.positionInWindow() }) { parts, limits ->
+        }, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
+            .onGloballyPositioned { origin = it.positionInWindow() }) { parts, limits ->
             val loose = limits.copy(minWidth = 0, minHeight = 0)
             val margin = 12.dp.roundToPx()
             val gap = 8.dp.roundToPx()
@@ -724,6 +733,12 @@ class AttachmentActions(
     val retry: (String) -> Unit = {},
     /** Something was typed (with the switch on the others see „…“, card 884f7c8a). */
     val typing: () -> Unit = {},
+    /** The voice message playing is paused (its place kept – 864041bf). */
+    val paused: Boolean = false,
+    /** (position, duration) in ms of the voice message loaded, or null. */
+    val progress: () -> Pair<Int, Int>? = { null },
+    /** Jump in the voice message playing (0…1 of its length). */
+    val seek: (Float) -> Unit = {},
     /** The attachment's bytes (downloaded once, kept sealed on the phone) – for photos sharp in the bubble (ed0686a1). */
     val load: ((JSONObject) -> ByteArray)? = null,
 )
@@ -842,7 +857,8 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
 
 /** A photo or video as its picture (rounded like a bubble), a voice message with ▶ and its length, a file with its name. */
 @Composable
-fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((JSONObject) -> ByteArray)? = null, onOpen: () -> Unit) {
+fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((JSONObject) -> ByteArray)? = null,
+                     paused: Boolean = false, progress: () -> Pair<Int, Int>? = { null }, seek: (Float) -> Unit = {}, onOpen: () -> Unit) {
     val colors = palette()
     val kind = info.optString("art")
     val id = info.optString("id")
@@ -884,14 +900,33 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
         .clickable(onClick = onOpen).semantics { contentDescription = label }.padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically) {
         if (kind == "sprache") {
-            GlyphIcon(if (playing) Glyph.Pause else Glyph.Play, foreground, 20.dp)
-            // A quiet wave like Messages: bars of fixed heights (the sound itself is not analysed).
-            Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                listOf(6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12).forEach { h ->
-                    Box(Modifier.padding(horizontal = 1.dp).size(3.dp, h.dp).clip(RoundedCornerShape(2.dp)).background(foreground.copy(alpha = 0.8f)))
+            // Like Messages (Olaf 864041bf): ▶ ⇄ ⏸, the wave fills as it plays, the time left counts down, a pause keeps
+            // the place, a swipe or tap on the wave jumps, at the end it is back at the start.
+            var fraction by remember(id) { mutableStateOf(0f) }
+            var left by remember(id) { mutableStateOf<Int?>(null) }
+            LaunchedEffect(playing, paused) {
+                if (!playing) { fraction = 0f; left = null; return@LaunchedEffect }
+                while (true) {
+                    progress()?.let { (position, length) -> if (length > 0) { fraction = position / length.toFloat(); left = (length - position + 999) / 1000 } }
+                    if (paused) break
+                    kotlinx.coroutines.delay(100)
                 }
             }
-            val seconds = info.optDouble("dauer", 0.0).toInt()
+            GlyphIcon(if (playing && !paused) Glyph.Pause else Glyph.Play, foreground, 20.dp)
+            val bars = listOf(6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12)
+            Row(Modifier.padding(horizontal = 10.dp).then(if (playing) Modifier.pointerInput(id) {
+                    detectTapGestures { offset -> seek(offset.x / size.width); fraction = offset.x / size.width }
+                }.pointerInput("$id-ziehen") {
+                    detectHorizontalDragGestures { change, _ -> change.consume(); val f = (change.position.x / size.width).coerceIn(0f, 1f); seek(f); fraction = f }
+                } else Modifier).semantics { if (playing) contentDescription = "Abgespielt ${(fraction * 100).toInt()} Prozent" },
+                verticalAlignment = Alignment.CenterVertically) {
+                bars.forEachIndexed { i, h ->
+                    val done = playing && (i + 0.5f) / bars.size <= fraction
+                    Box(Modifier.padding(horizontal = 1.dp).size(3.dp, h.dp).clip(RoundedCornerShape(2.dp))
+                        .background(foreground.copy(alpha = if (!playing) 0.8f else if (done) 1f else 0.35f)))
+                }
+            }
+            val seconds = left ?: info.optDouble("dauer", 0.0).toInt()
             BasicText("%d:%02d".format(seconds / 60, seconds % 60), style = style(15f, 400, foreground))
         } else {
             GlyphIcon(Glyph.Document, foreground, 26.dp)
