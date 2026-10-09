@@ -120,6 +120,31 @@ class ApiTest(unittest.TestCase):
         status, _ = self.call("POST", "/v1/register", {"invite": code, "username": "erika.mustermann", "identity": b64(b"x" * 32)})
         self.assertEqual(status, 200, "die Einladung gilt nach einem vergebenen Namen noch")
 
+    def test_contact_pin_once_and_short_lived(self):
+        _, anna = self.account("anna")
+        _, bernd = self.account("bernd")
+        pin = self.call("POST", "/v1/pins", {}, token=anna)[1]["pin"]
+        self.assertRegex(pin, r"^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$")
+        self.assertEqual(self.call("POST", "/v1/pins/einloesen", {"pin": pin.lower().replace("-", " ")}, token=bernd)[1], {"username": "anna"})
+        self.assertEqual(self.call("POST", "/v1/pins/einloesen", {"pin": pin}, token=bernd)[0], 404, "nur einmal")
+        late = self.call("POST", "/v1/pins", {}, token=anna)[1]["pin"]
+        self.clock.now += 601
+        self.assertEqual(self.call("POST", "/v1/pins/einloesen", {"pin": late}, token=bernd)[0], 404, "nach 10 Minuten weg")
+        statuses = [self.call("POST", "/v1/pins/einloesen", {"pin": "AAAA-AAAA"}, token=bernd)[0] for _ in range(12)]
+        self.assertIn(429, statuses, "Fehlversuche gebremst")
+
+    def test_invite_page_has_link_qr_and_code(self):
+        code = self.app.store.create_invite()
+        environ = {"REQUEST_METHOD": "GET", "PATH_INFO": f"/e/{code.lower()}", "CONTENT_LENGTH": "0", "wsgi.input": io.BytesIO(b""),
+                   "REMOTE_ADDR": "10.0.0.1", "QUERY_STRING": ""}
+        result = {}
+        page = b"".join(self.app(environ, lambda status, headers: result.update(status=status, headers=dict(headers)))).decode()
+        self.assertTrue(result["status"].startswith("200"))
+        self.assertIn(f"code={code}", page)
+        self.assertIn("data:image/svg+xml", page)
+        self.assertIn("default-src 'none'", result["headers"]["Content-Security-Policy"])
+        self.assertNotIn("<script", page)
+
     def test_no_push_service_is_ever_stored(self):
         """Olaf 09.10.: no ntfy, no Google – a push address sent along is ignored, not kept."""
         invite = self.app.store.create_invite()

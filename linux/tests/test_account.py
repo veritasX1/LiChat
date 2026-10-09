@@ -408,6 +408,34 @@ class DisplayNames(Base):
         self.assertEqual(Account.suggest_username("Jürgen Groß"), "juergen.gross")
 
 
+class Contacts(Base):
+    """Card 89aae55d: contacts by QR (verified) or PIN (10 minutes, once); kept only on the device."""
+
+    def test_qr_verifies_pin_does_not(self):
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        link = anna.contact_link()
+        self.assertTrue(link.startswith("lichat://kontakt?") and "name=anna" in link and "fp=" in link)
+        name, contact = bernd.add_contact_link(link)
+        self.assertEqual((name, contact["verifiziert"]), ("anna", True))
+        # A link with a foreign fingerprint is refused.
+        with self.assertRaises(LiChatError):
+            bernd.add_contact_link(link.replace("fp=", "fp=00"))
+        pin = anna.new_pin()
+        self.assertEqual(erna.redeem_pin(pin)[0], "anna")
+        self.assertFalse(erna.contacts["anna"]["verifiziert"])
+        with self.assertRaises(LiChatError):
+            erna.redeem_pin(pin)                      # once
+        self.assertIn("anna", self.reopen(bernd).contacts)
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(b"verifiziert", server_files)
+
+    def test_links_are_recognised(self):
+        self.assertEqual(Account.parse_link("https://exampleserver.lisoftware.de/e/7stv-nq2t-a8xb-4urg"),
+                         {"art": "einladung", "server": "https://exampleserver.lisoftware.de", "code": "7STV-NQ2T-A8XB-4URG"})
+        self.assertEqual(Account.parse_link("lichat://einladung?server=https%3A%2F%2Fexampleserver.lisoftware.de&code=AB2C-DE3F")["code"], "AB2C-DE3F")
+        self.assertIsNone(Account.parse_link("https://example.org/irgendwas"))
+
+
 class Remove(Base):
     def test_removed_member_reads_nothing_after(self):
         """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""
