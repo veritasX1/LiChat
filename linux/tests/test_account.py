@@ -120,6 +120,56 @@ class TwoPeople(Base):
 
 
 class Groups(Base):
+    def test_edit_and_unsend(self):
+        """Card 4ceca163, like iOS: edit for 15 minutes and five times („Bearbeitet“ with the earlier versions), call back for
+        two minutes (a grey line, quotes of it emptied) – end-to-end, only by the one who wrote it, windows on the sender's clock."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Treffen um 18 Uhr")
+        mid = anna.chats[cid]["messages"][-1]["mid"]
+        bernd.fetch()
+        anna.edit(cid, mid, "Treffen um 19 Uhr")
+        self.assertEqual([n["edited"] for n in bernd.fetch() if "edited" in n], [mid])
+        theirs = bernd.chats[cid]["messages"][-1]
+        self.assertEqual(theirs["text"], "Treffen um 19 Uhr")
+        self.assertEqual([v["text"] for v in theirs["bearbeitet"]], ["Treffen um 18 Uhr"])
+        for i in range(4):
+            anna.edit(cid, mid, f"Treffen um {20 + i} Uhr")
+        with self.assertRaises(LiChatError):
+            anna.edit(cid, mid, "noch einmal")              # sechstes Mal: nein
+        bernd.fetch()
+        self.assertEqual(bernd.chats[cid]["messages"][-1]["text"], "Treffen um 23 Uhr")
+        # Bernd cannot edit Anna's message on Anna's devices (a forged edit is ignored)
+        bernd._group_message(cid, {"t": "bearbeiten", "mid": mid, "text": "gefälscht", "at": int(time.time())})
+        anna.fetch()
+        self.assertEqual(anna.chats[cid]["messages"][-1]["text"], "Treffen um 23 Uhr")
+        # Too late: a message older than 15 minutes (on the sender's clock) is not changed
+        anna.send(cid, "alt")
+        old = anna.chats[cid]["messages"][-1]
+        old["at"] -= 17 * 60
+        bernd.fetch()
+        bernd.chats[cid]["messages"][-1]["at"] -= 17 * 60
+        self.assertFalse(anna.can_edit(old))
+        anna._group_message(cid, {"t": "bearbeiten", "mid": old["mid"], "text": "neu", "at": int(time.time())})
+        bernd.fetch()
+        self.assertEqual(bernd.chats[cid]["messages"][-1]["text"], "alt")
+        # Call back within two minutes – the reply quoting it loses its quote too
+        anna.send(cid, "Ups, falscher Chat")
+        oops = anna.chats[cid]["messages"][-1]["mid"]
+        bernd.fetch()
+        bernd.send(cid, "Hä?", reply_to=oops)
+        anna.fetch()
+        anna.unsend(cid, oops)
+        self.assertEqual([n["unsent"] for n in bernd.fetch() if "unsent" in n], [oops])
+        gone = next(m for m in bernd.chats[cid]["messages"] if m.get("mid") == oops)
+        self.assertTrue(gone["zurueckgerufen"])
+        self.assertEqual(gone["text"], "")
+        self.assertEqual(Account.describe(gone), "Nachricht zurückgerufen")
+        self.assertTrue(bernd.chats[cid]["messages"][-1]["antwort"]["zurueckgerufen"])
+        self.assertNotIn("falscher Chat", json.dumps(bernd.chats, ensure_ascii=False))
+        self.assertNotIn("falscher Chat", json.dumps(anna.chats, ensure_ascii=False))
+
     def test_any_emoji_as_reaction(self):
         """Olaf „+“: any emoji, also long ZWJ sequences, travels whole."""
         anna, bernd = self.person("anna"), self.person("bernd")
@@ -714,6 +764,17 @@ class Cli(Base):
         self.assertIn("Test", self.run_cli("anna", "gespraeche")[1])
         self.assertIn("bernd: Hallo aus der Konsole", self.run_cli("anna", "verlauf", chat)[1])
         self.assertEqual(self.run_cli("anna", "code", chat)[1], self.run_cli("bernd", "code", chat)[1])
+        # reagieren / zuruecknehmen / bearbeiten / zurueckrufen – Michelles Tests ohne Handy
+        self.assertIn("reagiert 👍🏽", self.run_cli("anna", "reagieren", chat, "Konsole", "👍🏽")[1])
+        self.assertIn("anna reagiert 👍🏽", self.run_cli("bernd", "abholen")[1])
+        self.assertIn("zurückgenommen", self.run_cli("anna", "zuruecknehmen", chat, "letzte")[1])
+        self.assertIn("nimmt die Reaktion 👍🏽", self.run_cli("bernd", "abholen")[1])
+        self.run_cli("bernd", "senden", chat, "Grillen", "um", "6")
+        self.assertIn("bearbeitet", self.run_cli("bernd", "bearbeiten", chat, "Grillen", "um", "7")[1])
+        self.assertIn("bernd hat bearbeitet: Grillen um 7", self.run_cli("anna", "abholen")[1])
+        self.assertIn("(bearbeitet)", self.run_cli("anna", "verlauf", chat)[1])
+        self.assertIn("zurückgerufen", self.run_cli("bernd", "zurueckrufen", chat)[1])
+        self.assertIn("bernd hat eine Nachricht zurückgerufen", self.run_cli("anna", "abholen")[1])
         # warten: ends as soon as something comes (here: bernd writes while anna waits).
         import threading as _t
         later = _t.Timer(1.5, lambda: self.run_cli("bernd", "senden", chat, "Bist", "du", "da?"))
