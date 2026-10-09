@@ -336,6 +336,28 @@ def main():
     labels = [w.get_label() for w in walk(window.info.get_popover()) if isinstance(w, Gtk.Button)]
     assert "Zurücksetzen" not in labels and "Bild ändern" in labels
 
+    # fe9f2029 / f9e3f055 / 43358d35: a photo asks how; one-time only on the phone, secret pixelated until tapped, the overview.
+    photo = Path(tempfile.mkdtemp()) / "foto.png"
+    Image.new("RGB", (640, 480), (200, 60, 60)).save(photo)
+    window.send_attachment(photo)
+    settle(0.3)
+    dialog, once, secret = window.photo_dialog
+    secret.set_active(True)
+    dialog.emit("response", "senden")
+    dialog.force_close()
+    until(lambda: any((m.get("anhang") or {}).get("geheim") for m in window.account.chats[cid]["messages"]))
+    bernd.send_attachment(cid, photo.read_bytes(), "einmal.png", "image/png", "bild", once=True)
+    until(lambda: any((m.get("anhang") or {}).get("einmal") for m in window.account.chats[cid]["messages"]))
+    settle(0.5)
+    shown = " ".join(texts(window.bubbles))
+    assert "Nur auf dem Handy ansehen" in shown, shown
+    assert "Geheimbild" in shown, shown
+    shot(window, "03g-einmal-geheim.png")
+    media = window.show_media(cid)
+    settle(0.3)
+    shot(media, "04b-medien.png")
+    media.close()
+
     # „Neue Nachricht“ to a group: An: bernd, erna.
     window.start_composing()
     window.to_entry.set_text("bernd, erna")
@@ -493,7 +515,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 16  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
+    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 18  # + Geheim- und Einmal-Bild, „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

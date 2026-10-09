@@ -22,6 +22,11 @@ encrypted bytes under a random id. The MLS message carries id, key, SHA-256, nam
     {"t": "anhang", "id", "schluessel", "sha256", "name", "mime", "groesse", "art": bild|video|sprache|datei,
      "dauer"?, "vorschau"? (small JPEG, also without EXIF)}
 Photos leave without EXIF and at most 2048 px, like Messages sends them.
+    "einmal": true   one-time picture (fe9f2029): no preview, opened once on one of my devices, then gone everywhere –
+                     here, on my other devices ({"t": "einmal_geoeffnet", "mid"} into the chat) and on the server
+                     (POST /v1/anhaenge/<id>/gesehen); unopened it lapses after 14 days. {"t": "bildschirmfoto", "mid"}
+                     puts a fixed line into the chat when the phone saw a screenshot while it was open.
+    "geheim": true   secret picture (f9e3f055): pixelated everywhere (made here, from the picture), a tap shows it sharp.
 
 Delivery state (card db70d358, Olaf's scheme with Jaques): every message carries a „mid“. Devices that received it
 answer end-to-end {"t": "quittung", "art": "zugestellt" | "gelesen", "mids": […], "at"} – the server learns nothing.
@@ -76,6 +81,7 @@ ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
+ONCE_DAYS = 14             # an unopened one-time picture lapses (the server deletes it too)
 TYPING_EVERY = 3     # s between two „tippt“ of mine
 TYPING_FRESH = 6     # s a „tippt“ stays shown after it arrived
 TYPING_LATE = 30     # s after which an arriving „tippt“ is ignored (fetched late; allows for clocks a little apart)
@@ -1421,8 +1427,9 @@ class Account:
                 raise LiChatError("Video/Aufnahme lässt sich nicht ohne Metadaten verschicken")
             return target.read_bytes()
 
-    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None):
-        """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat."""
+    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False):
+        """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
+        [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
             raise LiChatError("unbekannte Art von Anhang")
         if self.chats[cid].get("removed"):
@@ -1450,16 +1457,26 @@ class Account:
             mime, name = ("video/mp4", name.rsplit(".", 1)[0] + ".mp4") if kind == "video" else ("audio/mp4", name.rsplit(".", 1)[0] + ".m4a")
         if len(data) > ATTACHMENT_MAX:
             raise LiChatError("Anhang zu groß (höchstens 100 MB)")
+        if (once or secret) and kind != "bild":
+            raise LiChatError("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
+        if once:
+            preview = None          # nothing of the picture stays in the chat
         key, nonce = os.urandom(32), os.urandom(12)
         sealed = nonce + AESGCM(key).encrypt(nonce, data, ATTACHMENT_MAGIC)
-        attachment = json.loads(self.server.raw("PUT", "/v1/anhaenge", sealed))["id"]
+        people = len([m for m in self.members(cid) if m != self.username])
+        attachment = json.loads(self.server.raw("PUT", f"/v1/anhaenge?einmal={max(1, people)}" if once else "/v1/anhaenge", sealed))["id"]
         info = {"id": attachment, "schluessel": b64(key), "sha256": hashlib.sha256(sealed).hexdigest(),
                 "name": str(name)[:200], "mime": str(mime)[:100], "groesse": len(data), "art": kind}
         if duration is not None:
             info["dauer"] = round(float(duration), 1)
         if preview:
             info["vorschau"] = b64(preview)
-        self._keep_sealed(attachment, sealed)
+        if once:
+            info["einmal"] = True       # the sender cannot open it either (nothing kept here)
+        else:
+            self._keep_sealed(attachment, sealed)
+        if secret:
+            info["geheim"] = True
         at = int(time.time())
         message = {"from": self.username, "text": "", "at": at, "anhang": info, "mid": secrets.token_hex(8), "status": "wartet"}
         with self.lock:
@@ -1483,6 +1500,74 @@ class Account:
             self._keep_sealed(info["id"], sealed)
         return AESGCM(unb64(info["schluessel"])).decrypt(sealed[:12], sealed[12:], ATTACHMENT_MAGIC)
 
+    def _forget_sealed(self, attachment):
+        (self.folder / "anhaenge" / attachment).unlink(missing_ok=True)
+
+    def once_state(self, message, now=None):
+        """A one-time picture: "eigen" (I sent it), "neu", "geoeffnet" or "abgelaufen" (14 days unopened); else None."""
+        info = message.get("anhang") or {}
+        if not info.get("einmal"):
+            return None
+        if message.get("from") == self.username:
+            return "eigen"
+        if message.get("geoeffnet"):
+            return "geoeffnet"
+        if (now or time.time()) - message.get("at", 0) > ONCE_DAYS * 86400:
+            return "abgelaufen"
+        return "neu"
+
+    def open_once(self, cid, mid):
+        """The one-time picture's bytes – only in memory, once: afterwards it is marked opened here, my other devices drop
+        it, the sender sees „Geöffnet“ and the server deletes it when every other person has opened it."""
+        message = next((m for m in self.chats[cid]["messages"] if m.get("mid") == mid), None)
+        if message is None or self.once_state(message) != "neu":
+            raise LiChatError("Dieses Einmal-Bild lässt sich nicht mehr öffnen")
+        info = message["anhang"]
+        try:
+            sealed = self.server.raw("GET", f"/v1/anhaenge/{info['id']}")
+        except LiChatError as error:
+            if "(404)" not in str(error) and "(410)" not in str(error):
+                raise               # offline: try again later
+            with self.lock:
+                message["geoeffnet"] = int(time.time())
+                self.save()
+            raise LiChatError("Dieses Einmal-Bild ist nicht mehr da")
+        if hashlib.sha256(sealed).hexdigest() != info["sha256"]:
+            raise LiChatError("Anhang beschädigt oder verändert")
+        data = AESGCM(unb64(info["schluessel"])).decrypt(sealed[:12], sealed[12:], ATTACHMENT_MAGIC)
+        with self.lock:
+            message["geoeffnet"] = int(time.time())
+            self.save()
+        try:
+            self.server.call("POST", f"/v1/anhaenge/{info['id']}/gesehen", {})
+        except LiChatError:
+            pass                    # it lapses after 14 days anyway
+        self._group_message(cid, {"t": "einmal_geoeffnet", "mid": mid})
+        return data
+
+    def report_screenshot(self, cid, mid):
+        """The phone saw a screenshot while a one-time picture was open: a fixed line for everyone in the chat."""
+        self._group_message(cid, {"t": "bildschirmfoto", "mid": mid}, "Du hast ein Bildschirmfoto vom Einmal-Bild gemacht.")
+
+    def media(self, cid):
+        """The info's overview like on the iPhone (43358d35): photos and videos, links, documents, voice messages – sent and
+        received, newest first. One-time pictures never; secret ones carry "geheim" (the app pixelates them)."""
+        found = {"fotos": [], "links": [], "dokumente": [], "sprache": []}
+        for message in reversed(self.chats[cid]["messages"]):
+            if message.get("system") or message.get("zurueckgerufen") or message.get("geloescht"):
+                continue
+            info = message.get("anhang")
+            if info:
+                if info.get("einmal"):
+                    continue
+                group = {"bild": "fotos", "video": "fotos", "sprache": "sprache"}.get(info.get("art"), "dokumente")
+                found[group].append(message)
+            else:
+                for link in find_links(message.get("text", "")):
+                    if link[2].startswith(("http://", "https://")):
+                        found["links"].append({"url": link[2], "message": message})
+        return found
+
     @staticmethod
     def describe(message):
         """One line for the list and notifications: the text, or what the attachment is."""
@@ -1491,6 +1576,8 @@ class Account:
         info = message.get("anhang")
         if not info:
             return message.get("text", "")
+        if info.get("einmal"):
+            return "Foto · Einmal-Ansicht"
         return {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
 
     def members(self, cid):
@@ -1733,6 +1820,20 @@ class Account:
             else:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
+        if data.get("t") == "einmal_geoeffnet":
+            target = next((m for m in chat["messages"] if m.get("mid") == data.get("mid") and (m.get("anhang") or {}).get("einmal")), None)
+            if target is None:
+                return []
+            if sender == self.username:          # opened on another of my devices: gone here too
+                target["geoeffnet"] = int(time.time())
+                self._forget_sealed(target["anhang"]["id"])
+            elif target.get("from") == self.username:
+                target.setdefault("geoeffnet_von", {})[sender] = int(time.time())
+            return [{"chat": cid, "opened": target.get("mid")}]
+        if data.get("t") == "bildschirmfoto" and isinstance(data.get("mid"), str):
+            who = "Du hast" if sender == self.username else f"{self.display(sender)} hat"
+            line = self._system(chat, f"{who} ein Bildschirmfoto vom Einmal-Bild gemacht.")
+            return [{"chat": cid, "system": line["text"]}]
         if data.get("t") == "reaktion":
             mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "").strip()
             target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
@@ -1782,6 +1883,11 @@ class Account:
             return [{"chat": cid, "receipt": kind}]
         if data.get("t") == "anhang":
             info = {k: data.get(k) for k in ("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau") if data.get(k) is not None}
+            for flag in ("einmal", "geheim"):
+                if data.get(flag) is True and info.get("art") == "bild":
+                    info[flag] = True
+            if info.get("einmal"):
+                info.pop("vorschau", None)
             try:
                 good = (re.fullmatch(r"[0-9a-f]{32}", str(info.get("id"))) and len(unb64(info.get("schluessel", ""))) == 32
                         and re.fullmatch(r"[0-9a-f]{64}", str(info.get("sha256"))) and info.get("art") in KINDS

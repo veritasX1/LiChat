@@ -33,6 +33,10 @@ APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
 WAIT_SECONDS = 50     # one waiting fetch; the server answers at once when something arrives
 AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / f"{APP_ID}.desktop"
+# One-time pictures (fe9f2029): under Wayland nothing can block or even notice a screenshot, so they open only on the
+# phone (Olaf 09.10. 19:16: „einverstanden“). True opens them here too, in memory only, never as a file.
+ONCE_ON_DESKTOP = False
+
 DEFAULTS = {"hintergrund": True, "vorschau": False, "erklaert": False}
 GAP = 15 * 60          # a time stamp over the bubbles after this much quiet (like Messages)
 
@@ -247,6 +251,7 @@ class Window(Adw.ApplicationWindow):
         self.seen = {}             # chat → number of messages already looked at (the blue dot)
         self.full_images = {}      # attachment id → the photo itself (sharp in the bubble, ed0686a1)
         self.loading_images = set()
+        self.revealed = set()      # secret pictures tapped open while LiChat runs (f9e3f055)
         self.gif_data = {}         # attachment id → GIF bytes (to run on in a rebuilt bubble)
         self.listener = None
         self.settings = self.load_settings()
@@ -953,7 +958,7 @@ class Window(Adw.ApplicationWindow):
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
             if m.get("anhang"):
-                piece = self.attachment_bubble(m["anhang"], mine)
+                piece = self.attachment_bubble(m["anhang"], mine, m)
             else:
                 piece = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
@@ -1145,6 +1150,8 @@ class Window(Adw.ApplicationWindow):
             top.connect("clicked", lambda *_: (button.popdown(), self.show_picture(shown, self.account.title(cid))))
         top.set_halign(Gtk.Align.CENTER)
         box.append(top)
+        media = Gtk.Button(label="Fotos, Links und Dokumente …", css_classes=["flat"])
+        media.connect("clicked", lambda *_: (button.popdown(), self.show_media(cid)))
         if person:
             # Like Apple Contacts: my own picture of this person, only for me (on my devices) – „Zurücksetzen“ brings theirs back
             row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
@@ -1206,6 +1213,7 @@ class Window(Adw.ApplicationWindow):
                 leave = Gtk.Button(label="Unterhaltung verlassen", css_classes=["flat", "lichat-remove"], halign=Gtk.Align.START)
                 leave.connect("clicked", lambda *_: (button.popdown(), self.group_job(lambda a: a.leave(cid))))
                 box.append(leave)
+        box.append(media)
         box.append(Gtk.Label(label="Sicherheitscode", css_classes=["lichat-subtitle"], xalign=0, margin_top=8))
         code = self.account.safety_code(cid).split()
         box.append(Gtk.Label(label=" ".join(code[:4]) + "\n" + " ".join(code[4:]), css_classes=["lichat-code"], selectable=True))
@@ -1469,11 +1477,72 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------------------------------ attachments
 
-    def attachment_bubble(self, info, mine):
+    def once_bubble(self, message, mine, box):
+        """A one-time picture: never a preview, only what it is and where it stands (fe9f2029)."""
+        state = self.account.once_state(message)
+        if state == "eigen":
+            seen = message.get("geoeffnet_von") or {}
+            note = "Geöffnet" if seen else "Einmal-Ansicht"
+        else:
+            note = {"neu": "Antippen zum Ansehen" if ONCE_ON_DESKTOP else "Nur auf dem Handy ansehen",
+                    "geoeffnet": "Geöffnet", "abgelaufen": "Abgelaufen"}[state]
+        label = Gtk.Label(label=f"◉  Foto\n{note}", xalign=0, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"])
+        button = Gtk.Button(child=label, css_classes=["lichat-attachment", "flat"])
+        cid, mid = self.current, message.get("mid")
+
+        def opened(data, error):
+            self.show_notice(error)
+            self.show_conversation()
+            if data:
+                self.show_picture(data, "Einmal-Bild")     # in memory only; gone with the window
+        account = self.account
+
+        def clicked(*_):
+            if state != "neu":
+                return
+            if not ONCE_ON_DESKTOP:
+                self.show_notice("Einmal-Bilder lassen sich nur auf dem Handy ansehen – hier kann nichts Bildschirmfotos verhindern.")
+                return
+            self.worker.do(lambda: account.open_once(cid, mid), opened)
+        button.connect("clicked", clicked)
+        box.append(button)
+        return box
+
+    @staticmethod
+    def pixelated(data):
+        """A secret picture (f9e3f055): made coarse here, from the picture itself – 14 blocks on the short side."""
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as image:
+            image = image.convert("RGB")
+            block = max(1, min(image.size) // 14)
+            small = image.resize((max(1, image.width // block), max(1, image.height // block)), Image.BILINEAR)
+            out = io.BytesIO()
+            small.resize(image.size, Image.NEAREST).save(out, "PNG")
+        return Gdk.Texture.new_from_bytes(GLib.Bytes.new(out.getvalue()))
+
+    def attachment_bubble(self, info, mine, message=None):
         """A photo or video as its small picture, a voice message with ▶ and its length, a file with its name."""
         kind = info.get("art")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
-        button = Gtk.Button(css_classes=["lichat-attachment", "flat"], tooltip_text=info.get("name"))
+        if info.get("einmal") and message is not None:
+            return self.once_bubble(message, mine, box)
+        hidden = info.get("geheim") and info.get("id") not in self.revealed
+        button = Gtk.Button(css_classes=["lichat-attachment", "flat"], tooltip_text="Antippen zum Aufdecken" if hidden else info.get("name"))
+        if kind in ("bild", "video") and info.get("vorschau") and hidden:
+            try:
+                texture = self.pixelated(unb64(info["vorschau"]))
+                picture = Gtk.Picture(paintable=texture, can_shrink=True, content_fit=Gtk.ContentFit.COVER)
+                scale = min(240 / max(texture.get_width(), 1), 240 / max(texture.get_height(), 1))
+                picture.set_size_request(int(texture.get_width() * scale), int(texture.get_height() * scale))
+                frame = Gtk.Overlay(child=picture, css_classes=["lichat-photo"], overflow=Gtk.Overflow.HIDDEN)
+                frame.add_overlay(Gtk.Label(label="Geheimbild", css_classes=["lichat-play"], halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER))
+                button.set_child(frame)
+                button.connect("clicked", lambda *_: (self.revealed.add(info.get("id")), self.show_conversation()))
+                box.append(button)
+                return box
+            except (GLib.Error, OSError):
+                pass
         if kind in ("bild", "video") and info.get("vorschau"):
             try:
                 texture = self.full_images.get(info.get("id")) or Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info["vorschau"])))
@@ -1695,8 +1764,9 @@ class Window(Adw.ApplicationWindow):
             return
         self.send_attachment(Path(file.get_path()))
 
-    def send_attachment(self, path):
-        """The kind from the file's type: photo, video, audio (as a voice message) or any other file."""
+    def send_attachment(self, path, once=None, secret=False):
+        """The kind from the file's type: photo, video, audio (as a voice message) or any other file. A photo first asks
+        how: normal, as a one-time picture (fe9f2029) or pixelated (f9e3f055)."""
         import mimetypes
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         kind = "bild" if mime.startswith("image/") and mime != "image/svg+xml" else "video" if mime.startswith("video/") \
@@ -1705,9 +1775,12 @@ class Window(Adw.ApplicationWindow):
         if cid is None:
             self.show_notice("Erst das Gespräch beginnen, dann den Anhang schicken.")
             return
+        if kind == "bild" and once is None:
+            self.photo_options(path)
+            return
 
         def job():
-            account.send_attachment(cid, path.read_bytes(), path.name, mime, kind)
+            account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=bool(once), secret=secret)
             return cid
 
         def done(_cid, error):
@@ -1716,6 +1789,73 @@ class Window(Adw.ApplicationWindow):
             self.show_conversation()
 
         self.worker.do(job, done)
+
+    def photo_options(self, path):
+        dialog = Adw.AlertDialog(heading="Foto senden", body=path.name)
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        once = Gtk.CheckButton(label="Einmal-Ansicht – nach dem Ansehen weg")
+        secret = Gtk.CheckButton(label="Verpixeln – erst ein Tippen zeigt es")
+        options.append(once)
+        options.append(secret)
+        dialog.set_extra_child(options)
+        dialog.add_response("abbrechen", "Abbrechen")
+        dialog.add_response("senden", "Senden")
+        dialog.set_response_appearance("senden", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("senden")
+        dialog.connect("response", lambda _d, answer: answer == "senden" and self.send_attachment(path, once.get_active(), secret.get_active()))
+        dialog.present(self)
+        self.photo_dialog = (dialog, once, secret)       # for the GUI test
+        return dialog
+
+    def show_media(self, cid):
+        """Fotos, Links, Dokumente, Sprachnachrichten of this chat, sent and received (43358d35) – one-time pictures never,
+        secret ones only pixelated."""
+        media = self.account.media(cid)
+        window = Adw.Window(title="Medien", transient_for=self, modal=True, default_width=640, default_height=560)
+        stack = Adw.ViewStack()
+        photos = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, min_children_per_line=3, max_children_per_line=4,
+                             homogeneous=True, column_spacing=2, row_spacing=2, valign=Gtk.Align.START)
+        for message in media["fotos"]:
+            info = message["anhang"]
+            try:
+                data = unb64(info.get("vorschau", ""))
+                texture = self.pixelated(data) if info.get("geheim") else Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            except (GLib.Error, OSError, ValueError):
+                continue
+            picture = Gtk.Picture(paintable=texture, content_fit=Gtk.ContentFit.COVER, can_shrink=True)
+            picture.set_size_request(110, 110)
+            tile = Gtk.Button(child=picture, css_classes=["flat"], tooltip_text="Geheimbild" if info.get("geheim") else info.get("name"))
+            tile.connect("clicked", lambda *_, i=info: self.open_attachment(i))
+            photos.append(tile)
+
+        def page(widget, name, title, icon, empty):
+            if isinstance(widget, Gtk.FlowBox) and widget.get_first_child() is None or isinstance(widget, Gtk.ListBox) and widget.get_row_at_index(0) is None:
+                widget = Adw.StatusPage(title=empty, icon_name=icon)
+            stack.add_titled_with_icon(Gtk.ScrolledWindow(child=widget, vexpand=True), name, title, icon)
+
+        def rows(items, line, action):
+            box = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE, margin_start=12, margin_end=12, margin_top=12, valign=Gtk.Align.START)
+            for item in items:
+                title, sub = line(item)
+                row = Adw.ActionRow(title=GLib.markup_escape_text(title), subtitle=sub, activatable=True)
+                row.connect("activated", lambda *_, i=item: action(i))
+                box.append(row)
+            return box
+        when = lambda m: time.strftime("%d.%m.%Y", time.localtime(m.get("at", 0)))
+        who = lambda m: "Du" if m.get("from") == self.account.username else self.account.display(m.get("from", ""))
+        page(photos, "fotos", "Fotos", "image-x-generic-symbolic", "Keine Fotos")
+        page(rows(media["links"], lambda l: (l["url"], f"{who(l['message'])} · {when(l['message'])}"),
+                  lambda l: Gtk.UriLauncher.new(l["url"]).launch(self, None, None)), "links", "Links", "web-browser-symbolic", "Keine Links")
+        page(rows(media["dokumente"], lambda m: (m["anhang"].get("name", "Datei"), f"{self.size_text(m['anhang'].get('groesse', 0))} · {who(m)} · {when(m)}"),
+                  lambda m: self.open_attachment(m["anhang"])), "dokumente", "Dokumente", "x-office-document-symbolic", "Keine Dokumente")
+        page(rows(media["sprache"], lambda m: (f"Sprachnachricht · {int(round(m['anhang'].get('dauer') or 0)) // 60}:{int(round(m['anhang'].get('dauer') or 0)) % 60:02d}", f"{who(m)} · {when(m)}"),
+                  lambda m: self.open_attachment(m["anhang"])), "sprache", "Sprache", "audio-x-generic-symbolic", "Keine Sprachnachrichten")
+        header = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(stack=stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        view = Adw.ToolbarView(content=stack)
+        view.add_top_bar(header)
+        window.set_content(view)
+        window.present()
+        return window
 
     def group_job(self, job):
         """Adding, renaming, leaving: in the worker, then everything drawn again."""

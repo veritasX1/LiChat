@@ -916,6 +916,73 @@ class Devices(Base):
         self.assertFalse(phone.has_contact_picture("bernd"))
         self.assertEqual(phone.picture("bernd"), shared)
 
+    def test_once_picture_opened_once_then_gone_everywhere(self):
+        """fe9f2029: no preview, opened once on one of my devices, gone on the others and – once everyone opened it – on the server."""
+        anna, phone, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = anna.start(["bernd", "erna"])
+        phone.fetch(); erna.fetch()
+        laptop = self.link(phone)
+        laptop.fetch(); anna.fetch(); erna.fetch()
+        photo = test_image(self.root / "einmal.jpg", size=(800, 600)).read_bytes()
+        anna.send_attachment(cid, photo, "IMG.jpg", "image/jpeg", "bild", once=True)
+        mine = anna.chats[cid]["messages"][-1]
+        self.assertEqual(anna.once_state(mine), "eigen")
+        self.assertFalse((anna.folder / "anhaenge" / mine["anhang"]["id"]).exists(), "auch beim Absender nichts behalten")
+        news = [n for n in phone.fetch() if n.get("anhang")]
+        self.assertEqual(news[0]["text"], "Foto · Einmal-Ansicht")
+        self.assertNotIn("vorschau", news[0]["anhang"])
+        laptop.fetch()
+        mid = mine["mid"]
+        got = phone.open_once(cid, mid)
+        self.assertNotIn(b"Testkamera", got)
+        self.assertGreater(len(got), 1000)
+        with self.assertRaises(LiChatError):
+            phone.open_once(cid, mid)
+        laptop.fetch()
+        self.assertEqual(laptop.once_state(laptop.chats[cid]["messages"][-1]), "geoeffnet", "auf dem Laptop auch weg")
+        with self.assertRaises(LiChatError):
+            laptop.open_once(cid, mid)
+        anna.fetch()
+        self.assertIn("bernd", anna.chats[cid]["messages"][-1].get("geoeffnet_von", {}))
+        server_file = self.root / "server" / "anhaenge" / mine["anhang"]["id"]
+        self.assertTrue(server_file.exists(), "Erna hat es noch nicht gesehen")
+        erna.fetch()
+        erna.open_once(cid, mid)
+        self.assertFalse(server_file.exists(), "alle haben es gesehen: vom Server gelöscht")
+        # a screenshot while it was open: a fixed line for everyone
+        erna.report_screenshot(cid, mid)
+        self.assertIn("Erna hat ein Bildschirmfoto vom Einmal-Bild gemacht.".replace("Erna", erna.display("erna")),
+                      [n.get("system") for n in anna.fetch()])
+        # unopened for 14 days: lapsed
+        anna.send_attachment(cid, photo, "IMG.jpg", "image/jpeg", "bild", once=True)
+        erna.fetch()
+        self.assertEqual(erna.once_state(erna.chats[cid]["messages"][-1], now=time.time() + 15 * 86400), "abgelaufen")
+        # only photos
+        with self.assertRaises(LiChatError):
+            anna.send_attachment(cid, b"%PDF", "a.pdf", "application/pdf", "datei", once=True)
+
+    def test_secret_picture_and_media_overview(self):
+        """f9e3f055 + 43358d35: the secret flag travels; the overview lists photos, links, documents and voice – never one-time pictures."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        photo = test_image(self.root / "geheim.jpg", size=(800, 600)).read_bytes()
+        anna.send_attachment(cid, photo, "IMG.jpg", "image/jpeg", "bild", secret=True)
+        anna.send_attachment(cid, photo, "IMG.jpg", "image/jpeg", "bild", once=True)
+        anna.send(cid, "Schau mal www.example.org und mail@example.org")
+        anna.send_attachment(cid, b"%PDF-1.4 test", "Plan.pdf", "application/pdf", "datei")
+        bernd.fetch()
+        media = bernd.media(cid)
+        self.assertEqual(len(media["fotos"]), 1)
+        self.assertTrue(media["fotos"][0]["anhang"].get("geheim"))
+        self.assertTrue(media["fotos"][0]["anhang"].get("vorschau"), "verpixelt wird erst hier")
+        self.assertEqual([l["url"] for l in media["links"]], ["https://www.example.org"])
+        self.assertEqual([m["anhang"]["name"] for m in media["dokumente"]], ["Plan.pdf"])
+        self.assertEqual(media["sprache"], [])
+        self.assertEqual(len(anna.media(cid)["fotos"]), 1, "gesendet zählt auch")
+        with self.assertRaises(LiChatError):
+            anna.send_attachment(cid, b"%PDF", "a.pdf", "application/pdf", "datei", secret=True)
+
     def test_the_server_cannot_slip_in_a_device(self):
         """A roster naming more devices than the person has in the MLS group is refused."""
         anna, bernd = self.person("anna"), self.person("bernd")
