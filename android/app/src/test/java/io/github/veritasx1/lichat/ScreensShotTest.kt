@@ -5,6 +5,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
@@ -285,6 +287,9 @@ httpd.serve_forever()
         org.junit.Assert.assertTrue(opened.isNotEmpty())
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).performClick()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).assertDoesNotExist()
+        // Michelle: covered again after a few seconds
+        compose.mainClock.advanceTimeBy(11_000)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).assertExists()
         io.github.veritasx1.lichat.ui.SecretShown.ids.clear()
     }
 
@@ -302,6 +307,43 @@ httpd.serve_forever()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).assertExists()
         org.junit.Assert.assertEquals("das scharfe Foto wird erst nach dem Antippen geladen", 0, loads)
         compose.mainClock.autoAdvance = true
+    }
+
+    /** 4fb76dfd „Markieren“: a stroke drawn on screen is in the sent picture, cropping and rotating change it, undo takes back. */
+    @Test
+    fun markup() {
+        val photo = testJpeg(0xFF34A853.toInt(), 800, 600)
+        var result: ByteArray? = null
+        shot("2j-markieren") { io.github.veritasx1.lichat.ui.MarkupEditor(photo, {}) { result = it } }
+        val canvas = compose.onNode(androidx.compose.ui.test.hasContentDescription("Foto zum Markieren"))
+        canvas.performTouchInput { swipe(Offset(centerX - 200, centerY), Offset(centerX + 200, centerY), 300) }    // red pen across the middle
+        compose.onNodeWithText("Rückgängig").performClick()
+        canvas.performTouchInput { swipe(Offset(centerX - 200, centerY), Offset(centerX + 200, centerY), 300) }
+        compose.onNodeWithText("Fertig").performClick()
+        val picture = android.graphics.BitmapFactory.decodeByteArray(result!!, 0, result!!.size)
+        org.junit.Assert.assertEquals(800 to 600, picture.width to picture.height)
+        val red = (0 until picture.height step 2).sumOf { y -> (0 until picture.width step 2).count { x ->
+            picture.getPixel(x, y).let { android.graphics.Color.red(it) > 200 && android.graphics.Color.green(it) < 120 && android.graphics.Color.blue(it) < 120 } } }
+        org.junit.Assert.assertTrue("roter Strich im Bild: $red Punkte", red > 200)
+        org.junit.Assert.assertTrue("nur ein Strich (der erste ist zurückgenommen): $red Punkte", red < 600)
+        val corner = picture.getPixel(20, 20)
+        org.junit.Assert.assertTrue("Rand bleibt grün", android.graphics.Color.green(corner) > 120 && android.graphics.Color.red(corner) < 120)
+        org.junit.Assert.assertEquals("keine Metadaten", 0, androidx.exifinterface.media.ExifInterface(java.io.ByteArrayInputStream(result)).let { e ->
+            listOf(androidx.exifinterface.media.ExifInterface.TAG_MAKE, androidx.exifinterface.media.ExifInterface.TAG_GPS_LATITUDE, androidx.exifinterface.media.ExifInterface.TAG_DATETIME).count { e.getAttribute(it) != null } })
+    }
+
+    @Test
+    fun markupFlattenCropRotate() {
+        val picture = android.graphics.Bitmap.createBitmap(400, 300, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFFFFFFFF.toInt()) }
+        val marks = listOf(io.github.veritasx1.lichat.ui.Mark.Shape(io.github.veritasx1.lichat.ui.Tool.Rect, Offset(10f, 10f), Offset(390f, 290f), 0xFFFF3B30.toInt(), 6f),
+            io.github.veritasx1.lichat.ui.Mark.Sticker("⭐", Offset(200f, 150f), 60f))
+        val flat = io.github.veritasx1.lichat.ui.flatten(picture, marks)
+        org.junit.Assert.assertEquals(0xFFFF3B30.toInt(), flat.getPixel(200, 10))
+        val cropped = io.github.veritasx1.lichat.ui.flatten(picture, marks, android.graphics.RectF(100f, 50f, 300f, 250f))
+        org.junit.Assert.assertEquals(200 to 200, cropped.width to cropped.height)
+        val turned = io.github.veritasx1.lichat.ui.rotated(flat)
+        org.junit.Assert.assertEquals(300 to 400, turned.width to turned.height)
+        org.junit.Assert.assertEquals("das Original bleibt unberührt", 0xFFFFFFFF.toInt(), picture.getPixel(200, 10))
     }
 
     @Test

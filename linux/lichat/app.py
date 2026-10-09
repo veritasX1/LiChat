@@ -275,7 +275,7 @@ class Window(Adw.ApplicationWindow):
         self.seen = {}             # chat → number of messages already looked at (the blue dot)
         self.full_images = {}      # attachment id → the photo itself (sharp in the bubble, ed0686a1)
         self.loading_images = set()
-        self.revealed = set()      # secret pictures tapped open while LiChat runs (f9e3f055)
+        self.revealed = set()      # secret pictures tapped open – covered again after 10 s or on leaving the chat (f9e3f055)
         self.gif_data = {}         # attachment id → GIF bytes (to run on in a rebuilt bubble)
         self.listener = None
         self.settings = self.load_settings()
@@ -933,9 +933,23 @@ class Window(Adw.ApplicationWindow):
         self.fill_list()          # the preview comes back (or the wave stays while it is still fresh)
         return False
 
+    def reveal(self, key):
+        """A secret picture sharp for 10 seconds, like on the iPhone – then covered again (Michelle: it stayed sharp)."""
+        self.revealed.add(key)
+        self.show_conversation()
+
+        def cover():
+            if key in self.revealed:
+                self.revealed.discard(key)
+                self.show_conversation()
+            return False
+        GLib.timeout_add_seconds(10, cover)
+
     def on_row(self, listbox, row):
         if getattr(self, "filling", False) or row is None:
             return
+        if row.cid != self.current:
+            self.revealed.clear()          # leaving a chat covers its secret pictures again
         self.composing = False
         self.current = row.cid
         self.show_conversation()
@@ -1598,7 +1612,7 @@ class Window(Adw.ApplicationWindow):
                 frame = Gtk.Overlay(child=picture, css_classes=["lichat-photo"], overflow=Gtk.Overflow.HIDDEN)
                 frame.add_overlay(Gtk.Label(label="Geheimbild", css_classes=["lichat-play"], halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER))
                 button.set_child(frame)
-                button.connect("clicked", lambda *_: (self.revealed.add(info.get("id")), self.show_conversation()))
+                button.connect("clicked", lambda *_: self.reveal(info.get("id")))
                 box.append(button)
                 return box
             except (GLib.Error, OSError):

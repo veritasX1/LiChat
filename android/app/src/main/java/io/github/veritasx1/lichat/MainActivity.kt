@@ -107,6 +107,22 @@ class MainActivity : ComponentActivity() {
     fun unlock() {
         if (AppLock.prompting) return
         AppLock.prompting = true
+        // Never crash here – a crash at every start shut Olaf out (20:16, missing USE_BIOMETRIC): fall back to the system's
+        // PIN screen, and without any screen lock there is nothing to protect with, so it opens.
+        try { prompt() } catch (e: Exception) {
+            android.util.Log.w("LiChat", "Entsperren per BiometricPrompt nicht möglich: $e")
+            try { keyguard() } catch (e2: Exception) { AppLock.prompting = false; AppLock.locked.value = false }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun keyguard() {
+        val intent = getSystemService(android.app.KeyguardManager::class.java)?.takeIf { it.isDeviceSecure }?.createConfirmDeviceCredentialIntent("LiChat entsperren", null)
+        if (intent == null) { AppLock.prompting = false; AppLock.locked.value = false } else startActivityForResult(intent, UNLOCK)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun prompt() {
         if (Build.VERSION.SDK_INT >= 29) {
             val builder = android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle("LiChat entsperren")
             if (Build.VERSION.SDK_INT >= 30) builder.setAllowedAuthenticators(
@@ -118,10 +134,7 @@ class MainActivity : ComponentActivity() {
                 }
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) { AppLock.prompting = false }
             })
-        } else {
-            val intent = getSystemService(android.app.KeyguardManager::class.java)?.createConfirmDeviceCredentialIntent("LiChat entsperren", null)
-            if (intent == null) { AppLock.prompting = false; AppLock.locked.value = false } else startActivityForResult(intent, UNLOCK)
-        }
+        } else keyguard()
     }
 
     @Deprecated("only for Android 8–9")
@@ -260,6 +273,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var oncePhoto by remember { mutableStateOf<Triple<String, String, ByteArray>?>(null) }
     var onceSecret by remember { mutableStateOf(false) }
     var onceOpening by remember { mutableStateOf<String?>(null) }
+    var markingUp by remember { mutableStateOf(false) }       // 4fb76dfd: the editor over the send sheet
+    var markedUp by remember { mutableStateOf(false) }        // the pending photo's bytes are the marked-up picture
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendFile(it, true) }
     fun startRecording() {
         if (media.startRecording()) {
@@ -490,10 +505,23 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
         photo?.let { bytes -> BackHandler { photo = null }; PhotoViewer(bytes) { photo = null } }
         pendingPhoto?.let { (uri, bytes) ->
-            io.github.veritasx1.lichat.ui.PhotoSendSheet(bytes, onCancel = { pendingPhoto = null }) { once, secret ->
+            if (markingUp && bytes != null) io.github.veritasx1.lichat.ui.MarkupEditor(bytes, onCancel = { markingUp = false }) { marked ->
+                markingUp = false; markedUp = true
+                pendingPhoto = uri to marked
+            }
+            else io.github.veritasx1.lichat.ui.PhotoSendSheet(bytes, onCancel = { pendingPhoto = null; markedUp = false },
+                onMarkup = { markingUp = true }) { once, secret ->
                 pendingPhoto = null
+                val edited = if (markedUp) bytes else null
+                markedUp = false
                 val acc = account; val cid = chatId()
-                if (acc != null && cid != null) work({ media.send(acc, cid, uri, false, once, secret) }) { _, error -> problem = error; Hub.changed() }
+                if (acc != null && cid != null) work({
+                    if (edited != null) {
+                        // the marked-up picture: a new JPEG, then the same way as every photo (upright, 2048 px, preview)
+                        val (jpeg, preview) = Pictures.photo(edited)
+                        acc.sendAttachment(cid, jpeg, "Foto.jpg", "image/jpeg", "bild", preview = preview, once = once, secret = secret)
+                    } else media.send(acc, cid, uri, false, once, secret)
+                }) { _, error -> problem = error; Hub.changed() }
             }
         }
         oncePhoto?.let { (cid, mid, bytes) ->
