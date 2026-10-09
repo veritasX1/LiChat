@@ -56,8 +56,9 @@ class ApiTest(unittest.TestCase):
         return result["status"], json.loads(data)
 
     def raw(self, method, path, data=b"", token=None, length=None):
+        path, _, query = path.partition("?")
         environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "CONTENT_LENGTH": str(len(data) if length is None else length),
-                   "wsgi.input": io.BytesIO(data), "REMOTE_ADDR": "10.0.0.1", "QUERY_STRING": ""}
+                   "wsgi.input": io.BytesIO(data), "REMOTE_ADDR": "10.0.0.1", "QUERY_STRING": query}
         if token:
             environ["HTTP_AUTHORIZATION"] = "Bearer " + token
         result = {}
@@ -455,6 +456,28 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"x" * 300, token=anna)[0], 413)
         finally:
             store_module.ATTACHMENTS_PER_DEVICE = before
+
+    def test_once_gone_when_every_other_person_opened_it(self):
+        """fe9f2029: a one-time picture for two people – each may fetch it until they opened it, then it is deleted."""
+        _, anna = self.account("anna")
+        _, bernd = self.account("bernd")
+        _, erna = self.account("erna")
+        once = json.loads(self.raw("PUT", "/v1/anhaenge?einmal=2", b"geheim", token=anna)[2])["id"]
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{once}", token=bernd)[2], b"geheim")
+        self.assertEqual(self.call("POST", f"/v1/anhaenge/{once}/gesehen", {}, token=bernd)[0], 200)
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{once}", token=bernd)[0], 410, "Bernd hat es gesehen")
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{once}", token=erna)[2], b"geheim")
+        self.call("POST", f"/v1/anhaenge/{once}/gesehen", {}, token=erna)
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{once}", token=erna)[0], 404)
+        self.assertFalse(self.app.store.attachment_path(once).exists(), "vom Server gelöscht")
+        # unopened: gone after 14 days; a normal attachment stays
+        later = json.loads(self.raw("PUT", "/v1/anhaenge?einmal=1", b"x", token=anna)[2])["id"]
+        normal = json.loads(self.raw("PUT", "/v1/anhaenge", b"y", token=anna)[2])["id"]
+        self.assertEqual(self.call("POST", f"/v1/anhaenge/{normal}/gesehen", {}, token=bernd)[0], 404)
+        self.clock.now += 15 * 24 * 3600
+        self.app.store.purge()
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{later}", token=bernd)[0], 404)
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{normal}", token=bernd)[2], b"y")
 
     def test_attachment_gone_after_30_days_and_with_its_device(self):
         _, anna = self.account("anna")

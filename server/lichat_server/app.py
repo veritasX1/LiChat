@@ -15,7 +15,9 @@ them once fetched. Endpoints (all JSON, blobs base64):
                                      arrives or the time is up (the apps' standing connection) -> {messages: [...]}
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
     PUT    /v1/anhaenge             raw encrypted bytes (≤ 100 MB, 1 GB per device) -> {id}   (card 9780f3a0)
-    GET    /v1/anhaenge/<id>        the bytes again (signed in; gone after 30 days)
+    PUT    /v1/anhaenge?einmal=<n>  a one-time picture for n other people (fe9f2029): gone after 14 days unopened
+    GET    /v1/anhaenge/<id>        the bytes again (signed in; gone after 30 days; a one-time one: 410 once I opened it)
+    POST   /v1/anhaenge/<id>/gesehen  I opened the one-time picture – deleted when every other person has
     POST   /v1/kopplung             a new device asks to join an account       -> {code}   (card da5cbfcb)
     GET    /v1/kopplung/<code>      {} waiting | {username} accepted | {username, device} signed in   (404: gone)
     POST   /v1/kopplung/annehmen    {code}  an existing device: that is my new device  (signed in; wrong codes limited)
@@ -155,6 +157,7 @@ class App:
             ("POST", r"/v1/pins/einloesen", self.redeem_pin, True),
             ("GET", r"/e/(?P<code>[A-Za-z0-9-]{4,40})", self.invite_page, False),
             ("GET", r"/v1/anhaenge/(?P<attachment>[0-9a-f]{32})", self.get_attachment, True),
+            ("POST", r"/v1/anhaenge/(?P<attachment>[0-9a-f]{32})/gesehen", self.seen_once, True),
         ]
 
     # WSGI ----------------------------------------------------------------------------------------
@@ -358,17 +361,28 @@ class App:
         if not self.send_limit.hit(me[0]):
             raise HttpError(429, "zu viele Anhänge")
         try:
-            return {"id": self.store.keep_attachment(me[0], environ["wsgi.input"], size)}
+            attachment = self.store.keep_attachment(me[0], environ["wsgi.input"], size)
         except ValueError:
             raise HttpError(413, "Speicher für Anhänge voll – ältere verschwinden nach 30 Tagen")
         except EOFError:
             raise HttpError(400, "Anhang unvollständig")
+        people = urllib.parse.parse_qs(environ.get("QUERY_STRING", "")).get("einmal", [""])[0]
+        if people:
+            self.store.keep_once(attachment, max(1, min(1000, int(people) if people.isdigit() else 1)))
+        return {"id": attachment}
 
     def get_attachment(self, environ, body, me, attachment):
         found = self.store.attachment(attachment)
         if found is None:
             raise HttpError(404, "Anhang nicht mehr da")
+        if self.store.once_seen_by(attachment, me[1]):
+            raise HttpError(410, "Schon angesehen")
         return Raw(*found)
+
+    def seen_once(self, environ, body, me, attachment):
+        if not self.store.seen_once(attachment, me[1]):
+            raise HttpError(404, "Kein Einmal-Bild")
+        return {}
 
     def new_pin(self, environ, body, me):
         return {"pin": self.store.create_pin(me[1]), "gueltig": 600}

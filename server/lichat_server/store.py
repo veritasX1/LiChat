@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 KEEP_UNFETCHED = 30 * 24 * 3600      # seconds
+KEEP_ONCE = 14 * 24 * 3600           # one-time pictures nobody opened (Michelle fe9f2029)
 MAX_KEY_PACKAGES = 100               # per device
 MAILBOX_BYTES = 32 * 1024 * 1024     # per device: nobody fills a stranger's mailbox (Michelle 4ba8dc07)
 MAILBOX_MESSAGES = 5000
@@ -71,6 +72,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 size INTEGER NOT NULL, created REAL NOT NULL);
+            -- One-time pictures (fe9f2029): gone once every other person has opened it – the server only counts names.
+            CREATE TABLE IF NOT EXISTS once (
+                id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE, people INTEGER NOT NULL, seen TEXT NOT NULL DEFAULT '');
         """)
         # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
         if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
@@ -284,6 +288,8 @@ class Store:
             self.db.execute("DELETE FROM invites WHERE expires < ?", (now,))
             self.db.execute("DELETE FROM pins WHERE expires < ?", (now,))
             old = [row[0] for row in self.db.execute("SELECT id FROM attachments WHERE created < ?", (now - KEEP_UNFETCHED,))]
+            old += [row[0] for row in self.db.execute(
+                "SELECT a.id FROM attachments a JOIN once o ON o.id = a.id WHERE a.created < ? AND a.created >= ?", (now - KEEP_ONCE, now - KEEP_UNFETCHED))]
             self.db.executemany("DELETE FROM attachments WHERE id = ?", [(i,) for i in old])
         for attachment in old:
             self.attachment_path(attachment).unlink(missing_ok=True)
@@ -339,6 +345,33 @@ class Store:
         with self.lock:
             self.db.execute("INSERT INTO attachments VALUES (?, ?, ?, ?)", (attachment, device, size, self.clock()))
         return attachment
+
+    def keep_once(self, attachment, people):
+        with self.lock:
+            self.db.execute("INSERT INTO once (id, people) VALUES (?, ?)", (attachment, people))
+
+    def once_seen_by(self, attachment, username):
+        row = self.db.execute("SELECT seen FROM once WHERE id = ?", (attachment,)).fetchone()
+        return bool(row) and username in row[0].split(",")
+
+    def seen_once(self, attachment, username):
+        """[username] opened the one-time picture: when every other person has, it is deleted. False: not a one-time one."""
+        with self.lock:
+            row = self.db.execute("SELECT people, seen FROM once WHERE id = ?", (attachment,)).fetchone()
+            if row is None:
+                return False
+            seen = [n for n in row[1].split(",") if n]
+            if username not in seen:
+                seen.append(username)
+            if len(seen) >= row[0]:
+                self.db.execute("DELETE FROM attachments WHERE id = ?", (attachment,))
+                gone = True
+            else:
+                self.db.execute("UPDATE once SET seen = ? WHERE id = ?", (",".join(seen), attachment))
+                gone = False
+        if gone:
+            self.attachment_path(attachment).unlink(missing_ok=True)
+        return True
 
     def attachment(self, attachment):
         """(path, size) of a kept attachment, or None."""
