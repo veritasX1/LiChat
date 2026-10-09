@@ -13,6 +13,9 @@ services:
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
+    logging:                                  # the Pi's SD card must never fill up (feedback_pi_storage_sd_card)
+      driver: json-file
+      options: { max-size: "1m", max-file: "2" }
     cap_drop: [ALL]
 networks:
   lichat:
