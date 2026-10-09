@@ -20,6 +20,14 @@ MAX_KEY_PACKAGES = 100               # per device
 MAILBOX_BYTES = 32 * 1024 * 1024     # per device: nobody fills a stranger's mailbox (Michelle 4ba8dc07)
 MAILBOX_MESSAGES = 5000
 INVITE_DAYS = 14
+INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def invite_key(code):
+    """What a person typed, as stored: upper case, without spaces and dashes, then in groups of four again.
+    Older codes (before 09.10., mixed case) are looked up as they are."""
+    plain = "".join(ch for ch in str(code).upper() if ch.isalnum())
+    return "-".join(plain[i:i + 4] for i in range(0, len(plain), 4))
 ATTACHMENT_BYTES = 100 * 1024 * 1024        # one attachment (a video from the phone)
 ATTACHMENTS_PER_DEVICE = 1024 * 1024 * 1024  # all of one device's attachments still kept
 
@@ -77,7 +85,9 @@ class Store:
     # Invitations ---------------------------------------------------------------------------------
 
     def create_invite(self, note="", days=INVITE_DAYS):
-        code = secrets.token_urlsafe(18)
+        """A code people can type: 16 signs from an alphabet without I, L, O, 0, 1 (nothing to mix up – Olaf could not
+        tell I from l), in groups of four: „K7QX-…“. 16 of 31 signs ≈ 79 bits, plus the register limit of 10 per hour."""
+        code = "-".join("".join(secrets.choice(INVITE_ALPHABET) for _ in range(4)) for _ in range(4))
         with self.lock:
             self.db.execute("INSERT INTO invites VALUES (?, ?, ?)", (code, self.clock() + days * 86400, note))
         return code
@@ -86,14 +96,19 @@ class Store:
 
     def register(self, invite, username, identity):
         """Creates the account with its first device. Returns (device_id, token) or raises KeyError /
-        ValueError. The invitation is used up, also if the name is taken (no guessing with one code)."""
+        ValueError. A taken name does not use up the invitation (Olaf 09.10. – trying another name must work); guessing
+        names stays limited by the register limit (10 per hour and address)."""
         with self.lock:
-            row = self.db.execute("SELECT expires FROM invites WHERE code = ?", (invite,)).fetchone()
+            code = str(invite).strip()
+            row = self.db.execute("SELECT expires FROM invites WHERE code = ?", (code,)).fetchone()
+            if row is None:
+                code = invite_key(code)
+                row = self.db.execute("SELECT expires FROM invites WHERE code = ?", (code,)).fetchone()
             if row is None or row[0] < self.clock():
                 raise KeyError("invite")
-            self.db.execute("DELETE FROM invites WHERE code = ?", (invite,))
             if self.db.execute("SELECT 1 FROM accounts WHERE username = ?", (username,)).fetchone():
                 raise ValueError("taken")
+            self.db.execute("DELETE FROM invites WHERE code = ?", (code,))
             self.db.execute("INSERT INTO accounts VALUES (?, ?)", (username, self.clock()))
             return self._add_device(username, identity)
 

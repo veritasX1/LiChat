@@ -104,6 +104,22 @@ class ApiTest(unittest.TestCase):
                                                            "identity": b64(b"x" * 32)})
             self.assertEqual(status, 400, name)
 
+    def test_invite_codes_are_easy_to_type(self):
+        """Olaf 09.10.: „I“ or „l“? Codes without I, L, O, 0, 1, in groups of four; case, spaces and dashes do not matter."""
+        code = self.app.store.create_invite()
+        self.assertRegex(code, r"^[A-HJKMNP-Z2-9]{4}(-[A-HJKMNP-Z2-9]{4}){3}$")
+        typed = code.replace("-", " ").lower()
+        status, data = self.call("POST", "/v1/register", {"invite": typed, "username": "olaf", "identity": b64(b"x" * 32)})
+        self.assertEqual(status, 200, data)
+
+    def test_taken_name_keeps_the_invite(self):
+        self.account("olaf")
+        code = self.app.store.create_invite()
+        status, _ = self.call("POST", "/v1/register", {"invite": code, "username": "olaf", "identity": b64(b"x" * 32)})
+        self.assertEqual(status, 409)
+        status, _ = self.call("POST", "/v1/register", {"invite": code, "username": "olaf.winkler", "identity": b64(b"x" * 32)})
+        self.assertEqual(status, 200, "die Einladung gilt nach einem vergebenen Namen noch")
+
     def test_no_push_service_is_ever_stored(self):
         """Olaf 09.10.: no ntfy, no Google – a push address sent along is ignored, not kept."""
         invite = self.app.store.create_invite()
