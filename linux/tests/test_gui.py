@@ -140,7 +140,7 @@ def main():
     window.input.set_text("Ja, gern! Ich bringe Kartoffelsalat mit.")
     window.send()
     until(lambda: len(anna.chats[cid]["messages"]) == 2)
-    assert [n["text"] for n in bernd.fetch()] == ["Ja, gern! Ich bringe Kartoffelsalat mit."]
+    assert [n["text"] for n in bernd.fetch() if "text" in n] == ["Ja, gern! Ich bringe Kartoffelsalat mit."]
     bernd.send(cid, "Super, bis dann 🙂")
     until(lambda: len(anna.chats[cid]["messages"]) == 3)
     settle(0.3)
@@ -176,6 +176,15 @@ def main():
     assert opened.read_text() == "Kohle, Würstchen" and oct(opened.stat().st_mode & 0o777) == "0o600"
     assert str(opened).startswith(os.environ.get("XDG_RUNTIME_DIR", "/tmp")), opened
     shot(window, "03b-anhaenge.png")
+
+    # Ticks (card db70d358): my last message is delivered once Bernd fetched it – two grey ticks under the bubble.
+    until(lambda: anna.tick(cid, [m for m in anna.chats[cid]["messages"] if m["from"] == "anna"][-1])[0] == "zugestellt")
+    window.show_conversation()
+    settle(0.3)
+    marks = [w for w in walk(window.bubbles) if isinstance(w, Gtk.DrawingArea)]
+    assert marks and all(w.get_parent().get_tooltip_text().startswith(("Zugestellt", "Gesendet")) for w in marks), \
+        [w.get_parent().get_tooltip_text() for w in marks]
+    shot(window, "03c-haken.png")
 
     # The safety code in the info popover equals Bernd's.
     window.fill_info(window.info)

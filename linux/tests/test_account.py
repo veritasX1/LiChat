@@ -65,13 +65,13 @@ class TwoPeople(Base):
         self.assertEqual(bernd.chats[cid]["roster"], {"anna": [anna.device_id], "bernd": [bernd.device_id]})
         anna.send(cid, "Hallo Bernd!")
         news = bernd.fetch()
-        self.assertEqual([(n["from"], n["text"]) for n in news], [("anna", "Hallo Bernd!")])
+        self.assertEqual([(n["from"], n["text"]) for n in news if "text" in n], [("anna", "Hallo Bernd!")])
         self.assertEqual(bernd.fetch(), [], "quittiert – nichts doppelt")
 
         # Both restart; the conversation goes on, the codes agree.
         anna, bernd = self.reopen(anna), self.reopen(bernd)
         bernd.send(cid, "Hallo Anna")
-        self.assertEqual([(n["from"], n["text"]) for n in anna.fetch()], [("bernd", "Hallo Anna")])
+        self.assertEqual([(n["from"], n["text"]) for n in anna.fetch() if "text" in n], [("bernd", "Hallo Anna")])
         self.assertEqual(anna.safety_code(cid), bernd.safety_code(cid))
         self.assertEqual(len(anna.safety_code(cid).split()), 8)
         self.assertEqual(anna.members(cid), ["anna", "bernd"])
@@ -127,8 +127,8 @@ class Groups(Base):
             self.assertEqual(other.fetch(), [{"chat": cid, "joined": True}])
             self.assertEqual(other.title(cid), "Grillabend")
         erna.send(cid, "Ich bringe Salat mit")
-        self.assertEqual([n["text"] for n in anna.fetch()], ["Ich bringe Salat mit"])
-        self.assertEqual([n["text"] for n in bernd.fetch()], ["Ich bringe Salat mit"])
+        self.assertEqual([n["text"] for n in anna.fetch() if "text" in n], ["Ich bringe Salat mit"])
+        self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Ich bringe Salat mit"])
         self.assertEqual(sorted(erna.members(cid)), ["anna", "bernd", "erna"])
         self.assertTrue(anna.safety_code(cid) == bernd.safety_code(cid) == erna.safety_code(cid))
 
@@ -206,7 +206,7 @@ class Attachments(Base):
         photo = test_image(self.root / "foto.jpg", size=(4000, 3000)).read_bytes()
         anna.send_attachment(cid, photo, "IMG_0001.JPG", "image/jpeg", "bild")
         news = bernd.fetch()
-        self.assertEqual([n["text"] for n in news], ["Foto"])
+        self.assertEqual([n["text"] for n in news if "text" in n], ["Foto"])
         info = news[0]["anhang"]
         got = bernd.open_attachment(info)
         with Image.open(io.BytesIO(got)) as image:
@@ -222,7 +222,7 @@ class Attachments(Base):
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=3", "-c:a", "aac",
                         "-metadata", "creation_time=2026-10-01T12:00:00Z", str(voice)], check=True)
         bernd.send_attachment(cid, voice.read_bytes(), "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=3.4)
-        news = anna.fetch()
+        news = [n for n in anna.fetch() if "text" in n]
         self.assertEqual([n["text"] for n in news], ["Datei: Plan.pdf", "Sprachnachricht"])
         self.assertEqual(anna.open_attachment(news[0]["anhang"]), document)
         self.assertEqual(news[1]["anhang"]["dauer"], 3.4)
@@ -285,6 +285,61 @@ class Attachments(Base):
         self.assertEqual(bernd.chats[cid]["messages"], [])
 
 
+class Ticks(Base):
+    """Card db70d358: ✓ sent, ✓✓ delivered, blue ✓✓ read – end to end, read receipts off by default and mutual."""
+
+    def test_sent_delivered_read(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Hallo")
+        mine = anna.chats[cid]["messages"][-1]
+        self.assertEqual(anna.tick(cid, mine)[0], "gesendet")
+        bernd.fetch()                       # arrives → bernd answers „zugestellt“ by itself
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "zugestellt")
+        bernd.mark_read(cid)                # read receipts off by default: nothing goes out
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "zugestellt")
+        bernd.set_read_receipts(True)
+        bernd.mark_read(cid)
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "zugestellt", "gegenseitig: Anna hat sie aus, sieht also kein Blau")
+        anna.set_read_receipts(True)
+        self.assertEqual(anna.tick(cid, mine)[0], "gelesen")
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(b"quittung", server_files)
+        self.assertNotIn(b"gelesen", server_files)
+
+    def test_group_needs_everyone(self):
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = anna.start(["bernd", "erna"])
+        bernd.fetch(), erna.fetch()
+        anna.send(cid, "Wer kommt?")
+        mine = anna.chats[cid]["messages"][-1]
+        bernd.fetch()
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "gesendet", "Erna hat es noch nicht")
+        erna.fetch()
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "zugestellt")
+
+    def test_failed_send_is_marked_and_retried(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        real = anna.server.call
+        anna.server.call = lambda *a, **k: (_ for _ in ()).throw(LiChatError("Server nicht erreichbar"))
+        with self.assertRaises(LiChatError):
+            anna.send(cid, "Kommt das an?")
+        mine = anna.chats[cid]["messages"][-1]
+        self.assertEqual(anna.tick(cid, mine)[0], "fehler")
+        anna.server.call = real
+        anna.retry(cid, mine["mid"])
+        self.assertEqual(anna.tick(cid, mine)[0], "gesendet")
+        self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Kommt das an?"])
+
+
 class Remove(Base):
     def test_removed_member_reads_nothing_after(self):
         """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""
@@ -300,7 +355,7 @@ class Remove(Base):
         self.assertEqual(anna.chats[cid]["messages"][-1]["text"], "Du hast erna aus der Unterhaltung entfernt.")
         self.assertNotIn("erna", bernd.chats[cid]["roster"])
         bernd.send(cid, "Jetzt ohne Erna")
-        self.assertEqual([n["text"] for n in anna.fetch()], ["Jetzt ohne Erna"])
+        self.assertEqual([n["text"] for n in anna.fetch() if "text" in n], ["Jetzt ohne Erna"])
         self.assertEqual(erna.fetch(), [], "nichts mehr für Erna")
         with self.assertRaises(LiChatError):
             erna.send(cid, "Hallo?")

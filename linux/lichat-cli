@@ -75,7 +75,8 @@ def main(argv):
             limit = time.time() + float(args[1])
         while True:
             wait = 0 if command == "abholen" else int(min(50, max(1, (limit - time.time()) if limit else 50)))
-            news = account.fetch(wait=wait)
+            # Receipts (✓✓) only move the ticks – nothing to show, keep waiting.
+            news = [n for n in account.fetch(wait=wait) if not n.get("receipt")]
             if news or command == "abholen" or (limit and time.time() >= limit):
                 break
         for item in news:
@@ -104,11 +105,14 @@ def main(argv):
     elif command == "verlauf":
         cid = account.chat(args[0] if args else "")
         print(f"— {account.title(cid)} —")
+        marks = {"wartet": "◷", "fehler": "! nicht gesendet", "gesendet": "✓", "zugestellt": "✓✓", "gelesen": "✓✓ gelesen"}
         for m in account.chats[cid]["messages"]:
             if m.get("system"):
                 print(f"{when(m['at'])} — {m['text']}")
+            elif m["from"] == account.username:
+                print(f"{when(m['at'])} ich: {account.describe(m) or m['text']}  {marks[account.tick(cid, m)[0]]}")
             else:
-                print(f"{when(m['at'])} {'ich' if m['from'] == account.username else m['from']}: {m['text']}")
+                print(f"{when(m['at'])} {m['from']}: {account.describe(m) or m['text']}")
     elif command == "mitglieder":
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":

@@ -23,6 +23,11 @@ encrypted bytes under a random id. The MLS message carries id, key, SHA-256, nam
      "dauer"?, "vorschau"? (small JPEG, also without EXIF)}
 Photos leave without EXIF and at most 2048 px, like Messages sends them.
 
+Delivery state (card db70d358, Olaf's scheme with Jaques): every message carries a „mid“. Devices that received it
+answer end-to-end {"t": "quittung", "art": "zugestellt" | "gelesen", "mids": […], "at"} – the server learns nothing.
+„gelesen“ only when read receipts are on; they are off by default and mutual (whoever has them off sends none and sees
+none, like the iPhone). Under each own bubble: ◷ wird gesendet · ✓ gesendet · ✓✓ zugestellt · ✓✓ blau gelesen.
+
 Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
 <JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
@@ -31,6 +36,7 @@ import base64
 import hashlib
 import io
 import re
+import secrets
 import json
 import os
 import threading
@@ -160,6 +166,7 @@ class Account:
         self.chats = self._unseal("chats.bin", CHATS_MAGIC, {})
         self.profiles = self._unseal("profile.bin", PROFILE_MAGIC, {"me": None, "people": {}})
         self._owe_picture = set()   # chats that learn my picture once their roster is known
+        self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
         self.server = Server(self.info["server"], self.info["token"])
 
     # ------------------------------------------------------------------------------------------ setup
@@ -317,13 +324,86 @@ class Account:
         if self.chats[cid].get("removed"):
             raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
         at = int(time.time())
+        message = {"from": self.username, "text": text, "at": at, "mid": secrets.token_hex(8), "status": "wartet"}
         with self.lock:
-            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "text", "text": text, "at": at}))
-            self.chats[cid]["messages"].append({"from": self.username, "text": text, "at": at})
+            self.chats[cid]["messages"].append(message)
+            self.save()
+        return self._deliver(cid, message, {"t": "text", "text": text, "at": at, "mid": message["mid"]})
+
+    def _deliver(self, cid, message, payload):
+        """Encrypts and posts one of my messages; its status follows: wartet → gesendet, or fehler (a red line, retry)."""
+        try:
+            with self.lock:
+                packet = self.device.encrypt(bytes.fromhex(cid), self._payload(payload))
+                self.save()
+                targets = self.targets(cid)
+            answer = self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+        except (LiChatError, ValueError):
+            with self.lock:
+                message["status"] = "fehler"
+                self.save()
+            raise
+        with self.lock:
+            message["status"] = "gesendet"
+            message["gesendet"] = int(time.time())
+            self.save()
+        return answer
+
+    def retry(self, cid, mid):
+        """„Nicht gesendet“ tapped: the same message (same mid) once more."""
+        message = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
+        payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]} if message.get("anhang") \
+            else {"t": "text", "text": message["text"], "at": message["at"], "mid": mid}
+        message["status"] = "wartet"
+        return self._deliver(cid, message, payload)
+
+    # ------------------------------------------------------------------------------------------ delivery state (db70d358)
+
+    @property
+    def read_receipts(self):
+        return bool(self.profiles.get("lesebestaetigungen", False))
+
+    def set_read_receipts(self, on):
+        with self.lock:
+            self.profiles["lesebestaetigungen"] = bool(on)
+            self.save()
+
+    def _receipt(self, cid, kind, mids):
+        if not mids or self.chats[cid].get("removed"):
+            return None
+        with self.lock:
+            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "quittung", "art": kind, "mids": mids, "at": int(time.time())}))
             self.save()
             targets = self.targets(cid)
-        answer = self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
-        return answer
+        return targets, packet
+
+    def mark_read(self, cid):
+        """The chat is on screen: with read receipts on, the others learn which of their messages were read."""
+        if not self.read_receipts:
+            return
+        with self.lock:
+            mids = [m["mid"] for m in self.chats[cid]["messages"]
+                    if m.get("mid") and m["from"] not in ("", self.username) and not m.get("gelesen_gemeldet")]
+            for m in self.chats[cid]["messages"]:
+                if m.get("mid") in mids:
+                    m["gelesen_gemeldet"] = True
+        sent = self._receipt(cid, "gelesen", mids)
+        if sent:
+            self.server.call("POST", "/v1/messages", {"to": sent[0], "blob": b64(MLS + bytes(sent[1]))})
+
+    def tick(self, cid, message):
+        """(state, time) of one of my messages: wartet | fehler | gesendet | zugestellt | gelesen. In a group „zugestellt“ /
+        „gelesen“ once everyone has it; „gelesen“ only while my own read receipts are on (mutual)."""
+        state = message.get("status", "gesendet")
+        if state in ("wartet", "fehler"):
+            return state, message["at"]
+        others = [u for u in self.chats[cid]["roster"] if u != self.username]
+        delivered, read = message.get("zugestellt", {}), message.get("gelesen", {})
+        if others and self.read_receipts and all(u in read for u in others):
+            return "gelesen", max(read[u] for u in others)
+        if others and all(u in delivered or u in read for u in others):
+            return "zugestellt", max((delivered.get(u) or read.get(u)) for u in others)
+        return "gesendet", message.get("gesendet", message["at"])
 
     def remove(self, cid, usernames):
         """Takes these people out of the conversation (test plan S2). The commit reaches everyone who was in it – the
@@ -408,12 +488,11 @@ class Account:
             info["vorschau"] = b64(preview)
         self._keep_sealed(attachment, sealed)
         at = int(time.time())
+        message = {"from": self.username, "text": "", "at": at, "anhang": info, "mid": secrets.token_hex(8), "status": "wartet"}
         with self.lock:
-            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "anhang", "at": at, **info}))
-            self.chats[cid]["messages"].append({"from": self.username, "text": "", "at": at, "anhang": info})
+            self.chats[cid]["messages"].append(message)
             self.save()
-            targets = self.targets(cid)
-        return self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+        return self._deliver(cid, message, {"t": "anhang", "at": at, "mid": message["mid"], **info})
 
     def _keep_sealed(self, attachment, sealed):
         folder = self.folder / "anhaenge"
@@ -489,6 +568,13 @@ class Account:
                 packages = self.device.key_packages(joined)
                 self.save()
             self.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
+        if self._owe_delivered:
+            # „zugestellt“ for what just arrived (always on – only „gelesen“ can be switched off).
+            owed, self._owe_delivered = self._owe_delivered, {}
+            for cid, mids in owed.items():
+                sent = self._receipt(cid, "zugestellt", mids)
+                if sent:
+                    self.server.call("POST", "/v1/messages", {"to": sent[0], "blob": b64(MLS + bytes(sent[1]))})
         if self._owe_picture:
             # Joined a conversation: the others get my picture once I know who they are (the roster).
             with self.lock:
@@ -545,6 +631,15 @@ class Account:
             else:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
+        if data.get("t") == "quittung":
+            kind = data.get("art")
+            mids = {str(m) for m in (data.get("mids") or []) if isinstance(m, str)}
+            if kind in ("zugestellt", "gelesen") and sender != self.username:
+                at = int(data.get("at") or time.time())
+                for m in chat["messages"]:
+                    if m.get("from") == self.username and m.get("mid") in mids:
+                        m.setdefault(kind, {})[sender] = at
+            return [{"chat": cid, "receipt": kind}]
         if data.get("t") == "anhang":
             info = {k: data.get(k) for k in ("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau") if data.get(k) is not None}
             try:
@@ -557,13 +652,21 @@ class Account:
                 return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
             info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
             message = {"from": sender, "text": "", "at": int(data.get("at") or time.time()), "anhang": info}
+            self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             return [{"chat": cid, "from": sender, "text": self.describe(message), "at": message["at"], "anhang": info}]
         if data.get("t") == "text":
             message = {"from": sender, "text": str(data.get("text", "")), "at": int(data.get("at") or time.time())}
+            self._remember_mid(cid, message, data)
             chat["messages"].append(message)
             return [{"chat": cid, **message}]
         return []
+
+    def _remember_mid(self, cid, message, data):
+        mid = data.get("mid")
+        if isinstance(mid, str) and re.fullmatch(r"[0-9a-f]{16}", mid):
+            message["mid"] = mid
+            self._owe_delivered.setdefault(cid, []).append(mid)
 
     def title(self, cid):
         chat = self.chats[cid]
