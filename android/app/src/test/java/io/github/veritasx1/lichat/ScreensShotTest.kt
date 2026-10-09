@@ -288,6 +288,22 @@ httpd.serve_forever()
         io.github.veritasx1.lichat.ui.SecretShown.ids.clear()
     }
 
+    /** Michelle (Gerätetest c5efaa9): a secret picture stood sharp in its bubble after about a minute, untapped. */
+    @Test
+    fun secretStaysPixelatedWhenThePhotoLoads() {
+        val photo = testJpeg(0xFF3366CC.toInt(), 800, 600)
+        bernd.sendAttachment(cid, photo, "geheim.jpg", "image/jpeg", "bild", preview = testJpeg(0xFF3366CC.toInt()), secret = true)
+        anna.fetch()
+        var loads = 0
+        compose.mainClock.autoAdvance = false
+        shot("2i-geheim-bleibt") { ChatScreen(anna, cid, 1, null, {}, {}, { _, _ -> }, AttachmentActions(load = { if (it.optBoolean("geheim")) loads++; photo })) }
+        compose.mainClock.advanceTimeBy(70_000)
+        compose.waitForIdle()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Geheimbild, tippen zum Aufdecken")).assertExists()
+        org.junit.Assert.assertEquals("das scharfe Foto wird erst nach dem Antippen geladen", 0, loads)
+        compose.mainClock.autoAdvance = true
+    }
+
     @Test
     fun photoSendSheet() {
         var chosen: Pair<Boolean, Boolean>? = null

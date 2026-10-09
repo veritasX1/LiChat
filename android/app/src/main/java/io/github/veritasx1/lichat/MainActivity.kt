@@ -259,6 +259,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     // A one-time picture open now: chat, mid, bytes (only in memory) and whether it is also secret.
     var oncePhoto by remember { mutableStateOf<Triple<String, String, ByteArray>?>(null) }
     var onceSecret by remember { mutableStateOf(false) }
+    var onceOpening by remember { mutableStateOf<String?>(null) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendFile(it, true) }
     fun startRecording() {
         if (media.startRecording()) {
@@ -280,11 +281,13 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         load = { info -> account?.openAttachment(info) ?: throw LiChatException("kein Konto") },
         openOnce = { mid ->
             val acc = account; val cid = chatId()
-            if (acc != null && cid != null) work({ acc.openOnce(cid, mid) }) { bytes, error ->
+            // One opening at a time: a double tap must not spend the picture on a second, failing call (Michelle c5efaa9).
+            if (acc != null && cid != null && onceOpening == null) { onceOpening = mid; work({ acc.openOnce(cid, mid) }) { bytes, error ->
+                onceOpening = null
                 problem = error
                 if (bytes != null) { onceSecret = acc.findMessage(cid, mid)?.optJSONObject("anhang")?.optBoolean("geheim") == true; oncePhoto = Triple(cid, mid, bytes) }
                 Hub.changed()
-            }
+            } }
         },
         plus = { sheet = true },
         micStart = {

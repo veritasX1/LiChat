@@ -1024,7 +1024,7 @@ class Window(Adw.ApplicationWindow):
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
                 row = Gtk.Box(spacing=6, halign=Gtk.Align.START)
-                face = avatar(m["from"], 24, self.account.picture(m["from"]))
+                face = avatar(self.account.display(m["from"]), 24, self.account.picture(m["from"]))
                 face.set_valign(Gtk.Align.END)
                 row.append(face)
                 row.append(piece)
@@ -1230,10 +1230,11 @@ class Window(Adw.ApplicationWindow):
             box.append(picture)
         else:
             box.append(Gtk.Label(label=self.account.title(cid), css_classes=["lichat-title"]))
-        for name in members:
+        # Members only in a group – a single chat shows the person on top (Michelle zu 8534fe11)
+        for name in members if group else []:
             row = Gtk.Box(spacing=8)
-            row.append(avatar(name, 24, self.account.picture(name)))
-            row.append(Gtk.Label(label=self.account.display(name) + (" (ich)" if name == self.account.username else ""),
+            row.append(avatar(self.account.display(name), 24, self.account.picture(name)))
+            row.append(Gtk.Label(label="Ich" if name == self.account.username else self.account.display(name),
                                  tooltip_text=name, xalign=0, hexpand=True))
             # In a group, someone can be taken out (test plan S2); a conversation of two is simply left alone.
             if len(members) > 2 and name != self.account.username:
@@ -1242,10 +1243,11 @@ class Window(Adw.ApplicationWindow):
                 row.append(out)
             box.append(row)
         if not self.account.chats[cid].get("removed"):
-            adding = Gtk.Entry(placeholder_text="Person hinzufügen (Benutzername)", css_classes=["lichat-field"], margin_top=4)
-            adding.connect("activate", lambda e: (button.popdown(), self.group_job(
-                lambda a: a.add(cid, [n.strip().lower() for n in e.get_text().replace(";", ",").split(",") if n.strip()]))))
-            box.append(adding)
+            if group:
+                adding = Gtk.Entry(placeholder_text="Person hinzufügen (Benutzername)", css_classes=["lichat-field"], margin_top=4)
+                adding.connect("activate", lambda e: (button.popdown(), self.group_job(
+                    lambda a: a.add(cid, [n.strip().lower() for n in e.get_text().replace(";", ",").split(",") if n.strip()]))))
+                box.append(adding)
             # In a group a muted chat still notifies for @me / @alle (iOS, card d54175ed).
             mute = Gtk.CheckButton(label="Nur bei Erwähnung benachrichtigen" if group else "Mitteilungen stummschalten",
                                    active=bool(self.account.chats[cid].get("stumm")))
@@ -1350,7 +1352,7 @@ class Window(Adw.ApplicationWindow):
         if self.current and any(n.get("chat") == self.current for n in news):
             self.show_conversation()   # new bubbles, or ticks that moved
         for item in news:
-            if item.get("text") is None or item.get("system") or item["from"] == self.account.username:
+            if item.get("text") is None or item.get("system") or item.get("from") in (None, self.account.username):
                 continue
             if self.is_active() and self.get_visible() and item["chat"] == self.current:
                 continue
@@ -1566,15 +1568,17 @@ class Window(Adw.ApplicationWindow):
 
     @staticmethod
     def pixelated(data):
-        """A secret picture (f9e3f055): made coarse here, from the picture itself – 14 blocks on the short side."""
+        """A secret picture (f9e3f055): made coarse here, from the picture itself – 6 blocks on the short side, then frosted
+        grey (Michelle c5efaa9: with 14 blocks stripes and colours still showed)."""
         import io
         from PIL import Image
         with Image.open(io.BytesIO(data)) as image:
             image = image.convert("RGB")
-            block = max(1, min(image.size) // 14)
+            block = max(1, min(image.size) // 6)
             small = image.resize((max(1, image.width // block), max(1, image.height // block)), Image.BILINEAR)
+            coarse = Image.blend(small.resize(image.size, Image.NEAREST), Image.new("RGB", image.size, (142, 142, 147)), 0.55)
             out = io.BytesIO()
-            small.resize(image.size, Image.NEAREST).save(out, "PNG")
+            coarse.save(out, "PNG")
         return Gdk.Texture.new_from_bytes(GLib.Bytes.new(out.getvalue()))
 
     def attachment_bubble(self, info, mine, message=None):

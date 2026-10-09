@@ -454,7 +454,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
-                    if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
+                    if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(account.display(m.optString("from")), account.picture(m.optString("from")), 28.dp) }
                     // While its menu is open the bubble is shown lifted – the original is hidden (Michelle 20eb5cc5).
                     Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
@@ -768,10 +768,10 @@ object SecretShown {
     val ids = androidx.compose.runtime.mutableStateListOf<String>()
 }
 
-/** Pixelated here, from the picture itself: 14 blocks on the short side (f9e3f055). */
+/** Pixelated here, from the picture itself: 6 blocks on the short side (f9e3f055; Michelle: 14 still showed stripes). */
 fun pixelated(bitmap: androidx.compose.ui.graphics.ImageBitmap): androidx.compose.ui.graphics.ImageBitmap {
     val source = bitmap.asAndroidBitmap()
-    val block = (minOf(source.width, source.height) / 14).coerceAtLeast(1)
+    val block = (minOf(source.width, source.height) / 6).coerceAtLeast(1)
     val small = android.graphics.Bitmap.createScaledBitmap(source, (source.width / block).coerceAtLeast(1), (source.height / block).coerceAtLeast(1), true)
     return android.graphics.Bitmap.createScaledBitmap(small, source.width, source.height, false).asImageBitmap()
 }
@@ -828,13 +828,15 @@ fun OnceViewer(bytes: ByteArray, secret: Boolean, onScreenshot: () -> Unit, onCl
         }
     }
     androidx.activity.compose.BackHandler(onBack = onClose)
-    Box(Modifier.fillMaxSize().background(Color.Black).clickable { if (hidden) hidden = false else onClose() }
-        .semantics { contentDescription = "Einmal-Bild, tippen zum Schließen" }, contentAlignment = Alignment.Center) {
+    // A tap only uncovers a secret one – closing is „Fertig“ or back (Michelle c5efaa9: the second tap of the opening
+    // landed here and closed it before anything was seen).
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable(enabled = hidden) { hidden = false }
+        .semantics { contentDescription = "Einmal-Bild" }, contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(if (hidden) pixelated(bitmap) else bitmap, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         Column(Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.statusBars).padding(top = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
             BasicText("Einmal-Ansicht", style = style(15f, 600, Color.White))
-            BasicText(if (hidden) "Tippen zum Aufdecken" else "Nach dem Schließen ist das Foto weg", style = style(13f, 400, Color.White.copy(alpha = 0.75f)))
+            BasicText(if (hidden) "Tippen zum Aufdecken" else "Nach „Fertig“ ist das Foto weg", style = style(13f, 400, Color.White.copy(alpha = 0.75f)))
         }
         Box(Modifier.align(Alignment.TopEnd).windowInsetsPadding(WindowInsets.statusBars).padding(8.dp)) { TextButton("Fertig", Color.White, 600, onClick = onClose) }
     }
@@ -991,19 +993,21 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
         info.optString("vorschau").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
             ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
     }
-    // The photo itself at display size replaces the preview (photos up to 15 MB, like Messages loads them).
-    val full by androidx.compose.runtime.produceState(FullImages.cache.get(id), id) {
-        if (value == null && kind == "bild" && load != null && info.optLong("groesse") <= 15L * 1024 * 1024) {
+    val hidden = info.optBoolean("geheim") && id !in SecretShown.ids
+    // The photo itself at display size replaces the preview (photos up to 15 MB, like Messages loads them) – a secret one
+    // only once it was tapped open (Michelle c5efaa9: it stood sharp in the bubble after a minute).
+    val full by androidx.compose.runtime.produceState(if (hidden) null else FullImages.cache.get(id), id, hidden) {
+        if (!hidden && value == null && kind == "bild" && load != null && info.optLong("groesse") <= 15L * 1024 * 1024) {
             value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching { load(info) }.getOrNull()?.let { FullImages.decode(it) }
             }?.also { FullImages.cache.put(id, it) }
         }
     }
-    val hidden = info.optBoolean("geheim") && id !in SecretShown.ids
-    val preview = if (hidden) remember(id, small) { small?.let { pixelated(it) } } else full ?: small
+    val coarse = remember(id, small) { if (info.optBoolean("geheim")) small?.let { pixelated(it) } else null }
+    val preview = if (hidden) coarse else full ?: small
     // An animated GIF runs in the bubble like in Messages (Michelle 999f37be) – still with „Animationen entfernen“.
     val gifBytes by androidx.compose.runtime.produceState<ByteArray?>(null, id) {
-        if (info.optString("mime") == "image/gif" && load != null && android.os.Build.VERSION.SDK_INT >= 28)
+        if (!info.optBoolean("geheim") && info.optString("mime") == "image/gif" && load != null && android.os.Build.VERSION.SDK_INT >= 28)
             value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { load(info) }.getOrNull() }
     }
     val label = when (kind) { "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"; else -> "Datei ${info.optString("name")}" }
@@ -1015,6 +1019,7 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
             val bytes = gifBytes
             if (hidden) {
                 Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                Box(Modifier.fillMaxSize().background(Color(0x8C8E8E93)))      // frosted: no colours or shapes to make out
                 BasicText("Geheimbild", style = style(15f, 600, Color.White), modifier = Modifier.clip(RoundedCornerShape(12.dp))
                     .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
             }
@@ -1179,11 +1184,12 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
                 modifier = Modifier.fillMaxWidth().padding(16.dp).semantics { contentDescription = "Gruppenname" },
                 decorationBox = { inner -> Box { if (name.isEmpty()) BasicText("Gruppenname", style = style(17f, 400, colors.tertiary)); inner() } })
         }
-        Section("${members.size} Personen") {
+        // Members only in a group – a single chat shows the person on top, like Messages (Michelle zu 8534fe11)
+        if (isGroup) Section("${members.size} Personen") {
             members.forEachIndexed { i, member ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(member, account.picture(member), 32.dp)
-                    BasicText(account.display(member) + if (member == account.username) " (ich)" else "", style = style(17f, 400, colors.label),
+                    Avatar(account.display(member), account.picture(member), 32.dp)     // the same initials as everywhere else
+                    BasicText(if (member == account.username) "Ich" else account.display(member), style = style(17f, 400, colors.label),
                         modifier = Modifier.weight(1f).padding(start = 12.dp))
                     // In a group someone can be taken out (test plan S2).
                     if (members.size > 2 && member != account.username && active) TextButton("Entfernen", colors.red) { onRemove(member) }
@@ -1267,6 +1273,7 @@ fun MediaSections(account: Account, cid: String, version: Int, group: GroupActio
                         .semantics { contentDescription = if (info.optBoolean("geheim")) "Geheimbild" else if (info.optString("art") == "video") "Video" else "Foto" },
                         contentAlignment = Alignment.Center) {
                         if (bitmap != null) Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        if (info.optBoolean("geheim")) Box(Modifier.fillMaxSize().background(Color(0x8C8E8E93)))
                         if (info.optString("art") == "video") GlyphIcon(Glyph.Play, Color.White, 20.dp)
                     }
                 }
