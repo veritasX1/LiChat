@@ -326,7 +326,7 @@ class Account:
         own_key = key is None
         key = os.urandom(32) if own_key else key
         answer = anonymous.call("POST", f"/v1/kopplung/{urllib.parse.quote(code)}/geraet",
-                                {"identity": b64(device.identity_key()), "name": name})
+                                {"identity": b64(device.identity_key())})
         info = {"server": anonymous.url, "username": username, "device": answer["device"], "token": answer["token"]}
         packages = device.key_packages(SUPPLY)
         reserve = device.last_resort_key_package()
@@ -336,6 +336,8 @@ class Account:
         write_private(folder / "account.json", json.dumps(info, indent=1).encode())
         account = cls(folder, None if own_key else key)
         account.profiles["gekoppelt"] = int(time.time())
+        if name:
+            account.profiles["geraetename"] = str(name)[:40]     # only here – never on the server (Michelle)
         account.save()
         account.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
         account.server.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(reserve)})
@@ -355,9 +357,10 @@ class Account:
         raise LiChatError("Das neue Gerät hat sich nicht gemeldet – noch einmal versuchen")
 
     def my_devices(self):
-        """My devices as the server lists them: [{device, name, this}]."""
-        listed = self.server.call("GET", f"/v1/users/{urllib.parse.quote(self.username)}")["devices"]
-        return [{"device": d["device"], "name": d.get("name") or "", "this": d["device"] == self.device_id} for d in listed]
+        """My devices: [{device, since, this, name}] – the time each signed in; a name only for this one (it stays here)."""
+        listed = self.server.call("GET", "/v1/devices")["devices"]
+        return [{"device": d["device"], "since": d.get("created", 0), "this": d["device"] == self.device_id,
+                 "name": self.profiles.get("geraetename", "") if d["device"] == self.device_id else ""} for d in listed]
 
     def remove_my_device(self, device):
         """Signs out another of my devices and takes it out of every conversation – it reads nothing that follows."""

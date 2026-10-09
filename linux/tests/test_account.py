@@ -690,7 +690,8 @@ class Devices(Base):
         phone.fetch()
         laptop = self.link(phone)
         self.assertEqual(laptop.username, "anna")
-        self.assertEqual([(d["name"], d["this"]) for d in phone.my_devices()], [("", True), ("Ubuntu", False)])
+        self.assertEqual([(d["this"], d["name"]) for d in phone.my_devices()], [(True, ""), (False, "")])
+        self.assertEqual([(d["this"], d["name"]) for d in laptop.my_devices()], [(False, ""), (True, "Ubuntu")])
         laptop.fetch()
         self.assertIn(cid, laptop.chats)
         self.assertEqual([m["text"] for m in laptop.chats[cid]["messages"]], ["Ältere Nachrichten gibt es nur auf deinen anderen Geräten."])
@@ -879,7 +880,8 @@ class Cli(Base):
         code = first_line.split(":")[1].split()[0]
         self.assertIn("in allen Gesprächen", self.run_cli("anna", "geraet-hinzufuegen", code)[1])
         self.assertIn("Gekoppelt als anna", second.communicate(timeout=30)[0])
-        self.assertIn("Laptop", self.run_cli("anna", "geraete")[1])
+        self.assertEqual(self.run_cli("anna", "geraete")[1].count("seit "), 2)
+        self.assertIn("(Laptop)", self.run_cli("anna2", "geraete")[1])
         self.assertIn("neues Gespräch", self.run_cli("anna2", "abholen")[1])
         # reagieren / zuruecknehmen / bearbeiten / zurueckrufen – Michelles Tests ohne Handy
         self.assertIn("reagiert 👍🏽", self.run_cli("anna", "reagieren", chat, "Konsole", "👍🏽")[1])

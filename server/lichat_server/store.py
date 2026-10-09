@@ -75,9 +75,10 @@ class Store:
         # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
         if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
             self.db.execute("ALTER TABLE devices DROP COLUMN push")
-        # A name per device („Android“, „Ubuntu“) for the list of one's own devices (card da5cbfcb).
-        if "name" not in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
-            self.db.execute("ALTER TABLE devices ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        # Device names never on the server (Michelle 09.10.: „Anna Laptop“ was plain text there) – a database from the
+        # first hours of linking loses the column.
+        if "name" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
+            self.db.execute("ALTER TABLE devices DROP COLUMN name")
 
     @property
     def db(self):
@@ -125,12 +126,24 @@ class Store:
         with self.lock:
             return self._add_device(username, identity)
 
-    def _add_device(self, username, identity, name=""):
+    def _add_device(self, username, identity):
         device = secrets.token_hex(8)
         token = secrets.token_urlsafe(32)
-        self.db.execute("INSERT INTO devices (id, username, token, identity, created, name) VALUES (?, ?, ?, ?, ?, ?)",
-                        (device, username, token_hash(token), identity, self.clock(), str(name)[:40]))
+        self.db.execute("INSERT INTO devices (id, username, token, identity, created) VALUES (?, ?, ?, ?, ?)",
+                        (device, username, token_hash(token), identity, self.clock()))
         return device, token
+
+    def _forget_device(self, device):
+        """Everything of a signed-out device, at once (Michelle 09.10.: its mailbox must not stay): mailbox, key packages,
+        last resort, attachment entries – explicitly, not only by cascade – then the device."""
+        for table in ("messages", "key_packages", "last_resort", "attachments"):
+            self.db.execute(f"DELETE FROM {table} WHERE device = ?", (device,))
+        self.db.execute("DELETE FROM devices WHERE id = ?", (device,))
+
+    def own_devices(self, username):
+        """My devices with the day they signed in – only for myself (no names: they would be plain text here)."""
+        rows = self.db.execute("SELECT id, created FROM devices WHERE username = ? ORDER BY created", (username,)).fetchall()
+        return [{"device": d, "created": int(c)} for d, c in rows]
 
     # Linking a device (card da5cbfcb) ---------------------------------------------------------------
 
@@ -159,14 +172,14 @@ class Store:
             return None
         return {k: v for k, v in (("username", row[0]), ("device", row[1])) if v}
 
-    def link_finish(self, code, identity, name=""):
+    def link_finish(self, code, identity):
         """The new device signs in with its own key – once. (device, token, username) or None."""
         key = invite_key(code)
         with self.lock:
             row = self.db.execute("SELECT username, device, expires FROM links WHERE code = ?", (key,)).fetchone()
             if row is None or row[2] < self.clock() or not row[0] or row[1]:
                 return None
-            device, token = self._add_device(row[0], identity, name)
+            device, token = self._add_device(row[0], identity)
             self.db.execute("UPDATE links SET device = ? WHERE code = ?", (device, key))
             return device, token, row[0]
 
@@ -175,7 +188,7 @@ class Store:
         with self.lock:
             if not self.db.execute("SELECT 1 FROM devices WHERE id = ? AND username = ?", (device, username)).fetchone():
                 return False
-            self.db.execute("DELETE FROM devices WHERE id = ?", (device,))
+            self._forget_device(device)
             return True
 
     def device_for_token(self, token):
@@ -185,13 +198,13 @@ class Store:
 
     def remove_device(self, device):
         with self.lock:
-            self.db.execute("DELETE FROM devices WHERE id = ?", (device,))
+            self._forget_device(device)
 
     def devices(self, username):
         """Public directory entry: device ids and identity keys – what a sender needs to verify."""
-        rows = self.db.execute("SELECT id, identity, name FROM devices WHERE username = ? ORDER BY created",
+        rows = self.db.execute("SELECT id, identity FROM devices WHERE username = ? ORDER BY created",
                                (username,)).fetchall()
-        return [{"device": d, "identity": i, "name": n} for d, i, n in rows]
+        return [{"device": d, "identity": i} for d, i in rows]
 
     # MLS key packages ---------------------------------------------------------------------------
 

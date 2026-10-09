@@ -19,7 +19,8 @@ them once fetched. Endpoints (all JSON, blobs base64):
     POST   /v1/kopplung             a new device asks to join an account       -> {code}   (card da5cbfcb)
     GET    /v1/kopplung/<code>      {} waiting | {username} accepted | {username, device} signed in   (404: gone)
     POST   /v1/kopplung/annehmen    {code}  an existing device: that is my new device  (signed in; wrong codes limited)
-    POST   /v1/kopplung/<code>/geraet {identity, name}  the new device signs in, once -> {device, token, username}
+    POST   /v1/kopplung/<code>/geraet {identity}  the new device signs in, once -> {device, token, username}
+    GET    /v1/devices              my own devices with the time they signed in (no names on the server)
     DELETE /v1/devices/<id>         sign out another of my own devices (signed in)
     POST   /v1/pins                 a contact PIN for me (10 min, once)        -> {pin, gueltig}   (card 89aae55d)
     POST   /v1/pins/einloesen       {pin} -> {username}  (wrong PINs: 10 per 15 min and device)
@@ -136,6 +137,7 @@ class App:
             ("GET", r"/v1/users/(?P<name>[^/]+)", self.user, True),
             ("POST", r"/v1/devices", self.new_device, True),
             ("DELETE", r"/v1/devices/me", self.remove_me, True),
+            ("GET", r"/v1/devices", lambda env, body, me: {"devices": self.store.own_devices(me[1])}, True),
             ("DELETE", r"/v1/devices/(?P<device>[0-9a-f]{16})", self.remove_own_device, True),
             ("POST", r"/v1/kopplung", self.link_open, False),
             ("POST", r"/v1/kopplung/annehmen", self.link_accept, True),
@@ -290,7 +292,7 @@ class App:
         return state
 
     def link_finish(self, environ, body, me, code):
-        done = self.store.link_finish(code, self.check_identity(body.get("identity")), str(body.get("name", ""))[:40])
+        done = self.store.link_finish(code, self.check_identity(body.get("identity")))
         if done is None:
             raise HttpError(409, "Noch nicht angenommen oder schon benutzt")
         return {"device": done[0], "token": done[1], "username": done[2]}
