@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 
 /** LiChat's symbols – the same drawings as LiMail (Li-Gestaltung), drawn in the manner of SF Symbols (regular weight, round ends) – no Apple artwork. */
-enum class Glyph { Back, Chevron, Search, Compose, Filter, FilterOn, Inbox, Inboxes, Sent, Drafts, Trash, Archive, Junk, Folder, Flag, Star, Reply, ReplyAll, Forward, Move, Paperclip, More, Envelope, ArrowUp, Shield, Close, Check, Photo, Calendar, Clock, Handle, Person, Cart, Megaphone, Tag, Gear, BellOff, Lock, Seal, Share, Bell }
+enum class Glyph { Back, Chevron, Search, Compose, Filter, FilterOn, Inbox, Inboxes, Sent, Drafts, Trash, Archive, Junk, Folder, Flag, Star, Reply, ReplyAll, Forward, Move, Paperclip, More, Envelope, ArrowUp, Shield, Close, Check, Photo, Calendar, Clock, Handle, Person, Cart, Megaphone, Tag, Gear, BellOff, Lock, Seal, Share, Bell, Plus, Mic, Play, Pause, Stop, Document }
 
 @Composable
 fun GlyphIcon(glyph: Glyph, color: Color, size: Dp, modifier: Modifier = Modifier) {
@@ -208,6 +208,21 @@ private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
         Glyph.Share -> {  // Apple's share: an open box, an arrow out of it
             line(8.5f to 9.5f, 6f to 9.5f, 6f to 21f, 18f to 21f, 18f to 9.5f, 15.5f to 9.5f)
             line(12f to 14f, 12f to 2.5f); line(8f to 6.5f, 12f to 2.5f, 16f to 6.5f)
+        }
+        Glyph.Plus -> { line(12f to 5f, 12f to 19f); line(5f to 12f, 19f to 12f) }
+        Glyph.Mic -> {  // microphone: capsule, cup, stand
+            box(9f, 3f, 6f, 11f, 3f)
+            line(5.5f to 11f, 5.5f to 12f); line(18.5f to 11f, 18.5f to 12f)
+            drawArc(color, 0f, 180f, false, Offset(5.5f * s, 5.5f * s), Size(13f * s, 13f * s), style = stroke)
+            line(12f to 18.5f, 12f to 21f)
+        }
+        Glyph.Play -> drawPath(path(7.5f to 4.5f, 19f to 12f, 7.5f to 19.5f, close = true), color)
+        Glyph.Pause -> { drawRoundRect(color, Offset(6.5f * s, 5f * s), Size(4f * s, 14f * s), CornerRadius(1f * s))
+                         drawRoundRect(color, Offset(13.5f * s, 5f * s), Size(4f * s, 14f * s), CornerRadius(1f * s)) }
+        Glyph.Stop -> drawRoundRect(color, Offset(6f * s, 6f * s), Size(12f * s, 12f * s), CornerRadius(2.5f * s))
+        Glyph.Document -> {  // a page with a folded corner
+            line(14f to 3f, 6.5f to 3f, 5f to 4.5f, 5f to 19.5f, 6.5f to 21f, 17.5f to 21f, 19f to 19.5f, 19f to 8f, 14f to 3f)
+            line(14f to 3f, 14f to 8f, 19f to 8f)
         }
         Glyph.ArrowUp -> {  // the send arrow
             val bold = Stroke(2.6f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)

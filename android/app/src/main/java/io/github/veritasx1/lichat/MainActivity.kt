@@ -32,7 +32,10 @@ import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
 import io.github.veritasx1.lichat.core.LiChatException
 import io.github.veritasx1.lichat.core.Pictures
+import io.github.veritasx1.lichat.ui.AttachmentActions
+import io.github.veritasx1.lichat.ui.AttachmentSheet
 import io.github.veritasx1.lichat.ui.ChatList
+import io.github.veritasx1.lichat.ui.PhotoViewer
 import io.github.veritasx1.lichat.ui.ChatScreen
 import io.github.veritasx1.lichat.ui.Details
 import io.github.veritasx1.lichat.ui.Explain
@@ -68,6 +71,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Notifications.channels(this)
+        // Plain copies handed to other apps (a video, a PDF) live only until the next start.
+        java.io.File(cacheDir, "geoeffnet").deleteRecursively()
         opened.value = intent.getStringExtra("gespraech")
         runCatching { LiChatService.start(this) }
         setContent { LiChatApp(opened) }
@@ -108,6 +113,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var preview by remember { mutableStateOf(Settings.preview(context)) }
     var unrestricted by remember { mutableStateOf(runCatching { Settings.unrestricted(context) }.getOrDefault(true)) }
     var explaining by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf(false) }
+    var photo by remember { mutableStateOf<ByteArray?>(null) }
+    var recording by remember { mutableStateOf<Int?>(null) }
+    var playing by remember { mutableStateOf<String?>(null) }
+    val media = remember { Media(context) }
     var notifying by remember { mutableStateOf(runCatching { Settings.notifying(context) }.getOrDefault(true)) }
     // Back from Android's settings: look again (the person may have switched notifications on or off there).
     val lifecycle = (context as? ComponentActivity)?.lifecycle
@@ -143,6 +153,59 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         }) { _, error -> problem = error; Hub.changed() }
     }
 
+    fun chatId() = (page as? Page.Chat)?.cid
+    fun sendFile(uri: Uri?, asFile: Boolean) {
+        val acc = account ?: return
+        val cid = chatId() ?: return
+        if (uri == null) return
+        work({ media.send(acc, cid, uri, asFile) }) { _, error -> problem = error; Hub.changed() }
+    }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { sendFile(it, false) }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendFile(it, true) }
+    fun startRecording() {
+        if (media.startRecording()) {
+            recording = 0
+            main.postDelayed(object : Runnable {
+                override fun run() { if (recording != null) { recording = media.recordedSeconds(); main.postDelayed(this, 250) } }
+            }, 250)
+        } else problem = "Aufnahme nicht möglich"
+    }
+    val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startRecording() else problem = "LiChat darf das Mikrofon nicht benutzen – in den Android-Einstellungen erlauben."
+    }
+    val actions = AttachmentActions(
+        plus = { sheet = true },
+        micStart = {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording() else microphone.launch(Manifest.permission.RECORD_AUDIO)
+        },
+        micStop = { send ->
+            recording = null
+            val voice = media.stopRecording(send)
+            val acc = account
+            val cid = chatId()
+            if (voice != null && acc != null && cid != null) work({
+                acc.sendAttachment(cid, voice.first, "Sprachnachricht.m4a", "audio/mp4", "sprache", voice.second)
+            }) { _, error -> problem = error; Hub.changed() }
+        },
+        open = { info ->
+            val acc = account
+            if (acc != null) {
+                if (info.optString("art") == "sprache" && playing == info.optString("id")) { media.stopPlaying(); playing = null }
+                else work({ acc.openAttachment(info) }) { bytes, error ->
+                    problem = error
+                    if (bytes != null) when (info.optString("art")) {
+                        "bild" -> photo = bytes
+                        "sprache" -> { playing = info.optString("id"); media.play(bytes) { playing = null } }
+                        else -> media.view(bytes, info)?.let { problem = it }
+                    }
+                }
+            }
+        },
+        recording = recording,
+        playing = playing,
+    )
+
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
         if (acc == null) {
@@ -170,9 +233,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             is Page.Chat -> {
                 BackHandler { page = Page.List }
                 LaunchedEffect(version, p.cid) { seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() } }
-                ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) }) { text ->
-                    work({ acc.send(p.cid, text) }) { _, error -> problem = error; Hub.changed() }
-                }
+                ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) },
+                    onSend = { text -> work({ acc.send(p.cid, text) }) { _, error -> problem = error; Hub.changed() } }, actions = actions)
             }
             Page.New -> {
                 BackHandler { page = Page.List }
@@ -198,6 +260,10 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onNotifications = { openNotificationSettings() })
             }
         }
+        if (sheet) AttachmentSheet(
+            onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+            onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
+        photo?.let { bytes -> BackHandler { photo = null }; PhotoViewer(bytes) { photo = null } }
         if (explaining) Explain(onContinue = {
             explaining = false
             Settings.setExplained(context)

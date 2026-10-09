@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Asks the person once (with an explanation) to exempt LiChat from Doze – else messages come late (Michelle Z6). -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Voice messages (card 9780f3a0) – asked only when the microphone is tapped. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="false"
@@ -35,6 +37,13 @@
             android:name=".LiChatService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.dateien"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/geteilt" />
+        </provider>
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

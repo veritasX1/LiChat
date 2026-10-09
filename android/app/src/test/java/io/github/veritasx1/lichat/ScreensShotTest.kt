@@ -68,6 +68,13 @@ httpd.serve_forever()
         anna.send(cid, "Ja, gern! Ich bringe Kartoffelsalat mit.")
         bernd.fetch()
         bernd.send(cid, "Super, bis dann 🙂")
+        bernd.sendAttachment(cid, ByteArray(48_000), "Einladung.pdf", "application/pdf", "datei")
+        bernd.sendAttachment(cid, byteArrayOf(0), "Sprachnachricht.m4a", "audio/mp4", "sprache", durationS = 7.0)
+        val picture = android.graphics.Bitmap.createBitmap(1200, 900, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF4FA36B.toInt()) }
+        val raw = java.io.ByteArrayOutputStream().also { picture.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
+        bernd.sendAttachment(cid, jpeg, "garten.jpg", "image/jpeg", "bild", preview = preview)
+        anna.fetch()
         group = anna.start(listOf("bernd", "erna"), "Grillabend")
         anna.send(group, "Wer bringt Getränke mit?")
         erna.fetch(); erna.send(group, "Ich nehme Apfelschorle mit")
@@ -109,6 +116,23 @@ httpd.serve_forever()
     fun chat() {
         shot("2-gespraech") { ChatScreen(anna, cid, 0, null, {}, {}, {}) }
         compose.onNodeWithText("Super, bis dann 🙂").assertExists()
+    }
+
+    /** Card 9780f3a0 / b7a191c4: attachments in the bubbles, ⊕ and 🎤 in the empty input line, recording, the ⊕ sheet. */
+    @Test
+    fun attachments() = shot("2b-anhaenge") {
+        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
+    }
+
+    @Test
+    fun recordingVoice() = shot("2c-aufnahme") {
+        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}, recording = 4))
+    }
+
+    @Test
+    fun attachmentSheet() = shot("2d-anhang-blatt") {
+        ChatScreen(anna, cid, 0, null, {}, {}, {}, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
+        io.github.veritasx1.lichat.ui.AttachmentSheet({}, {}, {})
     }
 
     @Test

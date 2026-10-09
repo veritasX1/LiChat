@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the opened copies (cache/geoeffnet), nothing else of LiChat's files. -->
+<paths>
+    <cache-path name="geoeffnet" path="geoeffnet/" />
+</paths>
