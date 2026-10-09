@@ -266,6 +266,19 @@ class Account(val folder: File, private val key: ByteArray) {
         // Like Signal: the NEW device shows a code, an existing device of the person accepts it, then the new device
         // makes its keys for that name and signs in once; the existing device puts it into every conversation.
 
+        /** What the new device's QR code says (Olaf: „per QR-Code koppeln“): lichat://koppeln?server=…&code=… */
+        fun linkUri(server: String, code: String) = "lichat://koppeln?server=${URLEncoder.encode(server, "UTF-8")}&code=$code"
+
+        /** (server, code) from a scanned/pasted lichat://koppeln link, or null. */
+        fun parseLinkUri(text: String): Pair<String, String>? {
+            val uri = runCatching { URI(text.trim()) }.getOrNull() ?: return null
+            if (uri.scheme != "lichat" || uri.host != "koppeln") return null
+            val query = (uri.rawQuery ?: "").split("&").mapNotNull { part -> part.split("=", limit = 2).takeIf { it.size == 2 } }
+                .associate { (k, v) -> k to java.net.URLDecoder.decode(v, "UTF-8") }
+            val code = query["code"]?.uppercase() ?: return null
+            return (query["server"] ?: "") to code
+        }
+
         /** New device, step 1: (server url, code to show). */
         fun linkOpen(server: String): Pair<String, String> {
             val anonymous = Server(server)
@@ -306,7 +319,12 @@ class Account(val folder: File, private val key: ByteArray) {
     data class OwnDevice(val id: String, val since: Long, val isThis: Boolean, val name: String)
 
     /** Existing device: that code is my new device – waits until it signed in, then puts it into every conversation. */
-    fun acceptLink(code: String, waitS: Long = 600, pollMs: Long = 2000): String {
+    fun acceptLink(typed: String, waitS: Long = 600, pollMs: Long = 2000): String {
+        // typed, or the scanned lichat://koppeln link
+        val code = parseLinkUri(typed)?.let { (other, code) ->
+            if (other.isNotEmpty() && other.trimEnd('/') != server.url.trimEnd('/')) throw LiChatException("Das neue Gerät hat einen anderen Server gewählt")
+            code
+        } ?: typed.trim()
         server.call("POST", "/v1/kopplung/annehmen", JSONObject().put("code", code))
         val end = System.currentTimeMillis() + waitS * 1000
         while (System.currentTimeMillis() < end) {

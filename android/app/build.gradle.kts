@@ -89,6 +89,13 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // QR codes to link a device (Olaf 09.10.): ZXing draws and reads them, CameraX for the camera – all on the phone (as LiCal).
+    implementation("com.google.zxing:core:3.5.3")
+    val cameraxVersion = "1.4.0"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
     // The Rust core through uniffi (JNA calls into liblichat_core.so).
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     testImplementation("net.java.dev.jna:jna:5.17.0")

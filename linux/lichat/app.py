@@ -289,7 +289,7 @@ class Window(Adw.ApplicationWindow):
         server = Gtk.Entry(text=self.f_server.get_text() if hasattr(self, "f_server") else "https://lichat.lisoftware.de",
                            css_classes=["lichat-field"])
         box.append(server)
-        self.link_code = Gtk.Label(css_classes=["lichat-code"], selectable=True, visible=False)
+        self.link_code = Gtk.Label(css_classes=["lichat-code"], visible=False)
         box.append(self.link_code)
         self.link_note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, css_classes=["lichat-subtitle"])
         box.append(self.link_note)
@@ -311,8 +311,28 @@ class Window(Adw.ApplicationWindow):
             show.set_visible(False)
             self.link_code.set_label(code)
             self.link_code.set_visible(True)
-            self.link_note.set_label("Auf deinem anderen Gerät: Einstellungen › Geräte › „Gerät hinzufügen …“ und diesen Code eingeben. "
-                                     "Er gilt 10 Minuten.\n\nWarte auf dein anderes Gerät …")
+            # The QR code for the phone's camera (Olaf: „per QR-Code koppeln“) – the code below it to type instead.
+            from .qrcodegen import QrCode
+            qr = QrCode.encode_text(Account.link_uri(url, code), QrCode.Ecc.MEDIUM)
+            self.link_qr = qr
+
+            def draw(_area, cr, width, height):
+                size = qr.get_size() + 8
+                scale = min(width, height) / size
+                cr.set_source_rgb(1, 1, 1)
+                cr.paint()
+                cr.set_source_rgb(0, 0, 0)
+                for y in range(qr.get_size()):
+                    for x in range(qr.get_size()):
+                        if qr.get_module(x, y):
+                            cr.rectangle((x + 4) * scale, (y + 4) * scale, scale + 0.5, scale + 0.5)
+                cr.fill()
+            area = Gtk.DrawingArea(content_width=220, content_height=220, halign=Gtk.Align.CENTER, css_classes=["lichat-qr"])
+            area.set_draw_func(draw)
+            area.update_property([Gtk.AccessibleProperty.LABEL], [f"QR-Code zum Koppeln, Code {code}"])
+            box.insert_child_after(area, self.link_code.get_prev_sibling())
+            self.link_note.set_label("Auf deinem Handy: Einstellungen › Geräte › „Gerät hinzufügen …“ und den QR-Code scannen "
+                                     "oder den Code eingeben. Er gilt 10 Minuten.\n\nWarte auf dein anderes Gerät …")
 
             def wait():
                 end = time.time() + 600

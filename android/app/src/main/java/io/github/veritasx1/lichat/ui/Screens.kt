@@ -905,7 +905,7 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                    receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> },
                    typing: Boolean = false, onTyping: (Boolean) -> Unit = {},
                    devices: List<Account.OwnDevice>? = null, linking: String? = null, onAddDevice: (String) -> Unit = {},
-                   onRemoveDevice: (String) -> Unit = {}) {
+                   onRemoveDevice: (String) -> Unit = {}, onScanDevice: () -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -980,6 +980,15 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                         decorationBox = { inner -> if (code.isEmpty()) BasicText("Code vom neuen Gerät", style = style(17f, 400, colors.tertiary)); inner() })
                     TextButton("Verbinden", colors.blue, 600, enabled = code.replace("-", "").length >= 8) { adding = false; onAddDevice(code.trim()); code = "" }
                 }
+                else -> Unit
+            }
+            if (linking == null && adding) {
+                Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                BasicText("QR-Code scannen …", style = style(17f, 400, colors.blue),
+                    modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { adding = false; onScanDevice() }.padding(horizontal = 16.dp, vertical = 12.dp))
+            }
+            when {
+                linking != null || adding -> Unit
                 else -> BasicText("Gerät hinzufügen …", style = style(17f, 400, colors.blue),
                     modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { adding = true }.padding(horizontal = 16.dp, vertical = 12.dp))
             }
@@ -1052,9 +1061,11 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
                     BasicText("Code anzeigen", style = style(17f, 600, if (ready) Color.White else colors.tertiary))
                 }
             } else {
+                QrCode(io.github.veritasx1.lichat.core.Account.linkUri(server, linkCode), Modifier.padding(top = 8.dp).size(220.dp)
+                    .semantics { contentDescription = "QR-Code zum Koppeln" })
                 BasicText(linkCode, style = style(40f, 700, colors.label).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(3f, androidx.compose.ui.unit.TextUnitType.Sp)),
                     modifier = Modifier.padding(16.dp).semantics { contentDescription = "Code ${linkCode.toList().joinToString(" ")}" })
-                BasicText("Auf deinem anderen Gerät: Einstellungen › Geräte › „Gerät hinzufügen …“ und diesen Code eingeben. Er gilt 10 Minuten.",
+                BasicText("Auf deinem anderen Gerät: Einstellungen › Geräte › „Gerät hinzufügen …“ – den QR-Code scannen oder den Code eingeben. Er gilt 10 Minuten.",
                     style = style(15f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp))
                 BasicText(if (busy) "Warte auf dein anderes Gerät …" else "", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(16.dp))
                 if (problem != null) BasicText(problem, style = style(13f, 400, colors.red).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(16.dp))

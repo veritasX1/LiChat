@@ -593,6 +593,8 @@ class Contacts(Base):
                          {"art": "einladung", "server": "https://lichat.lisoftware.de", "code": "7STV-NQ2T-A8XB-4URG"})
         self.assertEqual(Account.parse_link("lichat://einladung?server=https%3A%2F%2Flichat.lisoftware.de&code=AB2C-DE3F")["code"], "AB2C-DE3F")
         self.assertIsNone(Account.parse_link("https://example.org/irgendwas"))
+        self.assertEqual(Account.parse_link(Account.link_uri("https://lichat.lisoftware.de", "AB2C-DE3F")),
+                         {"art": "koppeln", "server": "https://lichat.lisoftware.de", "code": "AB2C-DE3F"})
 
 
 class Remove(Base):
@@ -671,7 +673,8 @@ class Devices(Base):
     def link(self, account, name="Ubuntu"):
         url, code = Account.link_open(self.url)
         result = {}
-        accept = threading.Thread(target=lambda: result.setdefault("device", account.accept_link(code, poll=0.1)))
+        # scanned: the whole lichat://koppeln link (Olaf: „per QR-Code“)
+        accept = threading.Thread(target=lambda: result.setdefault("device", account.accept_link(Account.link_uri(url, code), poll=0.1)))
         accept.start()
         for _ in range(100):
             if Account.link_state(url, code).get("username"):

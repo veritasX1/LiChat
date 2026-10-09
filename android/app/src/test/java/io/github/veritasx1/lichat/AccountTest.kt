@@ -234,7 +234,8 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         phone.fetch()
         val (url, code) = Account.linkOpen(url)
         var accepted = ""
-        val accept = Thread { accepted = phone.acceptLink(code, pollMs = 100) }.apply { start() }
+        // scanned: the whole lichat://koppeln link from the new device's QR code
+        val accept = Thread { accepted = phone.acceptLink(Account.linkUri(url, code), pollMs = 100) }.apply { start() }
         while (Account.linkState(url, code).optString("username").isEmpty()) Thread.sleep(50)
         val tabletFolder = File(root, "anna-tablet")
         val tablet = Account.linkFinish(tabletFolder, url, code, "Tablet", KeyVault.Plain.create(tabletFolder))

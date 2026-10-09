@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Voice messages (card 9780f3a0) – asked only when the microphone is tapped. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Only to scan a new device's QR code (Einstellungen › Geräte); asked at that moment, nothing is recorded. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="false"
