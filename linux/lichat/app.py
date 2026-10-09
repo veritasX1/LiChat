@@ -23,7 +23,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from .account import Account, LiChatError, short  # noqa: E402
+from .account import Account, LiChatError, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -331,6 +331,11 @@ class Window(Adw.ApplicationWindow):
         self.notice = Gtk.Label(css_classes=["lichat-notice"], visible=False, margin_bottom=4)
         self.pane.append(self.notice)
         line = Gtk.Box(spacing=8, margin_start=16, margin_end=16, margin_bottom=12, margin_top=4)
+        # ⊕ like Messages on the Mac: a photo, a video, a voice recording or any file (card 9780f3a0).
+        attach = Gtk.Button(icon_name="list-add-symbolic", css_classes=["lichat-tool", "lichat-attach"], tooltip_text="Anhang …",
+                            valign=Gtk.Align.CENTER)
+        attach.connect("clicked", lambda *_: self.choose_attachment())
+        line.append(attach)
         self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"])
         self.input.connect("activate", lambda *_: self.send())
         line.append(self.input)
@@ -370,7 +375,7 @@ class Window(Adw.ApplicationWindow):
         for cid in self.ordered():
             chat = self.account.chats[cid]
             title = self.account.title(cid)
-            texts = " ".join(m["text"] for m in chat["messages"]).lower()
+            texts = " ".join(Account.describe(m) for m in chat["messages"]).lower()
             if wanted and wanted not in title.lower() and wanted not in texts:
                 continue
             last = chat["messages"][-1] if chat["messages"] else None
@@ -388,7 +393,7 @@ class Window(Adw.ApplicationWindow):
             if last:
                 head.append(Gtk.Label(label=when_short(last["at"]), css_classes=["lichat-time"]))
             text.append(head)
-            preview = (last["text"] if last.get("system") else ("Du: " if last["from"] == self.account.username else "") + last["text"]) \
+            preview = (last["text"] if last.get("system") else ("Du: " if last["from"] == self.account.username else "") + Account.describe(last)) \
                 if last else "Noch keine Nachrichten"
             text.append(Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
                                   ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
@@ -446,6 +451,10 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(Gtk.Label(label=when_long(m["at"]), css_classes=["lichat-stamp"]))
             if group and not mine and (previous is None or previous["from"] != m["from"]):
                 self.bubbles.append(Gtk.Label(label=m["from"], css_classes=["lichat-sender"], xalign=0))
+            if m.get("anhang"):
+                self.bubbles.append(self.attachment_bubble(m["anhang"], mine))
+                previous = m
+                continue
             bubble = Gtk.Label(label=m["text"], wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
@@ -594,6 +603,108 @@ class Window(Adw.ApplicationWindow):
         self.set_setting("erklaert", True)
         if response == "aus":
             self.activate_action("win.hintergrund", None)
+
+    # ------------------------------------------------------------------------------------------ attachments
+
+    def attachment_bubble(self, info, mine):
+        """A photo or video as its small picture, a voice message with ▶ and its length, a file with its name."""
+        kind = info.get("art")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+        button = Gtk.Button(css_classes=["lichat-attachment", "flat"], tooltip_text=info.get("name"))
+        if kind in ("bild", "video") and info.get("vorschau"):
+            try:
+                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info["vorschau"])))
+                picture = Gtk.Picture(paintable=texture, can_shrink=True, content_fit=Gtk.ContentFit.COVER)
+                width, height = texture.get_width(), texture.get_height()
+                scale = min(240 / max(width, 1), 240 / max(height, 1))
+                picture.set_size_request(int(width * scale), int(height * scale))
+                frame = Gtk.Overlay(child=picture, css_classes=["lichat-photo"], overflow=Gtk.Overflow.HIDDEN)
+                if kind == "video":
+                    frame.add_overlay(Gtk.Label(label="▶", css_classes=["lichat-play"], halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER))
+                button.set_child(frame)
+            except GLib.Error:
+                kind = "datei"
+        if button.get_child() is None:
+            if kind == "sprache":
+                seconds = int(round(info.get("dauer") or 0))
+                text = f"▶  Sprachnachricht  {seconds // 60}:{seconds % 60:02d}"
+            elif kind == "video":
+                text = "▶  Video"
+            else:
+                text = f"📄  {info.get('name', 'Datei')}  ·  {self.size_text(info.get('groesse', 0))}"
+            button.set_child(Gtk.Label(label=text, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"]))
+        button.connect("clicked", lambda *_: self.open_attachment(info))
+        box.append(button)
+        return box
+
+    @staticmethod
+    def size_text(size):
+        for unit in ("Byte", "KB", "MB"):
+            if size < 1024 or unit == "MB":
+                return f"{size:.0f} {unit}" if unit == "Byte" else f"{size:.1f} {unit}".replace(".", ",")
+            size /= 1024
+
+    def private_folder(self):
+        """Plain copies only for showing them: in the session's private folder in memory (XDG_RUNTIME_DIR, gone at logout)."""
+        base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "lichat"
+        base.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(base, 0o700)
+        return base
+
+    def open_attachment(self, info):
+        account = self.account
+        folder = self.private_folder()
+
+        def job():
+            data = account.open_attachment(info)
+            path = folder / f"{info['id'][:8]}-{info.get('name') or 'anhang'}"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return path
+
+        def done(path, error):
+            self.show_notice(error)
+            if path is not None:
+                self.last_opened = path
+                Gtk.FileLauncher.new(Gio.File.new_for_path(str(path))).launch(self, None, None)
+
+        self.worker.do(job, done)
+
+    def choose_attachment(self):
+        if self.current is None and not self.composing:
+            return
+        dialog = Gtk.FileDialog(title="Anhang wählen")
+        dialog.open(self, None, self.on_attachment_chosen)
+
+    def on_attachment_chosen(self, dialog, result):
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return
+        self.send_attachment(Path(file.get_path()))
+
+    def send_attachment(self, path):
+        """The kind from the file's type: photo, video, audio (as a voice message) or any other file."""
+        import mimetypes
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        kind = "bild" if mime.startswith("image/") and mime != "image/svg+xml" else "video" if mime.startswith("video/") \
+            else "sprache" if mime.startswith("audio/") else "datei"
+        account, cid = self.account, self.current
+        if cid is None:
+            self.show_notice("Erst das Gespräch beginnen, dann den Anhang schicken.")
+            return
+
+        def job():
+            account.send_attachment(cid, path.read_bytes(), path.name, mime, kind)
+            return cid
+
+        def done(_cid, error):
+            self.show_notice(error)
+            self.fill_list()
+            self.show_conversation()
+
+        self.worker.do(job, done)
 
     def remove_member(self, cid, name):
         account = self.account

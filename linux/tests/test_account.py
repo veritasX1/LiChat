@@ -195,6 +195,67 @@ class Pictures(Base):
         self.assertIsNone(bernd.picture("anna"))
 
 
+class Attachments(Base):
+    """Card 9780f3a0: photos, videos, voice and files end to end – the server only ever sees encrypted bytes."""
+
+    def test_photo_without_exif_and_file_both_ways(self):
+        from PIL import Image
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        photo = test_image(self.root / "foto.jpg", size=(4000, 3000)).read_bytes()
+        anna.send_attachment(cid, photo, "IMG_0001.JPG", "image/jpeg", "bild")
+        news = bernd.fetch()
+        self.assertEqual([n["text"] for n in news], ["Foto"])
+        info = news[0]["anhang"]
+        got = bernd.open_attachment(info)
+        with Image.open(io.BytesIO(got)) as image:
+            self.assertEqual(max(image.size), 2048)
+            self.assertEqual(len(image.getexif()), 0, "EXIF (GPS, Kamera) muss weg sein")
+        self.assertNotIn(b"Testkamera", got)
+        self.assertTrue(info["vorschau"])
+        # A file goes unchanged, back the other way; voice keeps its duration.
+        document = os.urandom(200_000)
+        bernd.send_attachment(cid, document, "Plan.pdf", "application/pdf", "datei")
+        bernd.send_attachment(cid, b"\x00\x01aac", "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=3.4)
+        news = anna.fetch()
+        self.assertEqual([n["text"] for n in news], ["Datei: Plan.pdf", "Sprachnachricht"])
+        self.assertEqual(anna.open_attachment(news[0]["anhang"]), document)
+        self.assertEqual(news[1]["anhang"]["dauer"], 3.4)
+        # Nothing readable on the server; the name and type are not there either.
+        server_files = b"".join(p.read_bytes() for p in (self.root / "server").rglob("*") if p.is_file())
+        self.assertNotIn(document[:64], server_files)
+        self.assertNotIn(b"Plan.pdf", server_files)
+        self.assertNotIn(b"application/pdf", server_files)
+        # The sender's own copy stays readable after a restart (kept encrypted, key in the sealed chats).
+        again = self.reopen(bernd)
+        mine = [m for m in again.chats[cid]["messages"] if m.get("anhang", {}).get("name") == "Plan.pdf"][0]
+        self.assertEqual(again.open_attachment(mine["anhang"]), document)
+
+    def test_changed_attachment_is_refused(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send_attachment(cid, b"Inhalt", "a.txt", "text/plain", "datei")
+        info = bernd.fetch()[0]["anhang"]
+        path = self.app.store.attachment_path(info["id"])
+        data = bytearray(path.read_bytes())
+        data[20] ^= 1
+        path.write_bytes(bytes(data))
+        with self.assertRaises(LiChatError):
+            bernd.open_attachment(info)
+
+    def test_incomplete_announcement_is_not_kept(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        packet = anna.device.encrypt(bytes.fromhex(cid), json.dumps({"t": "anhang", "id": "../../etc", "art": "datei"}).encode())
+        anna.server.call("POST", "/v1/messages", {"to": [bernd.device_id], "blob": account_module.b64(b"M" + bytes(packet))})
+        news = bernd.fetch()
+        self.assertIn("unvollständig", news[0]["problem"])
+        self.assertEqual(bernd.chats[cid]["messages"], [])
+
+
 class Remove(Base):
     def test_removed_member_reads_nothing_after(self):
         """Test plan S2: Anna takes Erna out – Bernd and Anna go on, Erna learns it and gets nothing after."""

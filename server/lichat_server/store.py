@@ -20,6 +20,8 @@ MAX_KEY_PACKAGES = 100               # per device
 MAILBOX_BYTES = 32 * 1024 * 1024     # per device: nobody fills a stranger's mailbox (Michelle 4ba8dc07)
 MAILBOX_MESSAGES = 5000
 INVITE_DAYS = 14
+ATTACHMENT_BYTES = 100 * 1024 * 1024        # one attachment (a video from the phone)
+ATTACHMENTS_PER_DEVICE = 1024 * 1024 * 1024  # all of one device's attachments still kept
 
 
 def token_hash(token):
@@ -52,6 +54,10 @@ class Store:
                 id INTEGER PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 blob BLOB NOT NULL, received REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS messages_device ON messages(device, id);
+            -- Attachments (card 9780f3a0): encrypted on the phone, the server keeps opaque bytes – no name, no type.
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                size INTEGER NOT NULL, created REAL NOT NULL);
         """)
         # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
         if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
@@ -176,9 +182,62 @@ class Store:
             self.db.executemany("DELETE FROM messages WHERE device = ? AND id = ?", [(device, i) for i in ids])
 
     def purge(self):
-        """Unfetched messages older than 30 days and expired invitations go."""
+        """Unfetched messages and attachments older than 30 days and expired invitations go."""
         with self.lock:
             now = self.clock()
             gone = self.db.execute("DELETE FROM messages WHERE received < ?", (now - KEEP_UNFETCHED,)).rowcount
             self.db.execute("DELETE FROM invites WHERE expires < ?", (now,))
+            old = [row[0] for row in self.db.execute("SELECT id FROM attachments WHERE created < ?", (now - KEEP_UNFETCHED,))]
+            self.db.executemany("DELETE FROM attachments WHERE id = ?", [(i,) for i in old])
+        for attachment in old:
+            self.attachment_path(attachment).unlink(missing_ok=True)
+        self.forget_orphans()
         return gone
+
+    # Attachments ---------------------------------------------------------------------------------
+
+    def attachment_path(self, attachment):
+        return self.dir / "anhaenge" / attachment
+
+    def keep_attachment(self, device, stream, size):
+        """Stores [size] bytes from [stream] under a new random id (128 bits – whoever knows it may fetch it; it only
+        travels inside the end-to-end encrypted message). Over the device's quota: ValueError."""
+        with self.lock:
+            used = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM attachments WHERE device = ?", (device,)).fetchone()[0]
+            if used + size > ATTACHMENTS_PER_DEVICE:
+                raise ValueError("Kontingent")
+        attachment = secrets.token_hex(16)
+        folder = self.dir / "anhaenge"
+        folder.mkdir(exist_ok=True, mode=0o700)
+        part = folder / (attachment + ".teil")
+        written = 0
+        with open(part, "wb") as out:
+            while written < size:
+                chunk = stream.read(min(1 << 20, size - written))
+                if not chunk:
+                    break
+                out.write(chunk)
+                written += len(chunk)
+        if written != size:
+            part.unlink(missing_ok=True)
+            raise EOFError("unvollständig")
+        part.rename(folder / attachment)
+        with self.lock:
+            self.db.execute("INSERT INTO attachments VALUES (?, ?, ?, ?)", (attachment, device, size, self.clock()))
+        return attachment
+
+    def attachment(self, attachment):
+        """(path, size) of a kept attachment, or None."""
+        row = self.db.execute("SELECT size FROM attachments WHERE id = ?", (attachment,)).fetchone()
+        path = self.attachment_path(attachment)
+        return (path, row[0]) if row and path.exists() else None
+
+    def forget_orphans(self):
+        """Files whose device was signed out (rows gone by cascade) – removed from the disk too."""
+        folder = self.dir / "anhaenge"
+        if not folder.exists():
+            return
+        known = {row[0] for row in self.db.execute("SELECT id FROM attachments")}
+        for path in folder.iterdir():
+            if path.name not in known and not (path.name.endswith(".teil") and path.stat().st_mtime > self.clock() - 3600):
+                path.unlink(missing_ok=True)
