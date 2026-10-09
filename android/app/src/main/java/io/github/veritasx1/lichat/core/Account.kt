@@ -26,7 +26,8 @@ import javax.crypto.spec.SecretKeySpec
  * (LICHATP1), both AES-256-GCM with the device key. The key itself is kept by KeyVault (Android Keystore), never here.
  */
 
-class LiChatException(message: String) : Exception(message)
+/** [suggestions]: free user names when the wanted one is taken (ebc3d629). */
+class LiChatException(message: String, val suggestions: List<String> = emptyList()) : Exception(message)
 
 private const val WELCOME: Byte = 'W'.code.toByte()
 private const val MLS: Byte = 'M'.code.toByte()
@@ -144,7 +145,8 @@ class Server(url: String, var token: String? = null) {
             val text = stream?.use { String(it.readBytes()) } ?: ""
             // nginx answers a restart with an HTML page (502) – that is a server error, never a crash (Michelle 09.10.).
             val json = runCatching { if (text.isBlank()) JSONObject() else JSONObject(text) }.getOrNull()
-            if (code !in 200..299) throw LiChatException("Server: ${json?.optString("error")?.ifBlank { null } ?: "Fehler"} ($code)")
+            if (code !in 200..299) throw LiChatException("Server: ${json?.optString("error")?.ifBlank { null } ?: "Fehler"} ($code)",
+                json?.optJSONArray("vorschlaege")?.let { a -> (0 until minOf(a.length(), 3)).mapNotNull { a.optString(it).takeIf { n -> n.isNotEmpty() } } } ?: emptyList())
             return json ?: throw LiChatException("Server: unverständliche Antwort ($code)")
         } catch (e: java.io.IOException) {
             throw LiChatException("Server nicht erreichbar: ${e.message}")
@@ -258,13 +260,14 @@ class Account(val folder: File, private val key: ByteArray) {
     val deviceId: String get() = info.getString("device")
 
     companion object {
-        fun register(folder: File, server: String, invite: String, username: String, key: ByteArray): Account {
+        fun register(folder: File, server: String, invite: String, username: String, key: ByteArray, first: String = "", last: String = ""): Account {
             if (File(folder, "account.json").exists()) throw LiChatException("Hier gibt es schon ein Konto")
             folder.mkdirs()
             val anonymous = Server(server)
             val device = Device(username)
+            // The real name only for suggestions when the user name is taken (ebc3d629) – the server keeps none of it.
             val answer = anonymous.call("POST", "/v1/register", JSONObject().put("invite", invite).put("username", username)
-                .put("identity", b64(device.identityKey())))
+                .put("vorname", first.take(40)).put("nachname", last.take(40)).put("identity", b64(device.identityKey())))
             val info = JSONObject().put("server", anonymous.url).put("username", username)
                 .put("device", answer.getString("device"))
             // Key packages are made – their private halves kept in the state – before they are offered.

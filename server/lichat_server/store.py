@@ -125,6 +125,12 @@ class Store:
             self.db.execute("INSERT INTO accounts VALUES (?, ?)", (username, self.clock()))
             return self._add_device(username, identity)
 
+    def free_names(self, candidates, wanted=3):
+        """The first [wanted] of [candidates] nobody has (ebc3d629)."""
+        taken = {row[0] for row in self.db.execute(
+            f"SELECT username FROM accounts WHERE username IN ({','.join('?' * len(candidates))})", candidates)} if candidates else set()
+        return [n for n in candidates if n not in taken][:wanted]
+
     def add_device(self, username, identity):
         """Another device of an existing account (called by an already signed-in device)."""
         with self.lock:

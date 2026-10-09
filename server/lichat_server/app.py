@@ -40,6 +40,7 @@ import binascii
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -74,10 +75,28 @@ class Limiter:
             return True
 
 
+def name_candidates(username, first="", last=""):
+    """Alternatives for a taken user name (ebc3d629): from the real name first (anna.mueller, anna.m, a.mueller,
+    annamueller), then the name with a short number – all within USERNAME."""
+    def clean(text):
+        text = text.strip().lower()
+        for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+            text = text.replace(a, b)
+        return re.sub(r"[^a-z0-9]+", "", text)
+    first, last = clean(first), clean(last)
+    found = []
+    if first and last:
+        found += [f"{first}.{last}", f"{first}.{last[0]}", f"{first[0]}.{last}", f"{first}{last}", f"{first}_{last}"]
+    base = username.strip("._-")[:28] or first or "lichat"
+    found += [f"{base}{n}" for n in (2, 3, 7, 12, 24, 77)]
+    found += [f"{base}.{secrets.randbelow(900) + 100}" for _ in range(3)]
+    return [n for n in dict.fromkeys(found) if USERNAME.fullmatch(n) and n != username]
+
+
 class HttpError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, extra=None):
         super().__init__(message)
-        self.status, self.message = status, message
+        self.status, self.message, self.extra = status, message, extra or {}
 
 
 class Doorbell:
@@ -166,7 +185,7 @@ class App:
         try:
             status, payload = 200, self.dispatch(environ)
         except HttpError as error:
-            status, payload = error.status, {"error": error.message}
+            status, payload = error.status, {"error": error.message, **error.extra}
         if isinstance(payload, Page):
             data = payload.html.encode()
             start_response("200 OK", [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(data))),
@@ -256,7 +275,9 @@ class App:
         except KeyError:
             raise HttpError(403, "Einladung ungültig")
         except ValueError:
-            raise HttpError(409, "Benutzername vergeben")
+            # ebc3d629: free alternatives – only reached with a valid invitation and under the register limit (10/h)
+            raise HttpError(409, "Benutzername vergeben", {"vorschlaege": self.store.free_names(
+                name_candidates(username, str(body.get("vorname", "")), str(body.get("nachname", ""))))})
         return {"device": device, "token": token}
 
     def user(self, environ, body, me, name):

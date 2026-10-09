@@ -267,13 +267,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var receipts by remember { mutableStateOf(account?.readReceipts ?: false) }
     var typingOn by remember { mutableStateOf(account?.typingIndicator ?: false) }
     var linkCode by remember { mutableStateOf<String?>(null) }
+    var nameSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }   // a taken user name: free ones (ebc3d629)
     var devices by remember { mutableStateOf<List<Account.OwnDevice>?>(null) }
     var linking by remember { mutableStateOf<String?>(null) }
 
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
         if (acc == null) {
-            SetupScreen(busy, problem, linkCode,
+            SetupScreen(busy, problem, linkCode, suggestions = nameSuggestions,
                 onLink = { server ->
                     // A second device (card da5cbfcb): show a code, wait for the other device to accept it, then sign in.
                     problem = null
@@ -305,9 +306,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 onLinkCancel = { linkCode = null; busy = false; problem = null }) { server, invite, name, first, last ->
                 busy = true
                 problem = null
+                nameSuggestions = emptyList()
                 work({
-                    Account.register(Hub.folder(context), server, invite, name, vault.create(Hub.folder(context)))
-                        .also { if (first.isNotEmpty() || last.isNotEmpty()) it.setName(first, last) }
+                    try {
+                        Account.register(Hub.folder(context), server, invite, name, vault.create(Hub.folder(context)), first, last)
+                            .also { if (first.isNotEmpty() || last.isNotEmpty()) it.setName(first, last) }
+                    } catch (e: LiChatException) {
+                        if (e.suggestions.isNotEmpty()) { nameSuggestions = e.suggestions; throw LiChatException("„$name“ ist schon vergeben. Frei wären:") }
+                        throw e
+                    }
                 }) { created, error ->
                     busy = false
                     problem = error

@@ -96,7 +96,12 @@ TIMEOUT = 20
 
 
 class LiChatError(Exception):
-    """Something the user is told plainly (server refused, unknown chat, wrong key package …)."""
+    """Something the user is told plainly (server refused, unknown chat, wrong key package …). [suggestions]: free user
+    names when the wanted one is taken (ebc3d629)."""
+
+    def __init__(self, message="", suggestions=None):
+        super().__init__(message)
+        self.suggestions = list(suggestions or [])
 
 
 def b64(data):
@@ -289,10 +294,11 @@ class Server:
                 return json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as error:
             try:
-                message = json.loads(error.read()).get("error", "")
+                answer = json.loads(error.read())
             except ValueError:
-                message = ""
-            raise LiChatError(f"Server: {message or error.reason} ({error.code})") from None
+                answer = {}
+            names = [n for n in answer.get("vorschlaege") or [] if isinstance(n, str)][:3]
+            raise LiChatError(f"Server: {answer.get('error') or error.reason} ({error.code})", names) from None
         except (urllib.error.URLError, OSError) as error:
             raise LiChatError(f"Server nicht erreichbar: {getattr(error, 'reason', error)}") from None
 
@@ -366,7 +372,7 @@ class Account:
     # ------------------------------------------------------------------------------------------ setup
 
     @classmethod
-    def register(cls, folder, server, invite, username, key=None):
+    def register(cls, folder, server, invite, username, key=None, first="", last=""):
         folder = Path(folder)
         if (folder / "account.json").exists():
             raise LiChatError(f"In {folder} gibt es schon ein Konto")
@@ -376,8 +382,9 @@ class Account:
         device = lichat_core.Device(username)
         own_key = key is None
         key = os.urandom(32) if own_key else key
-        answer = anonymous.call("POST", "/v1/register", {"invite": invite, "username": username,
-                                                         "identity": b64(device.identity_key())})
+        # The real name goes along only for suggestions when the user name is taken (ebc3d629); the server keeps none of it.
+        answer = anonymous.call("POST", "/v1/register", {"invite": invite, "username": username, "vorname": first[:40],
+                                                         "nachname": last[:40], "identity": b64(device.identity_key())})
         info = {"server": anonymous.url, "username": username, "device": answer["device"]}
         # Key packages are made (and their private halves kept in the state) before they are offered.
         packages = device.key_packages(SUPPLY)
