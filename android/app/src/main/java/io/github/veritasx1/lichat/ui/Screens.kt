@@ -130,7 +130,8 @@ private fun messages(chat: JSONObject) = chat.getJSONArray("messages").let { a -
 
 @Composable
 fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: String?, unrestricted: Boolean,
-             onOpen: (String) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, onUnrestrict: () -> Unit) {
+             onOpen: (String) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, onUnrestrict: () -> Unit,
+             notifying: Boolean = true, onNotifications: () -> Unit = {}) {
     val colors = palette()
     var query by remember { mutableStateOf("") }
     val all = remember(version) {
@@ -165,6 +166,8 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                         decorationBox = { inner -> Box { if (query.isEmpty()) BasicText("Suchen", style = style(17f, 400, colors.secondary)); inner() } })
                 }
                 // Honest about late messages (Michelle Z6): without the exemption Android pauses the connection in Doze.
+                if (!notifying) BasicText("Mitteilungen sind aus – neue Nachrichten siehst du nur, wenn du LiChat öffnest. Tippe hier, um sie zu erlauben.",
+                    style = style(13f, 400, colors.blue), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).clickable(onClick = onNotifications))
                 if (!unrestricted) BasicText("Nachrichten können sich verspäten, solange Android LiChat beim Akku einschränkt. Tippe hier, um das zu ändern.",
                     style = style(13f, 400, colors.blue), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).clickable(onClick = onUnrestrict))
                 if (problem != null) BasicText(problem, style = style(13f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
@@ -354,7 +357,7 @@ fun Section(header: String?, footer: String? = null, content: @Composable () -> 
 
 @Composable
 fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, onPreview: (Boolean) -> Unit, onPicture: () -> Unit,
-                   onUnrestrict: () -> Unit, onBack: () -> Unit) {
+                   onUnrestrict: () -> Unit, onBack: () -> Unit, notifying: Boolean = true, onNotifications: () -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -370,7 +373,14 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                 }
             }
         }
-        Section("MITTEILUNGEN", footer = "Aus: Die Mitteilung sagt nur „Neue Nachricht“. An: Absender und Text stehen auch auf dem Sperrbildschirm.") {
+        Section("MITTEILUNGEN", footer = if (notifying) "Aus: Die Mitteilung sagt nur „Neue Nachricht“. An: Absender und Text stehen auch auf dem Sperrbildschirm."
+            else "Android zeigt für LiChat keine Mitteilungen – neue Nachrichten siehst du nur, wenn du LiChat öffnest.") {
+            Row(Modifier.fillMaxWidth().clickable(enabled = !notifying, onClick = onNotifications).padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                BasicText("Mitteilungen", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
+                BasicText(if (notifying) "An" else "Aus", style = style(17f, 400, if (notifying) colors.secondary else colors.blue))
+            }
+            Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 BasicText("Absender und Text zeigen", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
                 Switch(preview, onPreview)
