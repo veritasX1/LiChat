@@ -169,6 +169,13 @@ class ApiTest(unittest.TestCase):
         status, _ = self.call("POST", "/v1/register", {"invite": code, "username": "erika.mustermann", "identity": b64(b"x" * 32)})
         self.assertEqual(status, 200, "die Einladung gilt nach einem vergebenen Namen noch")
 
+    def test_renewed_token_voids_the_old_one(self):
+        _, old = self.account("anna")
+        status, data = self.call("POST", "/v1/devices/me/token", {}, token=old)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.call("GET", "/v1/messages", token=old)[0], 401, "die alte Kopie gilt nicht mehr")
+        self.assertEqual(self.call("GET", "/v1/messages", token=data["token"])[0], 200)
+
     def test_taken_name_comes_with_free_suggestions(self):
         """ebc3d629: free alternatives – from the real name first; never without a valid invitation."""
         self.account("anna")

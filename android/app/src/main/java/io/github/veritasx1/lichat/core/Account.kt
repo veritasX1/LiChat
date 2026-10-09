@@ -245,7 +245,8 @@ class Account(val folder: File, private val key: ByteArray) {
         val token = if (plain.isNotEmpty()) {
             // An account from before 09.10. evening: the token moves out of account.json into token.bin (sealed), no new
             // sign-in (Michelle f09a8086: a copied account.json let someone fetch – and so lose – this device's packets).
-            writePrivate(File(folder, "token.bin"), seal(key, TOKEN_MAGIC, JSONObject().put("token", plain).toString().toByteArray()))
+            // The old token stays in backups of account.json – renewed at the first fetch (Michelle, renewTokenIfDue).
+            writePrivate(File(folder, "token.bin"), seal(key, TOKEN_MAGIC, JSONObject().put("token", plain).put("erneuern", true).toString().toByteArray()))
             info.remove("token")
             writePrivate(accountFile, info.toString(1).toByteArray())
             plain
@@ -1280,7 +1281,23 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** Fetches the mailbox, decrypts, keeps – and only then acknowledges. [waitS]: the server answers as soon as something
      *  arrives (the standing connection, no push service). Only one fetch at a time – the service's loop. */
+    /** After the move out of account.json: a new token, the old one void – copies of the old account.json fetch nothing
+     *  any more. Offline or an older server: tried again at the next fetch. */
+    private fun renewTokenIfDue() {
+        if (tokenSettled) return
+        val file = File(folder, "token.bin")
+        val stored = runCatching { JSONObject(String(unseal(key, TOKEN_MAGIC, file.readBytes()))) }.getOrNull() ?: return
+        if (!stored.optBoolean("erneuern")) { tokenSettled = true; return }
+        val fresh = runCatching { server.call("POST", "/v1/devices/me/token", JSONObject()).getString("token") }.getOrNull() ?: return
+        synchronized(lock) { writePrivate(file, seal(key, TOKEN_MAGIC, JSONObject().put("token", fresh).toString().toByteArray())) }
+        server.token = fresh
+        tokenSettled = true
+    }
+
+    @Volatile private var tokenSettled = false
+
     fun fetch(waitS: Int = 0): List<News> {
+        renewTokenIfDue()
         val path = if (waitS > 0) "/v1/messages?warten=$waitS" else "/v1/messages"
         val waiting = server.call("GET", path, timeoutS = TIMEOUT_S + waitS).getJSONArray("messages")
         val news = mutableListOf<News>()

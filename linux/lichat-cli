@@ -200,6 +200,12 @@ def main(argv):
                 about = f" (↪ {quote.get('from')}: {quote.get('text', '')[:40]})" if quote else ""
                 reactions = "".join(f"  [{u} {e}]" for u, e in (m.get("reaktionen") or {}).items())
                 edited = "  (bearbeitet)" if m.get("bearbeitet") else ""
+                # fe9f2029 (Michelle): where a one-time picture stands – „geöffnet von …“ on the sender's side
+                state = account.once_state(m)
+                if state == "eigen":
+                    edited += f"  (geöffnet von {', '.join(sorted(m['geoeffnet_von']))})" if m.get("geoeffnet_von") else "  (noch nicht geöffnet)"
+                elif state:
+                    edited += {"neu": "  (nur auf dem Handy ansehen)", "geoeffnet": "  (geöffnet)", "abgelaufen": "  (abgelaufen)"}[state]
                 print(f"{when(m['at'])} {who}{about}: {account.describe(m) or m['text']}{number}{edited}{tick}{reactions}")
     elif command in ("reagieren", "zuruecknehmen"):
         # Michelle: Reaktionen ohne Handy prüfen. Die Nachricht: ein Stück ihres Textes oder „letzte“ (die letzte der anderen).
