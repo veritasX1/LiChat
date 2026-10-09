@@ -4,7 +4,7 @@
     lichat-cli [--profil NAME] register <server> <einladung> <benutzername>
     lichat-cli [--profil NAME] ich                          # Benutzer, Gerät, Server
     lichat-cli [--profil NAME] neu [--titel T] <person …>   # Gespräch beginnen (auch Gruppe)
-    lichat-cli [--profil NAME] senden <gespräch> <text …>
+    lichat-cli [--profil NAME] senden [--sofort] <gespräch> <text …>   # tippt so lange wie ein Mensch (mit „…“)
     lichat-cli [--profil NAME] abholen                      # Postfach holen, Neues zeigen
     lichat-cli [--profil NAME] warten [--bis SEKUNDEN]      # wartet, bis etwas kommt, zeigt es und endet (für Claude-Instanzen)
     lichat-cli [--profil NAME] gespraeche                   # alle Gespräche
@@ -71,10 +71,15 @@ def main(argv):
         cid = account.start(args, title)
         print(f"Gespräch {short(bytes.fromhex(cid))} mit {account.title(cid)} begonnen")
     elif command == "senden":
+        now = args[:1] == ["--sofort"] or os.environ.get("LICHAT_SOFORT") == "1"
+        args = args[1:] if args[:1] == ["--sofort"] else args
         if len(args) < 2:
-            raise LiChatError("senden <gespräch> <text …>")
+            raise LiChatError("senden [--sofort] <gespräch> <text …>")
         cid = account.chat(args[0])
-        answer = account.send(cid, " ".join(args[1:]))
+        text = " ".join(args[1:])
+        if not now:
+            account.type_like_a_person(cid, text)     # Olaf 09.10.: so lange wie ein Mensch am Handy, mit „…“
+        answer = account.send(cid, text)
         if answer.get("unknown") or answer.get("full"):
             print(f"Nicht zugestellt an: {', '.join(answer.get('unknown', []) + answer.get('full', []))}")
         # gesendet_ms: the moment the server took it – Michelle measures the way to the phone's notification (Z5).

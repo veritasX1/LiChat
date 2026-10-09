@@ -120,6 +120,21 @@ class TwoPeople(Base):
 
 
 class Groups(Base):
+    def test_typing_takes_as_long_as_the_text(self):
+        """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.set_typing_indicator(True)
+        bernd.set_typing_indicator(True)
+        short_one = anna.type_like_a_person(cid, "ok", sleep=lambda s: None)
+        long_one = anna.type_like_a_person(cid, "x" * 300, sleep=lambda s: None)
+        too_long = anna.type_like_a_person(cid, "x" * 9000, sleep=lambda s: None)
+        self.assertLess(short_one, 2)
+        self.assertGreater(long_one, 70)
+        self.assertLessEqual(too_long, 180 * 1.2)
+        self.assertIn({"chat": cid, "typing": "anna"}, bernd.fetch())
+
     def test_send_before_the_roster_says_so_plainly(self):
         """Jean-Marie 09.10.: right after joining, the roster (devices) may not be there yet – no „400“, a clear word,
         the message marked „nicht gesendet“ and sent with a retry once the roster came."""
@@ -642,7 +657,7 @@ class Server(Base):
 
 class Cli(Base):
     def run_cli(self, profile, *args):
-        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"))
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"), LICHAT_SOFORT="1")
         result = subprocess.run([sys.executable, str(ROOT / "linux" / "lichat-cli"), "--profil", profile, *args],
                                 capture_output=True, text=True, env=env, timeout=60)
         return result.returncode, result.stdout + result.stderr
@@ -653,7 +668,7 @@ class Cli(Base):
         self.run_cli("bernd", "register", self.url, self.app.store.create_invite(), "bernd")
         chat = self.run_cli("anna", "neu", "bernd")[1].split()[1]
         self.run_cli("bernd", "abholen")
-        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"))
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"), LICHAT_SOFORT="1")
         # From now on the first two fetches answer 502, like nginx while the container restarts.
         real, failures = self.app, {"left": 2}
 
