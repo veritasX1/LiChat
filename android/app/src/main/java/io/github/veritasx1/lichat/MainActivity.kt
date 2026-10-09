@@ -127,6 +127,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var photo by remember { mutableStateOf<ByteArray?>(null) }
     var recording by remember { mutableStateOf<Int?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
+    var paused by remember { mutableStateOf(false) }
     val media = remember { Media(context) }
     var notifying by remember { mutableStateOf(runCatching { Settings.notifying(context) }.getOrDefault(true)) }
     // Back from Android's settings: look again (the person may have switched notifications on or off there).
@@ -210,12 +211,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         open = { info ->
             val acc = account
             if (acc != null) {
-                if (info.optString("art") == "sprache" && playing == info.optString("id")) { media.stopPlaying(); playing = null }
+                // The same voice message again: pause / go on from the same place (864041bf)
+                if (info.optString("art") == "sprache" && playing == info.optString("id")) {
+                    if (media.isPlaying) { media.pause(); paused = true } else { media.resume(); paused = false }
+                }
                 else work({ acc.openAttachment(info) }) { bytes, error ->
                     problem = error
                     if (bytes != null) when (info.optString("art")) {
                         "bild" -> photo = bytes
-                        "sprache" -> { playing = info.optString("id"); media.play(bytes) { playing = null } }
+                        "sprache" -> { playing = info.optString("id"); paused = false; media.play(bytes) { playing = null; paused = false } }
                         else -> media.view(bytes, info)?.let { problem = it }
                     }
                 }
@@ -223,6 +227,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         },
         recording = recording,
         playing = playing,
+        paused = paused,
+        progress = { media.progress() },
+        seek = { fraction -> media.seek(fraction) },
         retry = { mid ->
             val acc = account
             val cid = chatId()

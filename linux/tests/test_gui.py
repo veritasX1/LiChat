@@ -255,6 +255,32 @@ def main():
     assert '<a href="https://www.lisoftware.de">' in linked.get_label() and '<a href="mailto:user@example.org">' in linked.get_label()
     shot(window, "03f-links.png")
 
+    # 864041bf: a voice message plays in the bubble – ⏸ while playing, pause keeps the place, a click on the wave jumps
+    import subprocess as _sp
+    tone = Path(SCRATCH) / "ton.m4a"
+    _sp.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac", str(tone)], check=True)
+    bernd.send_attachment(cid, tone.read_bytes(), "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=4.0)
+    until(lambda: any((m.get("anhang") or {}).get("art") == "sprache" and (m.get("anhang") or {}).get("dauer") == 4.0
+                      for m in anna.chats[cid]["messages"]))
+    window.show_conversation()
+    settle(0.3)
+    toggle = [w for w in walk(window.bubbles) if isinstance(w, Gtk.Button) and w.has_css_class("lichat-voice-button")][-1]
+    toggle.emit("clicked")
+    until(lambda: getattr(window, "voice", None) is not None and window.voice["media"].is_prepared(), seconds=10)
+    window.voice["media"].set_muted(True)
+    until(lambda: window.voice["media"].get_timestamp() > 300_000, seconds=10)
+    assert toggle.get_label() == "⏸"
+    toggle.emit("clicked")
+    settle(0.3)
+    held = window.voice["media"].get_timestamp()
+    settle(0.5)
+    assert toggle.get_label() == "▶" and window.voice["media"].get_timestamp() == held, "Pause hält die Stelle"
+    shot(window, "03g-sprachnachricht.png")
+    toggle.emit("clicked")
+    settle(0.3)
+    assert window.voice["media"].get_timestamp() >= held, "weiter von der Stelle"
+    window.voice["media"].set_playing(False)
+
     # „… tippt“ (card 884f7c8a): off by default; with both switched on Bernd's typing shows as a grey „•••“ bubble.
     assert not window.lookup_action("tippanzeige").get_state().get_boolean()
     window.lookup_action("tippanzeige").change_state(GLib.Variant.new_boolean(True))
@@ -450,7 +476,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 15  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
+    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 16  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

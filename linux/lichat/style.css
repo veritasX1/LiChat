@@ -96,3 +96,6 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 /* Links in bubbles (22c918ce): underlined in the bubble's text colour on blue, blue on grey */
 .lichat-mine link { color: #ffffff; text-decoration: underline; }
 .lichat-theirs link { color: #007aff; text-decoration: underline; }
+.lichat-voice { padding: 4px 12px 4px 4px; }
+.lichat-voice-button { min-width: 28px; min-height: 28px; padding: 0; font-size: 15px; color: inherit; }
+.lichat-voice-time { font-size: 13px; font-feature-settings: "tnum"; }

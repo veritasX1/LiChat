@@ -146,11 +146,19 @@ class Media(private val context: Context) {
         val file = File(File(context.cacheDir, "geoeffnet").apply { mkdirs() }, "wiedergabe.m4a").apply { writeBytes(bytes) }
         player = MediaPlayer().apply {
             setDataSource(file.absolutePath)
-            setOnCompletionListener { stopPlaying(); done() }
+            setOnCompletionListener { stopPlaying(); done() }      // at the end back to the start (Messages)
             prepare()
             start()
         }
     }
+
+    // Voice messages like Messages (Olaf 864041bf): pause keeps the place, play goes on from there, a swipe jumps.
+    fun pause() = runCatching { player?.pause() }
+    fun resume() = runCatching { player?.start() }
+    val isPlaying: Boolean get() = runCatching { player?.isPlaying == true }.getOrDefault(false)
+    /** (position, duration) in ms of what is loaded, or null. */
+    fun progress(): Pair<Int, Int>? = runCatching { player?.let { it.currentPosition to it.duration } }.getOrNull()
+    fun seek(fraction: Float) = runCatching { player?.let { it.seekTo((it.duration * fraction.coerceIn(0f, 1f)).toInt()) } }
 
     fun stopPlaying() {
         player?.run { runCatching { stop() }; release() }

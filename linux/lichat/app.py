@@ -1492,6 +1492,8 @@ class Window(Adw.ApplicationWindow):
                 button.set_child(frame)
             except GLib.Error:
                 kind = "datei"
+        if kind == "sprache":
+            return self.voice_bubble(info, mine, box)
         if button.get_child() is None:
             if kind == "sprache":
                 seconds = int(round(info.get("dauer") or 0))
@@ -1545,6 +1547,102 @@ class Window(Adw.ApplicationWindow):
         base.mkdir(mode=0o700, exist_ok=True)
         os.chmod(base, 0o700)
         return base
+
+    # ------------------------------------------------------------------------------------------ voice messages (864041bf)
+    # Like Messages: ▶ ⇄ ⏸, the wave fills as it plays, the time left counts down, a pause keeps the place, a click or drag
+    # on the wave jumps, at the end it is back at the start. Played here (GStreamer via Gtk.MediaFile), not in another app.
+
+    WAVE = (6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12)
+
+    def voice_bubble(self, info, mine, box):
+        bubble = Gtk.Box(spacing=8, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs", "lichat-voice"])
+        toggle = Gtk.Button(css_classes=["flat", "lichat-voice-button"], tooltip_text="Abspielen")
+        wave = Gtk.DrawingArea(content_width=len(self.WAVE) * 5, content_height=22, valign=Gtk.Align.CENTER)
+        time_label = Gtk.Label(css_classes=["lichat-voice-time"])
+        bubble.append(toggle)
+        bubble.append(wave)
+        bubble.append(time_label)
+        key = info.get("id")
+        light = mine or self.has_css_class("lichat-dark")
+
+        def state():
+            voice = getattr(self, "voice", None)
+            if not voice or voice["id"] != key:
+                return None, 0.0, int(round(info.get("dauer") or 0))
+            media = voice["media"]
+            length = media.get_duration() or 1
+            return media, media.get_timestamp() / length, max(0, (length - media.get_timestamp() + 999_999) // 1_000_000)
+
+        def refresh():
+            media, fraction, left = state()
+            playing = media is not None and media.get_playing()
+            toggle.set_label("⏸" if playing else "▶")
+            toggle.set_tooltip_text("Anhalten" if playing else "Abspielen")
+            time_label.set_label(f"{left // 60}:{left % 60:02d}")
+            wave.queue_draw()
+            return media is not None and wave.get_root() is not None and not media.get_ended()
+
+        def draw(_area, cr, width, height):
+            media, fraction, _left = state()
+            for i, h in enumerate(self.WAVE):
+                done = media is not None and (i + 0.5) / len(self.WAVE) <= fraction
+                alpha = 0.8 if media is None else (1.0 if done else 0.35)
+                cr.set_source_rgba(*((1, 1, 1) if light else (0.11, 0.11, 0.12)), alpha)
+                cr.rectangle(i * 5 + 1, (height - h) / 2, 3, h)
+                cr.fill()
+        wave.set_draw_func(draw)
+
+        def jump(x):
+            media, _f, _l = state()
+            if media is not None and media.get_duration():
+                media.seek(int(media.get_duration() * max(0.0, min(1.0, x / max(1, wave.get_width())))))
+                refresh()
+        click = Gtk.GestureClick()
+        click.connect("pressed", lambda _g, _n, x, _y: jump(x))
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-update", lambda g, dx, _dy: jump(g.get_start_point()[1] + dx))
+        wave.add_controller(click)
+        wave.add_controller(drag)
+
+        def pressed(*_):
+            media, _f, _l = state()
+            if media is not None:
+                if media.get_ended():
+                    media.seek(0)
+                media.set_playing(not media.get_playing())
+                refresh()
+                GLib.timeout_add(100, refresh)
+                return
+            account = self.account
+            folder = self.private_folder()
+
+            def job():
+                path = folder / f"{key[:8]}-sprache.m4a"
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(account.open_attachment(info))
+                return path
+
+            def loaded(path, error):
+                self.show_notice(error)
+                if path is None:
+                    return
+                old = getattr(self, "voice", None)
+                if old:
+                    old["media"].set_playing(False)
+                media = Gtk.MediaFile.new_for_filename(str(path))
+                media.connect("notify::ended", lambda m, _p: (m.get_ended() and (m.set_playing(False), m.seek(0), refresh())))
+                self.voice = {"id": key, "media": media}
+                media.play()
+                GLib.timeout_add(100, refresh)
+            self.worker.do(job, loaded)
+        toggle.connect("clicked", pressed)
+        refresh()
+        if state()[0] is not None:
+            GLib.timeout_add(100, refresh)
+        bubble.update_property([Gtk.AccessibleProperty.LABEL], [f"Sprachnachricht, {int(round(info.get('dauer') or 0))} Sekunden"])
+        box.append(bubble)
+        return box
 
     def open_attachment(self, info):
         account = self.account
