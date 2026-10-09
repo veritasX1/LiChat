@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Only to scan a new device's QR code (Einstellungen › Geräte); asked at that moment, nothing is recorded. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 14+: a screenshot while a one-time picture is open becomes a line in the chat (fe9f2029); nothing else. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
