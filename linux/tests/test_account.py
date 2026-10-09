@@ -667,6 +667,90 @@ class GroupLife(Base):
         self.assertTrue(self.reopen(anna).chats[cid]["stumm"])
 
 
+class MacPoints(Base):
+    """Michelle's look at Messages on the Mac (09.10.): pinned, unread marker, receipts per chat, blocking + filters,
+    „Zuletzt gelöscht“ – the settings follow on my other devices, deleting stays on the device."""
+
+    def test_unread_marker_and_mark_unread(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        bernd.send(cid, "eins")
+        anna.fetch()
+        anna.mark_read(cid)
+        self.assertEqual(anna.unread(cid), 0)
+        bernd.send(cid, "zwei"); bernd.send(cid, "drei")
+        anna.fetch()
+        self.assertEqual(anna.unread(cid), 2)
+        first = anna.first_unread(cid)
+        self.assertEqual(next(m["text"] for m in anna.chats[cid]["messages"] if m.get("mid") == first), "zwei")
+        self.assertEqual(anna.filtered("ungelesen"), [cid])
+        anna.mark_read(cid)
+        self.assertEqual(anna.unread(cid), 0)
+        anna.mark_unread(cid)
+        self.assertEqual(anna.unread(cid), 1)
+        anna.mark_read(cid)
+        self.assertEqual(anna.unread(cid), 0)
+
+    def test_receipts_per_chat(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Hallo")
+        bernd.fetch()
+        mine = anna.chats[cid]["messages"][-1]
+        # general off, but on for this chat – on both sides: blue ticks
+        anna.set_receipts_for(cid, True)
+        bernd.set_receipts_for(cid, True)
+        bernd.mark_read(cid)
+        anna.fetch()
+        self.assertEqual(anna.tick(cid, mine)[0], "gelesen")
+        anna.set_receipts_for(cid, False)
+        self.assertEqual(anna.tick(cid, mine)[0], "zugestellt")
+        anna.set_receipts_for(cid, None)            # like the general setting (off)
+        self.assertFalse(anna.receipts_for(cid))
+
+    def test_block(self):
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = bernd.start(["anna"])
+        anna.fetch()
+        anna.block("bernd")
+        bernd.send(cid, "Hallo?")
+        self.assertEqual([n for n in anna.fetch() if n.get("text")], [])
+        self.assertNotIn("Hallo?", [m.get("text") for m in anna.chats[cid]["messages"]])
+        anna.block("bernd", False)
+        bernd.send(cid, "Jetzt?")
+        self.assertEqual([n["text"] for n in anna.fetch() if n.get("text")], ["Jetzt?"])
+        # known / unknown: erna wrote first and anna never answered → unknown; bernd is answered → known
+        other = erna.start(["anna"])
+        erna.send(other, "Wer bist du?")
+        anna.fetch()
+        anna.send(cid, "Hi Bernd")
+        self.assertEqual(anna.filtered("bekannt"), [cid])
+        self.assertEqual(anna.filtered("unbekannt"), [other])
+
+    def test_recently_deleted(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Weg damit")
+        anna.delete_message(cid, anna.chats[cid]["messages"][-1]["mid"])
+        self.assertEqual(anna.filtered("geloescht"), [cid])
+        anna.restore(cid, anna.chats[cid]["messages"][-1]["mid"])
+        self.assertEqual(anna.filtered("geloescht"), [])
+        anna.delete_chat(cid)
+        self.assertEqual(anna.filtered("alle"), [])
+        self.assertEqual(anna.filtered("geloescht"), [cid])
+        # a new message brings it back; what was there stays in „Zuletzt gelöscht“
+        bernd.send(cid, "Noch da?")
+        anna.fetch()
+        self.assertEqual(anna.filtered("alle"), [cid])
+        self.assertEqual([m["text"] for m in anna.chats[cid]["messages"] if not m.get("geloescht")], ["Noch da?"])
+        # after 30 days gone for good
+        anna.purge(now=time.time() + 31 * 86400)
+        self.assertEqual([m["text"] for m in anna.chats[cid]["messages"]], ["Noch da?"])
+
+
 class Devices(Base):
     """Card da5cbfcb: several devices per person – linked by a code, in every conversation, own messages everywhere."""
 
@@ -731,6 +815,10 @@ class Devices(Base):
         laptop.mute(cid, False)
         phone.fetch()
         self.assertFalse(phone.chats[cid].get("stumm"))
+        phone.pin(cid, True); phone.block("erna")
+        laptop.fetch()
+        self.assertEqual(laptop.pinned(), [cid])
+        self.assertIn("erna", laptop.blocked)
         self.assertIn("Anna Beispiel benutzt jetzt ein weiteres Gerät.", [n.get("system") for n in bernd.fetch()])
         # to both of Anna's devices
         bernd.send(cid, "Hallo an beide")

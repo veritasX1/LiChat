@@ -704,10 +704,7 @@ class Account:
 
     def mute(self, cid, on):
         """Stummschalten: no notifications for this conversation – on all my devices (their own group)."""
-        with self.lock:
-            self.chats[cid]["stumm"] = bool(on)
-            self.save()
-        self._tell_own_devices({"t": "stumm", "chat": cid, "an": bool(on)})
+        self._chat_setting(cid, "stumm", bool(on))
 
     def group_picture(self, cid):
         value = self.chats.get(cid, {}).get("bild")
@@ -1074,8 +1071,10 @@ class Account:
         return targets, packet
 
     def mark_read(self, cid):
-        """The chat is on screen: with read receipts on, the others learn which of their messages were read."""
-        if not self.read_receipts:
+        """The chat is on screen: it counts as read up to its last message (on all my devices – card 300129f8), and with
+        read receipts on (for this chat – 3c0400ad) the others learn which of their messages were read."""
+        self._read_up_to(cid)
+        if not self.receipts_for(cid):
             return
         with self.lock:
             mids = [m["mid"] for m in self.chats[cid]["messages"]
@@ -1087,6 +1086,148 @@ class Account:
         if sent:
             self.server.call("POST", "/v1/messages", {"to": sent[0], "blob": b64(MLS + bytes(sent[1]))})
 
+    # ------------------------------------------------------------------------------------------ Mac points (Michelle 09.10.)
+    # Pinned (206118bf), unread marker + „als ungelesen“ (300129f8), read receipts per chat (3c0400ad), blocking + filters
+    # (1f800b4f), „Zuletzt gelöscht“ (a0ceee6e). Chat settings follow on all my devices (their own group) – deleting
+    # stays on the device (Michelle).
+
+    SYNCED_CHAT_KEYS = ("stumm", "angeheftet", "lesebestaetigungen", "ungelesen", "gelesen_mid")
+    DELETED_DAYS = 30
+
+    def _chat_setting(self, cid, key, value, tell=True):
+        with self.lock:
+            if value is None:
+                self.chats[cid].pop(key, None)
+            else:
+                self.chats[cid][key] = value
+            self.save()
+        if tell and key in self.SYNCED_CHAT_KEYS:
+            self._tell_own_devices({"t": "gespraech", "chat": cid, "key": key, "value": value})
+
+    def receipts_for(self, cid):
+        """Read receipts in this chat: its own setting, else the general one (Apple: per conversation)."""
+        own = self.chats.get(cid, {}).get("lesebestaetigungen")
+        return self.read_receipts if own is None else bool(own)
+
+    def set_receipts_for(self, cid, on):
+        """None = like the general setting again."""
+        self._chat_setting(cid, "lesebestaetigungen", None if on is None else bool(on))
+
+    def pin(self, cid, on):
+        self._chat_setting(cid, "angeheftet", int(time.time()) if on else None)
+
+    def pinned(self):
+        """Pinned conversations, first pinned first (like the Mac's grid)."""
+        chats = self.visible_chats()
+        return sorted((c for c, chat in chats.items() if chat.get("angeheftet")), key=lambda c: chats[c]["angeheftet"])
+
+    def _read_up_to(self, cid):
+        chat = self.chats[cid]
+        last = next((m.get("mid") for m in reversed(chat["messages"]) if m.get("mid")), None)
+        if chat.get("ungelesen"):
+            self._chat_setting(cid, "ungelesen", None)
+        if last and chat.get("gelesen_mid") != last:
+            self._chat_setting(cid, "gelesen_mid", last)
+
+    def mark_unread(self, cid):
+        """„Als ungelesen markieren“ – the blue dot comes back (on all my devices)."""
+        self._chat_setting(cid, "ungelesen", True)
+
+    def unread(self, cid):
+        """How many messages of others came after the read marker (a chat marked unread counts at least 1)."""
+        chat = self.chats[cid]
+        messages = [m for m in chat["messages"] if not m.get("geloescht")]
+        marker = chat.get("gelesen_mid")
+        index = next((i for i, m in enumerate(messages) if marker and m.get("mid") == marker), None)
+        after = messages[index + 1:] if index is not None else ([] if marker is None else messages)
+        count = sum(1 for m in after if m.get("from") not in ("", self.username) and not m.get("system"))
+        return max(count, 1 if chat.get("ungelesen") else 0)
+
+    def first_unread(self, cid):
+        """The mid of the first unread message (for „↑ Zur ersten ungelesenen“), or None."""
+        chat = self.chats[cid]
+        messages = [m for m in chat["messages"] if not m.get("geloescht")]
+        marker = chat.get("gelesen_mid")
+        index = next((i for i, m in enumerate(messages) if marker and m.get("mid") == marker), None)
+        if index is None:
+            return None
+        return next((m.get("mid") for m in messages[index + 1:] if m.get("from") not in ("", self.username) and m.get("mid")), None)
+
+    # blocking and filters (1f800b4f)
+
+    @property
+    def blocked(self):
+        return self.profiles.setdefault("blockiert", {})
+
+    def block(self, username, on=True):
+        """Nothing more from this person: messages, reactions, „tippt“ are dropped, no receipts go back, no notification."""
+        with self.lock:
+            if on:
+                self.blocked[username] = int(time.time())
+            else:
+                self.blocked.pop(username, None)
+            self.save()
+        self._tell_own_devices({"t": "blockiert", "name": username, "an": bool(on)})
+
+    def known(self, cid):
+        """Bekannt: someone in my contacts, or a chat I wrote in myself; else Unbekannt (Apple's filter)."""
+        chat = self.chats[cid]
+        others = [u for u in chat.get("roster", {}) if u != self.username]
+        return any(u in self.contacts for u in others) or any(m.get("from") == self.username and not m.get("system") for m in chat["messages"])
+
+    def filtered(self, which="alle"):
+        """alle | bekannt | unbekannt | ungelesen | geloescht – the list as the filter shows it."""
+        chats = {c: chat for c, chat in self.visible_chats().items()}
+        if which == "geloescht":
+            return [c for c, chat in chats.items() if chat.get("geloescht") or any(m.get("geloescht") for m in chat["messages"])]
+        shown = [c for c, chat in chats.items() if not chat.get("geloescht")]
+        if which == "bekannt":
+            return [c for c in shown if self.known(c)]
+        if which == "unbekannt":
+            return [c for c in shown if not self.known(c)]
+        if which == "ungelesen":
+            return [c for c in shown if self.unread(c)]
+        return shown
+
+    # „Zuletzt gelöscht“ (a0ceee6e) – only on this device, 30 days, then gone
+
+    def delete_chat(self, cid):
+        self._chat_setting(cid, "geloescht", int(time.time()), tell=False)
+
+    def delete_message(self, cid, mid):
+        with self.lock:
+            message = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
+            message["geloescht"] = int(time.time())
+            self.save()
+
+    def restore(self, cid, mid=None):
+        """Back from „Zuletzt gelöscht“: the conversation, or one message."""
+        with self.lock:
+            if mid is None:
+                self.chats[cid].pop("geloescht", None)
+                for m in self.chats[cid]["messages"]:
+                    m.pop("geloescht", None)
+            else:
+                next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid).pop("geloescht", None)
+            self.save()
+
+    def purge(self, cid=None, mid=None, now=None):
+        """Gone for good: what was deleted 30 days ago (or now, when asked). A conversation stays a member of its group
+        (empty and hidden) – a new message brings it back."""
+        now = now or time.time()
+        limit = now - self.DELETED_DAYS * 86400
+        with self.lock:
+            for c, chat in self.chats.items():
+                if cid and c != cid:
+                    continue
+                old = chat.get("geloescht")
+                if old and (cid or old < limit) and mid is None:
+                    chat["messages"] = []
+                    chat["geloescht"] = 1          # hidden, nothing left to restore
+                chat["messages"] = [m for m in chat["messages"] if not (m.get("geloescht") and (
+                    (mid and m.get("mid") == mid) or (not mid and (cid or m["geloescht"] < limit))))]
+            self.save()
+
     def tick(self, cid, message):
         """(state, time) of one of my messages: wartet | fehler | gesendet | zugestellt | gelesen. In a group „zugestellt“ /
         „gelesen“ once everyone has it; „gelesen“ only while my own read receipts are on (mutual)."""
@@ -1095,7 +1236,7 @@ class Account:
             return state, message["at"]
         others = [u for u in self.chats[cid]["roster"] if u != self.username]
         delivered, read = message.get("zugestellt", {}), message.get("gelesen", {})
-        if others and self.read_receipts and all(u in read for u in others):
+        if others and self.receipts_for(cid) and all(u in read for u in others):
             return "gelesen", max(read[u] for u in others)
         if others and all(u in delivered or u in read for u in others):
             return "zugestellt", max((delivered.get(u) or read.get(u)) for u in others)
@@ -1361,6 +1502,18 @@ class Account:
                     if key in data:
                         self.profiles[key] = bool(data[key])
                 return [{"chat": None, "settings": True}]
+            if data.get("t") == "gespraech" and data.get("chat") in self.chats and data.get("key") in self.SYNCED_CHAT_KEYS:
+                if data.get("value") is None:
+                    self.chats[data["chat"]].pop(data["key"], None)
+                else:
+                    self.chats[data["chat"]][data["key"]] = data["value"]
+                return [{"chat": None, "settings": True}]
+            if data.get("t") == "blockiert" and isinstance(data.get("name"), str):
+                if data.get("an"):
+                    self.blocked[data["name"]] = int(time.time())
+                else:
+                    self.blocked.pop(data["name"], None)
+                return [{"chat": None, "settings": True}]
             if data.get("t") == "stumm" and data.get("chat") in self.chats:
                 self.chats[data["chat"]]["stumm"] = bool(data.get("an"))
                 return [{"chat": None, "settings": True}]
@@ -1372,6 +1525,13 @@ class Account:
                 self.profiles["me"] = data.get("bild") or None
                 return [{"chat": None, "settings": True}]
             return []
+        if sender in self.blocked and data.get("t") in ("text", "anhang", "reaktion", "tippt", "bearbeiten", "zurueckrufen", "profile", "name"):
+            return []          # blocked (1f800b4f): nothing from them, no receipt, no notification
+        if chat.get("geloescht") and data.get("t") in ("text", "anhang"):
+            # A new message brings a deleted conversation back – what was there stays in „Zuletzt gelöscht“.
+            for m in chat["messages"]:
+                m.setdefault("geloescht", chat["geloescht"] if chat["geloescht"] > 1 else int(time.time()))
+            chat.pop("geloescht", None)
         if data.get("t") == "roster":
             devices = data.get("devices") or {}
             # Only names that really are in the MLS group may get packets (a member cannot add a stranger's device).
