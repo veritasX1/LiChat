@@ -75,8 +75,8 @@ fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], Error> {
 pub enum Received {
     /// A text (or any payload) in a conversation, with the sender's identity as MLS proved it.
     Message { conversation: Vec<u8>, sender: String, payload: Vec<u8> },
-    /// Someone changed the conversation's keys or members; nothing to show, the epoch moved on.
-    Changed { conversation: Vec<u8> },
+    /// Someone ([by]) changed the conversation's keys or members; the app compares the members (Michelle 31ec7628).
+    Changed { conversation: Vec<u8>, by: String },
     /// This device was removed from the conversation (test plan S2): it is forgotten here, nothing more can be read.
     Removed { conversation: Vec<u8>, by: String },
 }
@@ -261,9 +261,9 @@ impl Device {
                     self.conversations.remove(&conversation);
                     return Ok(Received::Removed { conversation, by: sender });
                 }
-                Ok(Received::Changed { conversation })
+                Ok(Received::Changed { conversation, by: sender })
             }
-            _ => Ok(Received::Changed { conversation }),
+            _ => Ok(Received::Changed { conversation, by: sender }),
         }
     }
 

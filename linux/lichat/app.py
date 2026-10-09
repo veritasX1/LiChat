@@ -388,7 +388,8 @@ class Window(Adw.ApplicationWindow):
             if last:
                 head.append(Gtk.Label(label=when_short(last["at"]), css_classes=["lichat-time"]))
             text.append(head)
-            preview = (("Du: " if last["from"] == self.account.username else "") + last["text"]) if last else "Noch keine Nachrichten"
+            preview = (last["text"] if last.get("system") else ("Du: " if last["from"] == self.account.username else "") + last["text"]) \
+                if last else "Noch keine Nachrichten"
             text.append(Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
                                   ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
             box.append(text)
@@ -436,6 +437,10 @@ class Window(Adw.ApplicationWindow):
         group = len(others) > 1
         previous = None
         for m in chat["messages"]:
+            if m.get("system"):
+                self.bubbles.append(Gtk.Label(label=m["text"], css_classes=["lichat-stamp"], wrap=True))
+                previous = m      # the next bubble names its sender again, no extra time stamp
+                continue
             mine = m["from"] == self.account.username
             if previous is None or m["at"] - previous["at"] > GAP:
                 self.bubbles.append(Gtk.Label(label=when_long(m["at"]), css_classes=["lichat-stamp"]))
@@ -542,7 +547,7 @@ class Window(Adw.ApplicationWindow):
         if self.current and any(n.get("chat") == self.current for n in news):
             self.show_conversation()
         for item in news:
-            if item.get("text") is None or item["from"] == self.account.username:
+            if item.get("text") is None or item.get("system") or item["from"] == self.account.username:
                 continue
             if self.is_active() and self.get_visible() and item["chat"] == self.current:
                 continue

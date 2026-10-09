@@ -305,8 +305,16 @@ class Account:
             roster = self.chats[cid]["roster"]
             for name in names:
                 roster.pop(name, None)
+                self._system(self.chats[cid], f"Du hast {name} aus der Unterhaltung entfernt.")
             self.save()
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(commit))})
+
+    @staticmethod
+    def _system(chat, text):
+        """A grey line in the history (no bubble): who joined, who was taken out."""
+        line = {"from": "", "system": True, "text": text, "at": int(time.time())}
+        chat["messages"].append(line)
+        return line
 
     def members(self, cid):
         if self.chats.get(cid, {}).get("removed"):
@@ -376,10 +384,16 @@ class Account:
             chat["removed"] = received["sender"]
             return [{"chat": cid, "removed": received["sender"]}]
         if received["kind"] != "message":
-            # Keys or members changed: whoever is no longer in the group gets no more packets.
+            # Keys or members changed: whoever is no longer in the group gets no more packets – and everyone still in it
+            # reads who took whom out, like Messages (Michelle 31ec7628).
             members = set(self.members(cid))
+            gone = sorted(u for u in chat["roster"] if u not in members)
             chat["roster"] = {u: d for u, d in chat["roster"].items() if u in members}
-            return []
+            news = []
+            for name in gone:
+                line = self._system(chat, f"{received['sender']} hat {name} aus der Unterhaltung entfernt.")
+                news.append({"chat": cid, "system": line["text"]})
+            return news
         sender = received["sender"]
         try:
             data = json.loads(bytes(received["payload"]))
