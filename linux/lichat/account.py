@@ -15,9 +15,14 @@ On disk, in the profile folder (files 600, folder 700):
     key            32 random bytes sealing the two files below – only lichat-cli; the app keeps it in the keyring
     state.bin      the core's state, sealed by the core (LICHAT1)
     chats.bin      rosters, titles and the history, sealed here (LICHATC1, AES-256-GCM)
+    profile.bin    my picture and the pictures the others sent me (LICHATP1, AES-256-GCM)
+
+Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
+<JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
 
 import base64
+import io
 import json
 import os
 import threading
@@ -36,6 +41,9 @@ except ImportError:  # run from inside the folder
 
 WELCOME, MLS = b"W", b"M"
 CHATS_MAGIC = b"LICHATC1"
+PROFILE_MAGIC = b"LICHATP1"
+PICTURE_PX = 512
+PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
 SUPPLY = 20          # key packages uploaded at the start
 TIMEOUT = 20
 
@@ -119,7 +127,9 @@ class Account:
         self.device = lichat_core.Device.load((self.folder / "state.bin").read_bytes(), self.key)
         # Held while the state changes (never during a call to the server): the app's window reads under it too.
         self.lock = threading.RLock()
-        self.chats = self._open_chats()
+        self.chats = self._unseal("chats.bin", CHATS_MAGIC, {})
+        self.profiles = self._unseal("profile.bin", PROFILE_MAGIC, {"me": None, "people": {}})
+        self._owe_picture = set()   # chats that learn my picture once their roster is known
         self.server = Server(self.info["server"], self.info["token"])
 
     # ------------------------------------------------------------------------------------------ setup
@@ -161,23 +171,26 @@ class Account:
 
     # ------------------------------------------------------------------------------------------ storage
 
-    def _open_chats(self):
-        path = self.folder / "chats.bin"
+    def _unseal(self, name, magic, empty):
+        path = self.folder / name
         if not path.exists():
-            return {}
+            return empty
         sealed = path.read_bytes()
-        if not sealed.startswith(CHATS_MAGIC):
-            raise LiChatError("chats.bin ist beschädigt")
-        body = sealed[len(CHATS_MAGIC):]
-        plain = AESGCM(self.key).decrypt(body[:12], body[12:], CHATS_MAGIC)
-        return json.loads(plain)
+        if not sealed.startswith(magic):
+            raise LiChatError(f"{name} ist beschädigt")
+        body = sealed[len(magic):]
+        return json.loads(AESGCM(self.key).decrypt(body[:12], body[12:], magic))
+
+    def _seal(self, name, magic, data):
+        nonce = os.urandom(12)
+        plain = json.dumps(data, ensure_ascii=False).encode()
+        write_private(self.folder / name, magic + nonce + AESGCM(self.key).encrypt(nonce, plain, magic))
 
     def save(self):
         """The core's state first, then the chats – both before anything is acknowledged on the server."""
         write_private(self.folder / "state.bin", bytes(self.device.save(self.key)))
-        nonce = os.urandom(12)
-        plain = json.dumps(self.chats, ensure_ascii=False).encode()
-        write_private(self.folder / "chats.bin", CHATS_MAGIC + nonce + AESGCM(self.key).encrypt(nonce, plain, CHATS_MAGIC))
+        self._seal("chats.bin", CHATS_MAGIC, self.chats)
+        self._seal("profile.bin", PROFILE_MAGIC, self.profiles)
 
     # ------------------------------------------------------------------------------------------ conversations
 
@@ -217,12 +230,48 @@ class Account:
             cid = conversation.hex()
             self.chats[cid] = {"title": title, "roster": roster, "messages": []}
             hello = self._payload({"t": "roster", "devices": roster, "title": title})
-            packet = self.device.encrypt(conversation, hello)
+            packets = [self.device.encrypt(conversation, hello)]
+            if self.profiles["me"]:
+                packets.append(self.device.encrypt(conversation, self._payload({"t": "profile", "bild": self.profiles["me"]})))
             self.save()
             targets = self.targets(cid)
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(WELCOME + bytes(welcome))})
-        self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+        for packet in packets:
+            self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return cid
+
+    # ------------------------------------------------------------------------------------------ profile pictures
+
+    @staticmethod
+    def prepare_picture(path):
+        """Square from the middle, 512 px, JPEG – and nothing else from the file: no EXIF (place, camera, time)."""
+        from PIL import Image, ImageOps
+        with Image.open(path) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            side = min(image.size)
+            left, top = (image.width - side) // 2, (image.height - side) // 2
+            image = image.crop((left, top, left + side, top + side)).resize((PICTURE_PX, PICTURE_PX), Image.LANCZOS)
+            out = io.BytesIO()
+            image.save(out, "JPEG", quality=82, optimize=True)
+        return out.getvalue()
+
+    def set_picture(self, path):
+        """My picture (None: remove it), sent end-to-end into every conversation."""
+        picture = b64(self.prepare_picture(path)) if path else ""
+        sends = []
+        with self.lock:
+            self.profiles["me"] = picture or None
+            for cid in self.chats:
+                sends.append((self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "profile", "bild": picture}))))
+            self.save()
+        for targets, packet in sends:
+            if targets:
+                self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    def picture(self, username):
+        """The JPEG bytes of [username]'s picture (mine too), or None."""
+        value = self.profiles["me"] if username == self.username else self.profiles["people"].get(username)
+        return unb64(value) if value else None
 
     def targets(self, cid):
         return sorted({d for devices in self.chats[cid]["roster"].values() for d in devices} - {self.device_id})
@@ -290,6 +339,15 @@ class Account:
                 packages = self.device.key_packages(joined)
                 self.save()
             self.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
+        if self._owe_picture:
+            # Joined a conversation: the others get my picture once I know who they are (the roster).
+            with self.lock:
+                owed, self._owe_picture = self._owe_picture, set()
+                sends = [(self.targets(cid), self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "profile", "bild": self.profiles["me"]})))
+                         for cid in owed if self.profiles["me"]]
+                self.save()
+            for targets, packet in sends:
+                self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return news
 
     def _take(self, received):
@@ -309,7 +367,22 @@ class Account:
                 return [{"chat": cid, "problem": f"Teilnehmerliste von {sender} passt nicht zur Gruppe – nicht übernommen"}]
             chat["roster"] = devices
             chat["title"] = str(data.get("title") or chat["title"])
+            if self.profiles["me"] and sender != self.username:
+                self._owe_picture.add(cid)
             return []
+        if data.get("t") == "profile":
+            picture = data.get("bild") or ""
+            try:
+                raw = unb64(picture) if picture else b""
+            except ValueError:
+                raw = b"?"
+            if raw and (len(raw) > PICTURE_MAX or not raw.startswith(b"\xff\xd8\xff")):
+                return [{"chat": cid, "problem": f"Profilbild von {sender} nicht übernommen"}]
+            if raw:
+                self.profiles["people"][sender] = picture
+            else:
+                self.profiles["people"].pop(sender, None)
+            return [{"chat": cid, "picture": sender}]
         if data.get("t") == "text":
             message = {"from": sender, "text": str(data.get("text", "")), "at": int(data.get("at") or time.time())}
             chat["messages"].append(message)

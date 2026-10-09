@@ -10,6 +10,7 @@
     lichat-cli [--profil NAME] verlauf <gespräch>
     lichat-cli [--profil NAME] mitglieder <gespräch>
     lichat-cli [--profil NAME] code <gespräch>              # Sicherheitscode zum Vergleichen
+    lichat-cli [--profil NAME] bild <datei>|--weg           # Profilbild (512 px, ohne EXIF, nur in den Gesprächen)
 
 Daten: $XDG_DATA_HOME/lichat-cli/<profil> (Standard „standard“, oder LICHAT_PROFIL). Ein <gespräch> ist die kurze
 Kennung aus „gespraeche“ (8 Zeichen, ein eindeutiger Anfang reicht).
@@ -69,6 +70,8 @@ def main(argv):
             chat = short(bytes.fromhex(item["chat"])) if item.get("chat") else "–"
             if item.get("joined"):
                 print(f"[{chat}] neues Gespräch")
+            elif item.get("picture"):
+                print(f"[{chat}] neues Profilbild von {item['picture']}")
             elif item.get("problem"):
                 print(f"[{chat}] ⚠ {item['problem']}")
             else:
@@ -91,6 +94,11 @@ def main(argv):
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":
         print(account.safety_code(account.chat(args[0] if args else "")))
+    elif command == "bild":
+        if not args:
+            raise LiChatError("bild <datei> | bild --weg")
+        account.set_picture(None if args[0] == "--weg" else args[0])
+        print("Profilbild entfernt" if args[0] == "--weg" else "Profilbild gesetzt und in alle Gespräche geschickt")
     else:
         raise LiChatError(f"Unbekannter Befehl „{command}“ – lichat-cli hilfe")
     return 0
