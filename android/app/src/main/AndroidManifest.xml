@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Android 14+: a screenshot while a one-time picture is open becomes a line in the chat (fe9f2029); nothing else. -->
     <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
+    <!-- App lock (99eea3f7): unlock with fingerprint/face or the screen lock – a normal permission, nothing is asked. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application

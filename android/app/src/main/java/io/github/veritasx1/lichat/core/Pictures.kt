@@ -34,6 +34,12 @@ object Pictures {
 
     private fun jpeg(bitmap: Bitmap, quality: Int) = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
 
+    /** For „Markieren“ (4fb76dfd): the photo upright and at most 2048 px – drawn on, then sent like any photo. */
+    fun forMarkup(source: ByteArray): Bitmap = fit(upright(source, PHOTO_PX), PHOTO_PX)
+
+    /** The marked-up picture as a JPEG – a new bitmap, so nothing of the original file's metadata is left. */
+    fun encode(bitmap: Bitmap): ByteArray = jpeg(bitmap, 92)
+
     /** A picture sent as a file: full size, upright, JPEG 95 – only the metadata (EXIF: place, camera, time) stays behind. */
     fun withoutMetadata(source: ByteArray): ByteArray = jpeg(upright(source, Int.MAX_VALUE / 4), 95)
 

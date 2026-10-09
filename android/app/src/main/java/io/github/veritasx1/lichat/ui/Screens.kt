@@ -322,6 +322,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    // Leaving the chat covers every secret picture again (f9e3f055)
+    androidx.compose.runtime.DisposableEffect(cid) { onDispose { SecretShown.ids.clear() } }
     var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }
     // Like iOS: the menu of a long press closes the keyboard first (Olaf 19020c8c: „Bearbeiten“ was cut off under it).
     val menuKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -766,6 +768,7 @@ class AttachmentActions(
 /** Secret pictures (f9e3f055) tapped open while the app runs – everywhere else they stay pixelated. */
 object SecretShown {
     val ids = androidx.compose.runtime.mutableStateListOf<String>()
+    const val SECONDS = 10
 }
 
 /** Pixelated here, from the picture itself: 6 blocks on the short side (f9e3f055; Michelle: 14 still showed stripes). */
@@ -844,7 +847,7 @@ fun OnceViewer(bytes: ByteArray, secret: Boolean, onScreenshot: () -> Unit, onCl
 
 /** Before a photo leaves (fe9f2029, f9e3f055): normal, as a one-time picture, pixelated – or both. */
 @Composable
-fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onSend: (once: Boolean, secret: Boolean) -> Unit) {
+fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onMarkup: (() -> Unit)? = null, onSend: (once: Boolean, secret: Boolean) -> Unit) {
     val colors = palette()
     var once by remember { mutableStateOf(false) }
     var secret by remember { mutableStateOf(false) }
@@ -860,6 +863,9 @@ fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onSend: (once: Boole
             if (bitmap != null) Image(if (secret) pixelated(bitmap) else bitmap, contentDescription = "Foto", contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxWidth().aspectRatio(bitmap.width / bitmap.height.coerceAtLeast(1).toFloat()).clip(RoundedCornerShape(12.dp)))
         }
+        // 4fb76dfd: draw on it before it leaves, like Apple's „Markieren“
+        if (onMarkup != null && bytes != null) BasicText("Markieren", style = style(17f, 400, colors.blue).copy(textAlign = TextAlign.Center),
+            modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onMarkup).padding(vertical = 10.dp))
         Section(null, footer = "Ein Einmal-Bild lässt sich genau einmal ansehen, dann ist es überall weg – Bildschirmfotos sind gesperrt. Verpixelt zeigt erst ein Tippen das Foto.") {
             SwitchRow("Einmal-Ansicht", once) { once = it }
             Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(0.5.dp).background(colors.separator))
@@ -994,6 +1000,8 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
             ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
     }
     val hidden = info.optBoolean("geheim") && id !in SecretShown.ids
+    // Uncovered, it is covered again after a few seconds like on the iPhone (Michelle: it stayed sharp)
+    if (info.optBoolean("geheim") && !hidden) LaunchedEffect(id) { kotlinx.coroutines.delay(SecretShown.SECONDS * 1000L); SecretShown.ids.remove(id) }
     // The photo itself at display size replaces the preview (photos up to 15 MB, like Messages loads them) – a secret one
     // only once it was tapped open (Michelle c5efaa9: it stood sharp in the bubble after a minute).
     val full by androidx.compose.runtime.produceState(if (hidden) null else FullImages.cache.get(id), id, hidden) {
