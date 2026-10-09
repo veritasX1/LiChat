@@ -65,6 +65,9 @@ class Store:
             -- Contact PINs (card 89aae55d): a short code that names its user for 10 minutes, once.
             CREATE TABLE IF NOT EXISTS pins (pin TEXT PRIMARY KEY, username TEXT NOT NULL, expires REAL NOT NULL);
             -- Attachments (card 9780f3a0): encrypted on the phone, the server keeps opaque bytes – no name, no type.
+            -- Linking another own device (card da5cbfcb): the new device opens a code, an existing device accepts it for
+            -- its account, then the new device signs in once. 10 minutes; nothing secret is kept here.
+            CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, username TEXT, device TEXT, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY, device TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 size INTEGER NOT NULL, created REAL NOT NULL);
@@ -72,6 +75,9 @@ class Store:
         # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
         if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
             self.db.execute("ALTER TABLE devices DROP COLUMN push")
+        # A name per device („Android“, „Ubuntu“) for the list of one's own devices (card da5cbfcb).
+        if "name" not in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
+            self.db.execute("ALTER TABLE devices ADD COLUMN name TEXT NOT NULL DEFAULT ''")
 
     @property
     def db(self):
@@ -119,12 +125,58 @@ class Store:
         with self.lock:
             return self._add_device(username, identity)
 
-    def _add_device(self, username, identity):
+    def _add_device(self, username, identity, name=""):
         device = secrets.token_hex(8)
         token = secrets.token_urlsafe(32)
-        self.db.execute("INSERT INTO devices (id, username, token, identity, created) VALUES (?, ?, ?, ?, ?)",
-                        (device, username, token_hash(token), identity, self.clock()))
+        self.db.execute("INSERT INTO devices (id, username, token, identity, created, name) VALUES (?, ?, ?, ?, ?, ?)",
+                        (device, username, token_hash(token), identity, self.clock(), str(name)[:40]))
         return device, token
+
+    # Linking a device (card da5cbfcb) ---------------------------------------------------------------
+
+    def link_open(self, minutes=10):
+        """A new device asks to join an account: a code to show (QR + 8 signs), nobody's yet."""
+        code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(4)) + "-" + "".join(secrets.choice(INVITE_ALPHABET) for _ in range(4))
+        with self.lock:
+            self.db.execute("DELETE FROM links WHERE expires < ?", (self.clock(),))
+            self.db.execute("INSERT INTO links (code, expires) VALUES (?, ?)", (code, self.clock() + minutes * 60))
+        return code
+
+    def link_accept(self, code, username):
+        """An existing device of [username] says: that code is my new device. False when unknown, expired or taken."""
+        key = invite_key(code)
+        with self.lock:
+            row = self.db.execute("SELECT username, expires FROM links WHERE code = ?", (key,)).fetchone()
+            if row is None or row[1] < self.clock() or row[0]:
+                return False
+            self.db.execute("UPDATE links SET username = ? WHERE code = ?", (username, key))
+            return True
+
+    def link_state(self, code):
+        """{} while waiting, {username} once accepted, {username, device} once the new device signed in; None if gone."""
+        row = self.db.execute("SELECT username, device, expires FROM links WHERE code = ?", (invite_key(code),)).fetchone()
+        if row is None or row[2] < self.clock():
+            return None
+        return {k: v for k, v in (("username", row[0]), ("device", row[1])) if v}
+
+    def link_finish(self, code, identity, name=""):
+        """The new device signs in with its own key – once. (device, token, username) or None."""
+        key = invite_key(code)
+        with self.lock:
+            row = self.db.execute("SELECT username, device, expires FROM links WHERE code = ?", (key,)).fetchone()
+            if row is None or row[2] < self.clock() or not row[0] or row[1]:
+                return None
+            device, token = self._add_device(row[0], identity, name)
+            self.db.execute("UPDATE links SET device = ? WHERE code = ?", (device, key))
+            return device, token, row[0]
+
+    def remove_own_device(self, username, device):
+        """One of my other devices signs out (from the list of my devices). False if it is not mine."""
+        with self.lock:
+            if not self.db.execute("SELECT 1 FROM devices WHERE id = ? AND username = ?", (device, username)).fetchone():
+                return False
+            self.db.execute("DELETE FROM devices WHERE id = ?", (device,))
+            return True
 
     def device_for_token(self, token):
         """(device_id, username) for a bearer token, or None."""
@@ -137,9 +189,9 @@ class Store:
 
     def devices(self, username):
         """Public directory entry: device ids and identity keys – what a sender needs to verify."""
-        rows = self.db.execute("SELECT id, identity FROM devices WHERE username = ? ORDER BY created",
+        rows = self.db.execute("SELECT id, identity, name FROM devices WHERE username = ? ORDER BY created",
                                (username,)).fetchall()
-        return [{"device": d, "identity": i} for d, i in rows]
+        return [{"device": d, "identity": i, "name": n} for d, i, n in rows]
 
     # MLS key packages ---------------------------------------------------------------------------
 
@@ -157,13 +209,15 @@ class Store:
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO last_resort VALUES (?, ?)", (device, blob))
 
-    def claim_key_packages(self, username):
-        """One key package per device of the user; each package is used only once (MLS) – when none is left, the
-        device's last-resort package (kept)."""
+    def claim_key_packages(self, username, only=None):
+        """One key package per device of the user (or only of device [only]); each package is used only once (MLS) –
+        when none is left, the device's last-resort package (kept)."""
         out = []
         with self.lock:
             for device, _identity in self.db.execute(
                     "SELECT id, identity FROM devices WHERE username = ? ORDER BY created", (username,)).fetchall():
+                if only and device != only:
+                    continue
                 row = self.db.execute("SELECT id, blob FROM key_packages WHERE device = ? ORDER BY id LIMIT 1",
                                       (device,)).fetchone()
                 if row:
