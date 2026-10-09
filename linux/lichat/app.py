@@ -155,11 +155,12 @@ class Worker:
 
 
 class Window(Adw.ApplicationWindow):
-    def __init__(self, app, account=None, folder=None, key_store=None):
+    def __init__(self, app, account=None, folder=None, key_store=None, separate=False):
         super().__init__(application=app, title="LiChat", default_width=980, default_height=640)
         self.add_css_class("lichat")
         self.folder = Path(folder or data_folder())
         self.key_store = key_store
+        self.separate = separate      # LICHAT_ORDNER: a second LiChat – no autostart entry of its own
         self.worker = Worker()
         self.account = account
         self.current = None        # the chosen conversation (hex id)
@@ -265,7 +266,7 @@ class Window(Adw.ApplicationWindow):
                 self.setup_note.set_label(error)
                 return
             self.account = account
-            if self.settings["hintergrund"] and self.key_store is not None:
+            if self.settings["hintergrund"] and not self.separate:
                 autostart(True)
             self.show_main()
 
@@ -631,7 +632,7 @@ class Window(Adw.ApplicationWindow):
     def on_setting(self, action, value):
         action.set_state(value)
         self.set_setting(action.get_name(), value.get_boolean())
-        if action.get_name() == "hintergrund" and self.key_store is not None:   # a LICHAT_ORDNER LiChat never touches autostart
+        if action.get_name() == "hintergrund" and not self.separate:   # a LICHAT_ORDNER LiChat never touches autostart
             autostart(value.get_boolean())
 
     def explain_background(self):
@@ -867,9 +868,9 @@ class Window(Adw.ApplicationWindow):
 
 
 class App(Adw.Application):
-    def __init__(self, account=None, folder=None, key_store=None, background=False):
+    def __init__(self, account=None, folder=None, key_store=None, background=False, separate=False):
         super().__init__(application_id=APP_ID)
-        self.options = (account, folder, key_store)
+        self.options = (account, folder, key_store, separate)
         self.background = background
         self.window = None
         opening = Gio.SimpleAction.new("oeffnen", GLib.VariantType.new("s"))
@@ -895,7 +896,7 @@ def main(argv=None):
     folder = os.environ.get("LICHAT_ORDNER")
     if folder:
         # Michelle: an own LiChat beside Olaf's – no keyring, no shared app id, no autostart entry.
-        app = App(folder=Path(folder), key_store=None, background=background)
+        app = App(folder=Path(folder), key_store=None, background=background, separate=True)
         import hashlib
         app.set_application_id(APP_ID + ".Ordner" + hashlib.sha256(str(Path(folder).resolve()).encode()).hexdigest()[:8])
         return app.run(argv)

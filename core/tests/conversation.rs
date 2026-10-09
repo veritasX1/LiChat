@@ -193,3 +193,17 @@ fn add_a_member_later() {
     assert!(erna.receive(&before).is_err());
     assert_eq!(anna.safety_code(&cid).unwrap(), erna.safety_code(&cid).unwrap());
 }
+
+#[test]
+fn a_message_crossing_a_change_stays_readable() {
+    let mut anna = Device::new("anna").unwrap();
+    let mut bernd = Device::new("bernd").unwrap();
+    let erna = Device::new("erna").unwrap();
+    let started = anna.start_conversation(&bernd.key_packages(1).unwrap()).unwrap();
+    let cid = started.conversation.clone();
+    bernd.join(&started.welcome).unwrap();
+    let crossing = bernd.encrypt(&cid, b"zwei").unwrap();          // sent before Bernd knows of the change
+    let added = anna.add_members(&cid, &erna.key_packages(1).unwrap()).unwrap();
+    assert!(matches!(anna.receive(&crossing).unwrap(), Received::Message { payload, .. } if payload == b"zwei"));
+    bernd.receive(&added.conversation).unwrap();
+}

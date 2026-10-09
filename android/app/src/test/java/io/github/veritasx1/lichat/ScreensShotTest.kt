@@ -3,6 +3,11 @@ package io.github.veritasx1.lichat
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
@@ -152,6 +157,26 @@ httpd.serve_forever()
 
     @Test
     fun settings() = shot("6-einstellungen") { SettingsScreen(anna, false, false, {}, {}, {}, {}) }
+
+    /** Michelle: the switches had no checked state and only their pixels reacted – now the whole row is one switch. */
+    @Test
+    fun switchRowsAreSwitches() {
+        var on = false
+        compose.setContent {
+            CompositionLocalProvider(LocalPalette provides Palette(false)) {
+                var state by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                SettingsScreen(anna, false, true, {}, {}, {}, {}, receipts = state, onReceipts = { state = it; on = it })
+            }
+        }
+        val row = compose.onNode(androidx.compose.ui.test.hasText("Lesebestätigungen senden").and(androidx.compose.ui.test.isToggleable())
+            .or(androidx.compose.ui.test.isToggleable().and(androidx.compose.ui.test.hasAnyDescendant(androidx.compose.ui.test.hasText("Lesebestätigungen senden")))),
+            useUnmergedTree = false)
+        row.assertExists()
+        row.assertIsOff()
+        compose.onNodeWithText("Lesebestätigungen senden").performClick()
+        row.assertIsOn()
+        org.junit.Assert.assertTrue(on)
+    }
 
     @Test
     fun setup() = shot("7-anmelden") { SetupScreen(false, null) { _, _, _ -> } }

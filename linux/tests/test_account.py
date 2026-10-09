@@ -431,6 +431,48 @@ class GroupLife(Base):
         self.assertTrue(self.reopen(anna).chats[cid]["stumm"])
 
 
+class TwoProcesses(Base):
+    """Michelle 09.10.: „warten“ and „abholen“ on one profile at once overwrote each other's state (NoMatchingKeyPackage)."""
+
+    def test_two_accounts_on_one_profile(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        other = Account(bernd.folder)          # a second lichat-cli on bernd's profile
+        anna.send(cid, "eins")
+        self.assertEqual([n["text"] for n in other.fetch() if "text" in n], ["eins"])
+        # The first one has an old state in memory – it must take the newer one before acting, not overwrite it.
+        bernd.send(cid, "zwei")
+        anna.add(cid, [self.person("erna").username])
+        self.assertTrue(any(n.get("system") for n in other.fetch()))
+        bernd.send(cid, "drei")
+        texts = [n["text"] for n in anna.fetch() if "text" in n]
+        self.assertEqual(texts, ["zwei", "drei"])
+        self.assertEqual(sorted(Account(bernd.folder).members(cid)), ["anna", "bernd", "erna"])
+
+    def test_parallel_fetches_handle_each_packet_once(self):
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        second = Account(bernd.folder)
+        for i in range(5):
+            anna.send(cid, f"Nachricht {i}")
+        got, problems = [], []
+
+        def run(account):
+            for news in (account.fetch(wait=2), account.fetch()):
+                got.extend(n["text"] for n in news if "text" in n)
+                problems.extend(n["problem"] for n in news if n.get("problem"))
+
+        threads = [threading.Thread(target=run, args=(a,)) for a in (bernd, second)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(sorted(got), [f"Nachricht {i}" for i in range(5)])
+        self.assertEqual(problems, [])
+
+
 class Supply(Base):
     def test_last_resort_keeps_a_device_reachable(self):
         account_module.SUPPLY, before = 1, account_module.SUPPLY
@@ -487,6 +529,33 @@ class Cli(Base):
         result = subprocess.run([sys.executable, str(ROOT / "linux" / "lichat-cli"), "--profil", profile, *args],
                                 capture_output=True, text=True, env=env, timeout=60)
         return result.returncode, result.stdout + result.stderr
+
+    def test_warten_survives_a_server_restart(self):
+        """Michelle: after a server restart (502) „warten“ ended – an instance was deaf. Now it keeps listening."""
+        self.run_cli("anna", "register", self.url, self.app.store.create_invite(), "anna")
+        self.run_cli("bernd", "register", self.url, self.app.store.create_invite(), "bernd")
+        chat = self.run_cli("anna", "neu", "bernd")[1].split()[1]
+        self.run_cli("bernd", "abholen")
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "cli"))
+        # From now on the first two fetches answer 502, like nginx while the container restarts.
+        real, failures = self.app, {"left": 2}
+
+        def restarting(environ, start_response):
+            if environ["PATH_INFO"] == "/v1/messages" and environ["REQUEST_METHOD"] == "GET" and failures["left"] > 0:
+                failures["left"] -= 1
+                start_response("502 Bad Gateway", [("Content-Type", "text/plain")])
+                return [b"Bad Gateway"]
+            return real(environ, start_response)
+
+        self.httpd.set_app(restarting)
+        listening = subprocess.Popen([sys.executable, str(ROOT / "linux" / "lichat-cli"), "--profil", "anna", "warten", "--bis", "60"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        time.sleep(1)
+        self.run_cli("bernd", "senden", chat, "Nach", "dem", "Neustart")
+        out, err = listening.communicate(timeout=60)
+        self.assertEqual(listening.returncode, 0, err)
+        self.assertIn("bernd: Nach dem Neustart", out)
+        self.assertIn("neuer Versuch", err)
 
     def test_cli_round_trip(self):
         code, out = self.run_cli("anna", "register", self.url, self.app.store.create_invite(), "anna")

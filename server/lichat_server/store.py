@@ -34,11 +34,11 @@ class Store:
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.clock = clock
         self.lock = threading.Lock()
-        self.db = sqlite3.connect(self.dir / "lichat.db", check_same_thread=False, isolation_level=None)
+        # One connection per thread (09.10.: a shared one broke under parallel waiting fetches – „bad parameter or other
+        # API misuse“, HTTP 500). WAL lets them read side by side; writes stay in order under self.lock.
+        self.path = self.dir / "lichat.db"
+        self.local = threading.local()
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA foreign_keys=ON")
-        # Deleted rows are overwritten, not only unlinked – on every system, not only where SQLite was built so (a255c433).
-        self.db.execute("PRAGMA secure_delete=ON")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, expires REAL NOT NULL, note TEXT);
             CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, created REAL NOT NULL);
@@ -62,6 +62,17 @@ class Store:
         # Databases from before 09.10. still have the ntfy column „push“ – gone with ntfy (Michelle).
         if "push" in [row[1] for row in self.db.execute("PRAGMA table_info(devices)")]:
             self.db.execute("ALTER TABLE devices DROP COLUMN push")
+
+    @property
+    def db(self):
+        connection = getattr(self.local, "connection", None)
+        if connection is None:
+            connection = sqlite3.connect(self.path, isolation_level=None, timeout=30)
+            connection.execute("PRAGMA foreign_keys=ON")
+            # Deleted rows are overwritten, not only unlinked – on every system (a255c433).
+            connection.execute("PRAGMA secure_delete=ON")
+            self.local.connection = connection
+        return connection
 
     # Invitations ---------------------------------------------------------------------------------
 
