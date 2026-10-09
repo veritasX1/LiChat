@@ -21,6 +21,7 @@ import java.nio.file.Files
  *  against the Ubuntu side (lichat-cli): the same packets, the same checks on both platforms. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 class AccountTest {
     private lateinit var server: Process
     private lateinit var url: String
@@ -146,5 +147,55 @@ httpd.serve_forever()
         try { anna.start(listOf("niemand")); throw AssertionError("unbekannt muss scheitern") } catch (e: LiChatException) { }
         assertEquals(0, anna.chats.length())
         assertTrue(erna.username == "erna")
+    }
+
+    /** Card 9780f3a0: attachments end to end – phone to phone, Ubuntu to phone, a changed file is refused. */
+    @Test
+    fun attachmentsBothWays() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        val document = ByteArray(150_000).also { java.util.Random(7).nextBytes(it) }
+        anna.sendAttachment(cid, document, "Plan.pdf", "application/pdf", "datei")
+        anna.sendAttachment(cid, byteArrayOf(0, 1, 2), "Sprachnachricht.m4a", "audio/mp4", "sprache", durationS = 3.42)
+        // A photo with GPS in its EXIF (made here, never a real photo) leaves without it.
+        val bitmap = android.graphics.Bitmap.createBitmap(3000, 2000, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF3C9A5A.toInt()) }
+        val raw = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
+        anna.sendAttachment(cid, jpeg, "garten.jpg", "image/jpeg", "bild", preview = preview)
+        val news = bernd.fetch()
+        assertEquals(listOf("Datei: Plan.pdf", "Sprachnachricht", "Foto"), news.map { it.text })
+        assertEquals(document.toList(), bernd.openAttachment(news[0].attachment!!).toList())
+        assertEquals(3.4, news[1].attachment!!.getDouble("dauer"), 0.001)
+        val photo = bernd.openAttachment(news[2].attachment!!)
+        val decoded = android.graphics.BitmapFactory.decodeByteArray(photo, 0, photo.size)
+        assertEquals(2048, maxOf(decoded.width, decoded.height))
+        // Changed on the server: refused.
+        val path = File(root, "server/anhaenge/" + news[0].attachment!!.getString("id"))
+        File(bernd.folder, "anhaenge/" + news[0].attachment!!.getString("id")).delete()
+        path.writeBytes(path.readBytes().also { it[30] = (it[30].toInt() xor 1).toByte() })
+        try { bernd.openAttachment(news[0].attachment!!); throw AssertionError("verändert muss scheitern") } catch (e: LiChatException) { }
+    }
+
+    @Test
+    fun attachmentFromUbuntu() {
+        val anna = person("anna")
+        assertTrue(cli("bernd", "register", url, invites.removeFirst(), "bernd").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd"))
+        cli("bernd", "abholen")
+        // Ubuntu's account.py sends a file – the phone opens it.
+        val script = """
+import sys
+sys.path.insert(0, "${File(repo, "linux").absolutePath}")
+from lichat.account import Account, default_folder
+a = Account(default_folder("bernd"))
+a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "datei")
+"""
+        val process = ProcessBuilder("python3", "-c", script).redirectErrorStream(true)
+            .apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath }.start()
+        val out = process.inputStream.bufferedReader().readText()
+        assertEquals(out, 0, process.waitFor())
+        val news = anna.fetch().filter { it.attachment != null }
+        assertEquals("Kohle, Wuerstchen", String(anna.openAttachment(news.single().attachment!!)))
     }
 }

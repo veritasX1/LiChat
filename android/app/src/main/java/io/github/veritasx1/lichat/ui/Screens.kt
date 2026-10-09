@@ -146,7 +146,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
     // Search: by name and in the texts, on the phone only (nothing is asked of the server).
     val rows = if (query.isBlank()) all else all.filter { (cid, _, _) ->
         val q = query.trim().lowercase()
-        account.title(cid).lowercase().contains(q) || messages(account.chat(cid)).any { it.optString("text").lowercase().contains(q) }
+        account.title(cid).lowercase().contains(q) || messages(account.chat(cid)).any { io.github.veritasx1.lichat.core.describe(it).lowercase().contains(q) }
     }
     Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.statusBars)) {
         Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -193,8 +193,8 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                         val preview = when {
                             last == null -> "Noch keine Nachrichten"
                             last.optBoolean("system") -> last.optString("text")
-                            last.optString("from") == account.username -> "Du: " + last.optString("text")
-                            else -> last.optString("text")
+                            last.optString("from") == account.username -> "Du: " + io.github.veritasx1.lichat.core.describe(last)
+                            else -> io.github.veritasx1.lichat.core.describe(last)
                         }
                         BasicText(preview, style = style(15f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
@@ -209,7 +209,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
 
 @Composable
 fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, onBack: () -> Unit, onInfo: () -> Unit,
-               onSend: (String) -> Unit) {
+               onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions()) {
     val colors = palette()
     val chat = remember(version, cid) { synchronized(account.lock) { JSONObject(account.chat(cid).toString()) } }
     val title = account.title(cid)
@@ -250,6 +250,12 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 val mine = m.optString("from") == account.username
                 if (!mine && others.size > 1 && previous?.optString("from") != m.optString("from"))
                     BasicText(m.optString("from"), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                m.optJSONObject("anhang")?.let { info ->
+                    Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                        AttachmentBubble(info, mine, actions.playing == info.optString("id")) { actions.open(info) }
+                    }
+                    return@items
+                }
                 Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
                     BasicText(m.optString("text"), style = style(17f, 400, if (mine) Color.White else colors.label),
                         modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
@@ -262,18 +268,51 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             }
         }
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
-        if (chat.optString("removed").isEmpty()) InputBar(onSend)
+        if (chat.optString("removed").isEmpty()) InputBar(onSend, actions)
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
 }
 
-/** The input line: a rounded field „LiChat“ (like „iMessage“) and the blue send arrow once there is text. */
+/** What the conversation can do with attachments (card 9780f3a0) – the activity does the work (pickers, recorder, files). */
+class AttachmentActions(
+    val plus: (() -> Unit)? = null,
+    val micStart: (() -> Unit)? = null,
+    val micStop: (send: Boolean) -> Unit = {},
+    val open: (JSONObject) -> Unit = {},
+    /** Seconds recorded so far, or null when not recording. */
+    val recording: Int? = null,
+    /** The voice message playing now (its id). */
+    val playing: String? = null,
+)
+
+/** The input line like iOS 18: ⊕ on the left, the rounded field „LiChat“, inside it 🎤 while empty and the blue ↑ with
+ *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
 @Composable
-fun InputBar(onSend: (String) -> Unit) {
+fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions()) {
     val colors = palette()
     var text by remember { mutableStateOf("") }
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Bottom) {
+        actions.plus?.let { plus ->
+            Box(Modifier.padding(end = 8.dp, bottom = 1.dp).size(34.dp).clip(CircleShape).background(colors.fill)
+                .clickable(role = Role.Button, onClick = plus).semantics { contentDescription = "Anhang" }, contentAlignment = Alignment.Center) {
+                GlyphIcon(Glyph.Plus, colors.secondary, 20.dp)
+            }
+        }
+        val seconds = actions.recording
+        if (seconds != null) {
+            Row(Modifier.weight(1f).height(36.dp).clip(RoundedCornerShape(18.dp)).background(colors.theirs).padding(start = 6.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(28.dp).clip(CircleShape).clickable(role = Role.Button) { actions.micStop(false) }
+                    .semantics { contentDescription = "Aufnahme verwerfen" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
+                Box(Modifier.padding(start = 6.dp).size(8.dp).clip(CircleShape).background(colors.red))
+                BasicText("Aufnahme  %d:%02d".format(seconds / 60, seconds % 60), style = style(17f, 400, colors.label),
+                    modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Box(Modifier.size(28.dp).clip(CircleShape).background(colors.blue).clickable(role = Role.Button) { actions.micStop(true) }
+                    .semantics { contentDescription = "Sprachnachricht senden" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
+            }
+            return@Row
+        }
         Box(Modifier.weight(1f).heightIn(min = 36.dp).clip(RoundedCornerShape(18.dp)).background(colors.background)
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
             BasicTextField(text, { text = it }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
@@ -282,6 +321,92 @@ fun InputBar(onSend: (String) -> Unit) {
             if (text.isNotBlank()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
                 .clickable(role = Role.Button) { onSend(text); text = "" }.semantics { contentDescription = "Senden" },
                 contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
+            else actions.micStart?.let { mic ->
+                Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).clickable(role = Role.Button, onClick = mic)
+                    .semantics { contentDescription = "Sprachnachricht aufnehmen" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Mic, colors.secondary, 20.dp) }
+            }
+        }
+    }
+}
+
+/** A photo or video as its picture (rounded like a bubble), a voice message with ▶ and its length, a file with its name. */
+@Composable
+fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, onOpen: () -> Unit) {
+    val colors = palette()
+    val kind = info.optString("art")
+    val preview = remember(info.optString("id")) {
+        info.optString("vorschau").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
+            ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    val label = when (kind) { "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"; else -> "Datei ${info.optString("name")}" }
+    if ((kind == "bild" || kind == "video") && preview != null) {
+        val width = 220.dp
+        val height = width * (preview.height.toFloat() / preview.width.coerceAtLeast(1)).coerceIn(0.4f, 1.6f)
+        Box(Modifier.size(width, height).clip(RoundedCornerShape(18.dp)).clickable(onClick = onOpen).semantics { contentDescription = label },
+            contentAlignment = Alignment.Center) {
+            Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (kind == "video") Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+                GlyphIcon(Glyph.Play, Color.White, 24.dp)
+            }
+        }
+        return
+    }
+    val foreground = if (mine) Color.White else colors.label
+    Row(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+        .clickable(onClick = onOpen).semantics { contentDescription = label }.padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        if (kind == "sprache") {
+            GlyphIcon(if (playing) Glyph.Pause else Glyph.Play, foreground, 20.dp)
+            // A quiet wave like Messages: bars of fixed heights (the sound itself is not analysed).
+            Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf(6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12).forEach { h ->
+                    Box(Modifier.padding(horizontal = 1.dp).size(3.dp, h.dp).clip(RoundedCornerShape(2.dp)).background(foreground.copy(alpha = 0.8f)))
+                }
+            }
+            val seconds = info.optDouble("dauer", 0.0).toInt()
+            BasicText("%d:%02d".format(seconds / 60, seconds % 60), style = style(15f, 400, foreground))
+        } else {
+            GlyphIcon(Glyph.Document, foreground, 26.dp)
+            Column(Modifier.padding(start = 8.dp)) {
+                BasicText(info.optString("name", "Datei"), style = style(15f, 600, foreground), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                BasicText(sizeText(info.optLong("groesse")), style = style(13f, 400, foreground.copy(alpha = 0.8f)))
+            }
+        }
+    }
+}
+
+fun sizeText(size: Long): String = when {
+    size < 1024 -> "$size Byte"
+    size < 1024 * 1024 -> "%.1f KB".format(Locale.GERMANY, size / 1024.0)
+    else -> "%.1f MB".format(Locale.GERMANY, size / 1048576.0)
+}
+
+/** A photo full-screen inside LiChat (no gallery app gets the plain picture); a tap closes it. */
+@Composable
+fun PhotoViewer(bytes: ByteArray, onClose: () -> Unit) {
+    val bitmap = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = onClose).semantics { contentDescription = "Foto, tippen zum Schließen" },
+        contentAlignment = Alignment.Center) {
+        if (bitmap != null) Image(bitmap, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+    }
+}
+
+/** The ⊕ choices, as an action sheet from the bottom with „Abbrechen“ (iOS 18). */
+@Composable
+fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Unit) {
+    val colors = palette()
+    Box(Modifier.fillMaxSize().background(Color(0x66000000)).clickable(onClick = onCancel), contentAlignment = Alignment.BottomCenter) {
+        Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(10.dp)) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
+                BasicText("Fotos und Videos", style = style(19f, 400, colors.blue).copy(textAlign = TextAlign.Center),
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onPhotos).padding(vertical = 17.dp))
+                Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                BasicText("Datei", style = style(19f, 400, colors.blue).copy(textAlign = TextAlign.Center),
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onFile).padding(vertical = 17.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            BasicText("Abbrechen", style = style(19f, 600, colors.blue).copy(textAlign = TextAlign.Center),
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(onClick = onCancel).padding(vertical = 17.dp))
         }
     }
 }
@@ -306,7 +431,7 @@ fun NewMessage(problem: String?, onCancel: () -> Unit, onSend: (List<String>, St
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
         Spacer(Modifier.weight(1f))
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
-        InputBar { text -> onSend(to.split(',', ';', ' ').map { it.trim().lowercase() }.filter { it.isNotEmpty() }, text) }
+        InputBar(onSend = { text -> onSend(to.split(',', ';', ' ').map { it.trim().lowercase() }.filter { it.isNotEmpty() }, text) })
     }
 }
 

@@ -15,7 +15,6 @@ import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
@@ -123,6 +122,9 @@ object Notifications {
 
 class LiChatService : Service() {
     @Volatile private var running = false
+    /** Wakes the pause after an error at once when a network comes (Michelle 79b25b24: 21,8 s after flight mode). */
+    private val wake = Object()
+    @Volatile private var networkCame = false
     private var connectedSince = 0L
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -157,6 +159,13 @@ class LiChatService : Service() {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (first) { first = false; return }
+                // A new way out: end the waiting fetch on the old one, and end any pause – connect again right now.
+                Hub.account?.server?.interrupt()
+                synchronized(wake) { networkCame = true; wake.notifyAll() }
+            }
+
+            override fun onLost(network: Network) {
+                // The way is gone (flight mode): do not wait for the old connection's timeout.
                 Hub.account?.server?.interrupt()
             }
         }.also { manager.registerDefaultNetworkCallback(it) }
@@ -178,8 +187,10 @@ class LiChatService : Service() {
             } catch (e: LiChatException) {
                 setConnected(false)
                 Hub.problem.value = e.message
-                SystemClock.sleep(pause)
-                pause = minOf(pause * 2, 60_000L)
+                synchronized(wake) {
+                    if (!networkCame) wake.wait(pause)
+                    if (networkCame) { networkCame = false; pause = 1_000L } else pause = minOf(pause * 2, 60_000L)
+                }
             }
         }
     }

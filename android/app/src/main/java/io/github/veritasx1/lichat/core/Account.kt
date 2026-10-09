@@ -33,6 +33,9 @@ private val CHATS_MAGIC = "LICHATC1".toByteArray()
 private val PROFILE_MAGIC = "LICHATP1".toByteArray()
 const val SUPPLY = 20
 const val PICTURE_MAX = 150 * 1024
+private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
+const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
+val KINDS = setOf("bild", "video", "sprache", "datei")
 private const val TIMEOUT_S = 20
 
 fun b64(data: ByteArray): String = Base64.getEncoder().encodeToString(data)
@@ -41,8 +44,18 @@ fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
 fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
-data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0) {
+data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
+                val attachment: JSONObject? = null) {
     enum class Kind { Text, Joined, Picture, Removed, System, Problem }
+}
+
+/** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
+fun describe(message: JSONObject): String {
+    val info = message.optJSONObject("anhang") ?: return message.optString("text")
+    return when (info.optString("art")) {
+        "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"
+        else -> "Datei: " + info.optString("name")
+    }
 }
 
 /** https only – except for a server on this phone (adb reverse in tests: 127.0.0.1 is the computer). */
@@ -81,6 +94,35 @@ class Server(url: String, var token: String? = null) {
             throw LiChatException("Server nicht erreichbar: ${e.message}")
         } finally {
             open = null
+            connection.disconnect()
+        }
+    }
+
+    /** Bytes in, bytes out – the attachments (up to 100 MB, no JSON around them). */
+    fun raw(method: String, path: String, data: ByteArray? = null): ByteArray {
+        val connection = (URI(url + path).toURL().openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 15_000
+            readTimeout = 120_000
+            setRequestProperty("Content-Type", "application/octet-stream")
+            token?.let { setRequestProperty("Authorization", "Bearer $it") }
+        }
+        try {
+            if (data != null) {
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(data.size)
+                connection.outputStream.use { it.write(data) }
+            }
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val text = connection.errorStream?.use { String(it.readBytes()) } ?: ""
+                val message = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
+                throw LiChatException("Server: ${message.ifBlank { "Fehler" }} ($code)")
+            }
+            return connection.inputStream.use { it.readBytes() }
+        } catch (e: java.io.IOException) {
+            throw LiChatException("Server nicht erreichbar: ${e.message}")
+        } finally {
             connection.disconnect()
         }
     }
@@ -292,6 +334,60 @@ class Account(val folder: File, private val key: ByteArray) {
 
     fun others(cid: String): List<String> = chat(cid).getJSONObject("roster").keys().asSequence().filter { it != username }.toList()
 
+    // ------------------------------------------------------------------------------------------ attachments (card 9780f3a0)
+
+    /** Encrypts [data] with its own key, uploads the encrypted bytes, announces it end-to-end. Photos come already
+     *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
+    fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
+                       preview: ByteArray? = null): JSONObject {
+        if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
+        chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
+        if (data.size > ATTACHMENT_MAX) throw LiChatException("Anhang zu groß (höchstens 100 MB)")
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(ATTACHMENT_MAGIC)
+        val sealed = nonce + cipher.doFinal(data)
+        val id = JSONObject(String(server.raw("PUT", "/v1/anhaenge", sealed))).getString("id")
+        val info = JSONObject().put("id", id).put("schluessel", b64(key)).put("sha256", sha256(sealed)).put("name", name.take(200))
+            .put("mime", mime.take(100)).put("groesse", data.size).put("art", kind)
+        durationS?.let { info.put("dauer", Math.round(it * 10) / 10.0) }
+        preview?.let { info.put("vorschau", b64(it)) }
+        keepSealed(id, sealed)
+        val at = System.currentTimeMillis() / 1000
+        val packet: ByteArray
+        val targets: List<String>
+        synchronized(lock) {
+            val announce = JSONObject(info.toString()).put("t", "anhang").put("at", at)
+            packet = device.encrypt(cid.unhex(), payload(announce))
+            chat(cid).getJSONArray("messages").put(JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info))
+            save()
+            targets = targets(cid)
+        }
+        return post(targets, byteArrayOf(MLS) + packet)
+    }
+
+    private fun sha256(data: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(data).hex()
+
+    private fun keepSealed(id: String, sealed: ByteArray) {
+        val folder = File(folder, "anhaenge").apply { mkdirs() }
+        writePrivate(File(folder, id), sealed)
+    }
+
+    /** The plain bytes: from the local (still encrypted) copy or fetched again, checked against the announced SHA-256. */
+    fun openAttachment(info: JSONObject): ByteArray {
+        val id = info.getString("id")
+        val local = File(File(folder, "anhaenge"), id)
+        val sealed = if (local.exists()) local.readBytes() else server.raw("GET", "/v1/anhaenge/$id")
+        if (sha256(sealed) != info.getString("sha256")) throw LiChatException("Anhang beschädigt oder verändert")
+        if (!local.exists()) keepSealed(id, sealed)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(unb64(info.getString("schluessel")), "AES"), GCMParameterSpec(128, sealed, 0, 12))
+        cipher.updateAAD(ATTACHMENT_MAGIC)
+        return cipher.doFinal(sealed, 12, sealed.size - 12)
+    }
+
     // ------------------------------------------------------------------------------------------ profile pictures
 
     fun picture(user: String): ByteArray? {
@@ -418,6 +514,20 @@ class Account(val folder: File, private val key: ByteArray) {
                         val people = profiles.getJSONObject("people")
                         if (raw.isEmpty()) people.remove(sender) else people.put(sender, picture)
                         return listOf(News(cid, News.Kind.Picture, from = sender, received = at))
+                    }
+                    "anhang" -> {
+                        val info = JSONObject()
+                        for (k in listOf("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau")) if (data.has(k)) info.put(k, data.get(k))
+                        val good = Regex("[0-9a-f]{32}").matches(info.optString("id")) &&
+                            runCatching { unb64(info.optString("schluessel")).size == 32 }.getOrDefault(false) &&
+                            Regex("[0-9a-f]{64}").matches(info.optString("sha256")) && info.optString("art") in KINDS &&
+                            info.optString("vorschau").length <= 64 * 1024
+                        if (!good) return listOf(News(cid, News.Kind.Problem, text = "Anhang von $sender unvollständig – nicht übernommen"))
+                        info.put("name", info.optString("name", "Datei").take(200).replace('/', '_'))
+                        val sent = data.optLong("at", System.currentTimeMillis() / 1000)
+                        val message = JSONObject().put("from", sender).put("text", "").put("at", sent).put("anhang", info)
+                        chat.getJSONArray("messages").put(message)
+                        return listOf(News(cid, News.Kind.Text, from = sender, text = describe(message), at = sent, received = at, attachment = info))
                     }
                     "text" -> {
                         val text = data.optString("text")
