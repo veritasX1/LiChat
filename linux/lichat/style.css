@@ -93,3 +93,6 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-pin-name { font-size: 11px; color: #3c3c43; }
 .lichat-dark .lichat-pin-name { color: #ebebf5; }
 .lichat-filter { font-size: 11px; font-weight: 600; color: #8e8e93; margin-top: 4px; }
+/* Links in bubbles (22c918ce): underlined in the bubble's text colour on blue, blue on grey */
+.lichat-mine link { color: #ffffff; text-decoration: underline; }
+.lichat-theirs link { color: #007aff; text-decoration: underline; }

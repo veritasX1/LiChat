@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -153,9 +154,12 @@ fun EmojiPicker(onPick: (String) -> Unit, modifier: Modifier = Modifier) {
     var category by remember { mutableStateOf(-1) }       // -1 = all, in order
     val recent = remember { RecentEmojis.get(context) }
     fun pick(emoji: String) { RecentEmojis.add(context, emoji); onPick(emoji) }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     Column(modifier.clip(RoundedCornerShape(16.dp)).background(colors.cell).clickable(enabled = false) {}.padding(10.dp)) {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(colors.fill).padding(horizontal = 10.dp, vertical = 8.dp)) {
-            BasicTextField(query, { query = it }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+            BasicTextField(query, { query = it }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = androidx.compose.ui.text.input.ImeAction.Done), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                // „Fertig“ closes the keyboard and leaves the picker open (like iOS)
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { keyboard?.hide() }),
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Emoji suchen" },
                 decorationBox = { inner -> if (query.isEmpty()) BasicText("Emoji suchen", style = style(17f, 400, colors.tertiary)); inner() })
         }
@@ -173,7 +177,8 @@ fun EmojiPicker(onPick: (String) -> Unit, modifier: Modifier = Modifier) {
             category >= 0 -> listOf(EMOJI_CATEGORIES[category].name to EMOJI_CATEGORIES[category].emojis.map { it.first })
             else -> listOfNotNull(("Zuletzt benutzt" to recent).takeIf { recent.isNotEmpty() }) + EMOJI_CATEGORIES.map { it.name to it.emojis.map { e -> e.first } }
         }
-        LazyVerticalGrid(GridCells.Fixed(8), Modifier.fillMaxWidth().height(260.dp)) {
+        // Up to 260 dp; with the keyboard open as much as fits (at least two rows of results stay visible).
+        LazyVerticalGrid(GridCells.Fixed(8), Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(min = 96.dp, max = 260.dp)) {
             for ((title, emojis) in sections) {
                 item(span = { GridItemSpan(8) }) { BasicText(title.uppercase(), style = style(12f, 600, colors.secondary), modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)) }
                 if (emojis.isEmpty()) item(span = { GridItemSpan(8) }) { BasicText("Nichts gefunden", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(8.dp)) }

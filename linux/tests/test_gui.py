@@ -243,6 +243,18 @@ def main():
     assert "Du hast eine Nachricht widerrufen." in texts(window.bubbles)
     shot(window, "03e-bearbeitet.png")
 
+    # 18cfe3d2 / 22c918ce: a wrapped bubble no wider than its longest line; links as <a>
+    bernd.send(cid, "für Gruppen wie du\nvorgeschlagen hast")
+    bernd.send(cid, "Mehr auf www.lisoftware.de oder user@example.org")
+    until(lambda: any("www.lisoftware.de" in (m.get("text") or "") for m in anna.chats[cid]["messages"]))
+    window.show_conversation()
+    settle(0.3)
+    wrapped = next(w for w in walk(window.bubbles) if isinstance(w, Gtk.Label) and w.get_text() == "für Gruppen wie du\nvorgeschlagen hast")
+    assert wrapped.get_width() < 260, wrapped.get_width()
+    linked = next(w for w in walk(window.bubbles) if isinstance(w, Gtk.Label) and "lisoftware" in w.get_text())
+    assert '<a href="https://www.lisoftware.de">' in linked.get_label() and '<a href="mailto:user@example.org">' in linked.get_label()
+    shot(window, "03f-links.png")
+
     # „… tippt“ (card 884f7c8a): off by default; with both switched on Bernd's typing shows as a grey „•••“ bubble.
     assert not window.lookup_action("tippanzeige").get_state().get_boolean()
     window.lookup_action("tippanzeige").change_state(GLib.Variant.new_boolean(True))
@@ -438,7 +450,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 13  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
+    assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 15  # + „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

@@ -624,8 +624,9 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
         .clickable(onClick = onClose).semantics { contentDescription = "Menü schließen" }) {
         if (picking) {
             // „+“ (Olaf 20eb5cc5): our own emoji picker at the bottom – categories, recently used, search.
+            // Above the keyboard while searching (Michelle 20eb5cc5: it covered the results).
             EmojiPicker({ onReact(it) }, Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.systemBars).padding(8.dp))
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)).padding(8.dp))
             return@Box
         }
         androidx.compose.ui.layout.Layout(content = {
