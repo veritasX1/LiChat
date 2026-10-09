@@ -24,7 +24,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
 from .account import MENTION, TYPING_FRESH, Account, LiChatError, short, unb64  # noqa: E402
 
@@ -454,6 +454,79 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------------------------------ main window
 
+    SHORTCUTS = (
+        # Like Messages on the Mac, with Strg for ⌘ (Michelle 9b3b15d0)
+        ("<Control>n", "start_composing"), ("<Control>f", "focus_search"), ("<Control>e", "edit_last"),
+        ("<Control>r", "reply_last"), ("<Control>t", "tapback_last"), ("<Control><Shift>u", "toggle_unread"),
+        ("<Control><Alt>i", "open_info"), ("<Control>Tab", "next_chat"), ("<Control><Shift>Tab", "previous_chat"),
+        ("<Control>ISO_Left_Tab", "previous_chat"),
+    ) + tuple((f"<Control>{n}", f"pinned_{n}") for n in range(1, 10))
+
+    def add_shortcuts(self):
+        controller = Gtk.ShortcutController(propagation_phase=Gtk.PropagationPhase.CAPTURE, scope=Gtk.ShortcutScope.GLOBAL)
+        for trigger, name in self.SHORTCUTS:
+            if name.startswith("pinned_"):
+                job = lambda *_a, n=int(name[-1]): self.open_number(n)  # noqa: E731
+            else:
+                job = lambda *_a, m=getattr(self, name): (m(), True)[1]  # noqa: E731
+            controller.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string(trigger), action=Gtk.CallbackAction.new(job)))
+        self.add_controller(controller)
+        self.shortcuts = controller
+
+    def focus_search(self):
+        self.search.grab_focus()
+
+    def last_message(self, mine):
+        if not self.current:
+            return None
+        return next((m for m in reversed(self.account.chats[self.current]["messages"]) if m.get("mid") and not m.get("geloescht")
+                     and not m.get("zurueckgerufen") and (m.get("from") == self.account.username) == mine), None)
+
+    def edit_last(self):
+        message = self.last_message(True)
+        if message and self.account.can_edit(message):
+            self.start_edit(message)
+
+    def reply_last(self):
+        message = self.last_message(False)
+        if message:
+            self.start_reply(message)
+
+    def tapback_last(self):
+        message = self.last_message(False)
+        if message and message.get("mid") in getattr(self, "bubble_of", {}):
+            self.message_menu(self.current, message, self.bubble_of[message["mid"]])
+
+    def toggle_unread(self):
+        if self.current:
+            job = self.account.mark_read if self.account.unread(self.current) else self.account.mark_unread
+            cid = self.current
+            self.worker.do(lambda: job(cid), lambda *_: self.fill_list())
+
+    def open_info(self):
+        if self.current and self.info.get_visible():
+            self.info.popup()
+
+    def step_chat(self, step):
+        order = self.account.pinned() + self.ordered()
+        if not order:
+            return
+        index = order.index(self.current) if self.current in order else -1
+        self.open_chat(order[(index + step) % len(order)])
+
+    def next_chat(self):
+        self.step_chat(1)
+
+    def previous_chat(self):
+        self.step_chat(-1)
+
+    def open_number(self, n):
+        """Strg+1…9: the pinned conversations first (like ⌘1…9 on the Mac), then the list."""
+        order = self.account.pinned() + self.ordered()
+        if len(order) >= n:
+            self.open_chat(order[n - 1])
+        return True
+
     def show_main(self):
         # Sidebar: search and „Neue Nachricht“ on top, the conversations below.
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["lichat-sidebar"], width_request=300)
@@ -497,10 +570,28 @@ class Window(Adw.ApplicationWindow):
         self.menu_button = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu, css_classes=["lichat-tool"],
                                           tooltip_text="Einstellungen")
         bar.pack_start(self.menu_button)
+        # Filter like the Mac's „Darstellung › Filter“ (1f800b4f, a0ceee6e).
+        self.filter = "alle"
+        filters = Gio.Menu()
+        for key, label in (("alle", "Alle"), ("bekannt", "Bekannte Absender"), ("unbekannt", "Unbekannte Absender"),
+                           ("ungelesen", "Ungelesen"), ("geloescht", "Zuletzt gelöscht")):
+            filters.append(label, f"win.filter::{key}")
+        filter_action = Gio.SimpleAction.new_stateful("filter", GLib.VariantType.new("s"), GLib.Variant.new_string("alle"))
+        filter_action.connect("change-state", self.on_filter)
+        self.add_action(filter_action)
+        self.filter_button = Gtk.MenuButton(icon_name="view-list-symbolic", menu_model=filters, css_classes=["lichat-tool"],
+                                            tooltip_text="Filter")
+        bar.pack_end(self.filter_button)
         sidebar.append(Gtk.WindowHandle(child=bar))
         self.search = Gtk.SearchEntry(placeholder_text="Suchen", css_classes=["lichat-search"])
         self.search.connect("search-changed", lambda *_: self.fill_list())
         sidebar.append(self.search)
+        # Pinned conversations as big round pictures on top, three in a row (206118bf).
+        self.pins = Gtk.FlowBox(max_children_per_line=3, min_children_per_line=3, selection_mode=Gtk.SelectionMode.NONE,
+                                homogeneous=True, css_classes=["lichat-pins"], margin_start=8, margin_end=8, visible=False)
+        sidebar.append(self.pins)
+        self.filter_label = Gtk.Label(css_classes=["lichat-filter"], xalign=0, margin_start=16, visible=False)
+        sidebar.append(self.filter_label)
         self.list = Gtk.ListBox(css_classes=["lichat-list"], selection_mode=Gtk.SelectionMode.SINGLE)
         self.list.connect("row-selected", self.on_row)
         sidebar.append(Gtk.ScrolledWindow(child=self.list, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER))
@@ -539,6 +630,10 @@ class Window(Adw.ApplicationWindow):
         self.new_pill.connect("clicked", lambda *_: self.to_end())
         overlay = Gtk.Overlay(child=self.scroller, vexpand=True)
         overlay.add_overlay(self.new_pill)
+        self.first_pill = Gtk.Button(css_classes=["lichat-new-pill"], halign=Gtk.Align.CENTER, valign=Gtk.Align.START, margin_top=10, visible=False)
+        self.first_pill.connect("clicked", lambda *_: self.to_first_unread())
+        overlay.add_overlay(self.first_pill)
+        self.shown_unread_for = None
         self.pane.append(overlay)
         self.notice = Gtk.Label(css_classes=["lichat-notice"], visible=False, margin_bottom=4)
         self.pane.append(self.notice)
@@ -575,10 +670,8 @@ class Window(Adw.ApplicationWindow):
         split.append(self.pane)
         self.set_content(split)
 
-        keys = Gtk.ShortcutController()
-        keys.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("<Control>n"),
-                                       action=Gtk.CallbackAction.new(lambda *_: self.start_composing() or True)))
-        self.add_controller(keys)
+        if getattr(self, "shortcuts", None) is None:
+            self.add_shortcuts()
         self.fill_list()
         self.show_conversation()
         self.listener = Listener(self.account, self.fetched, self.show_notice)
@@ -591,11 +684,81 @@ class Window(Adw.ApplicationWindow):
         def last(cid):
             messages = self.account.chats[cid]["messages"]
             return messages[-1]["at"] if messages else 0
-        return sorted(self.account.visible_chats(), key=last, reverse=True)   # without my devices' own group
+        shown = self.account.filtered(getattr(self, "filter", "alle"))
+        if getattr(self, "filter", "alle") == "alle":
+            shown = [c for c in shown if not self.account.chats[c].get("angeheftet")]    # those are on top
+        return sorted(shown, key=last, reverse=True)
 
     @locked
+    def on_filter(self, action, value):
+        action.set_state(value)
+        self.filter = value.get_string()
+        labels = {"bekannt": "Bekannte Absender", "unbekannt": "Unbekannte Absender", "ungelesen": "Ungelesen", "geloescht": "Zuletzt gelöscht"}
+        self.filter_label.set_label(labels.get(self.filter, ""))
+        self.filter_label.set_visible(self.filter != "alle")
+        self.fill_list()
+
+    def fill_pins(self):
+        while (child := self.pins.get_first_child()) is not None:
+            self.pins.remove(child)
+        pinned = self.account.pinned() if self.filter == "alle" else []
+        for cid in pinned:
+            chat = self.account.chats[cid]
+            others = [u for u in chat["roster"] if u != self.account.username]
+            title = self.account.title(cid)
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6, margin_bottom=6)
+            face = avatar(title, 56, self.account.picture(others[0]) if len(others) == 1 else self.account.group_picture(cid))
+            face.set_halign(Gtk.Align.CENTER)
+            overlay = Gtk.Overlay(child=face, halign=Gtk.Align.CENTER)
+            if self.account.unread(cid) and cid != self.current:
+                overlay.add_overlay(Gtk.Box(css_classes=["lichat-unread"], halign=Gtk.Align.START, valign=Gtk.Align.START))
+            cell.append(overlay)
+            cell.append(Gtk.Label(label=title, ellipsize=Pango.EllipsizeMode.END, max_width_chars=10, css_classes=["lichat-pin-name"]))
+            button = Gtk.Button(child=cell, css_classes=["flat", "lichat-pin"] + (["lichat-pin-on"] if cid == self.current else []),
+                                tooltip_text=title)
+            button.connect("clicked", lambda _b, c=cid: self.open_chat(c))
+            self.add_row_menu(button, cid)
+            self.pins.append(button)
+        self.pins.set_visible(bool(pinned))
+
+    def add_row_menu(self, widget, cid):
+        """Right click on a conversation (list or pinned): anheften, (un)gelesen, stumm, löschen – or, in „Zuletzt
+        gelöscht“, wiederherstellen / endgültig löschen."""
+        def show(*_):
+            chat = self.account.chats[cid]
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
+            popover = Gtk.Popover(child=box)
+            entries = []
+            if self.filter == "geloescht":
+                entries = [("Wiederherstellen", lambda: self.account.restore(cid)),
+                           ("Endgültig löschen", lambda: self.account.purge(cid))]
+            else:
+                entries = [("Loslösen" if chat.get("angeheftet") else "Anheften", lambda: self.account.pin(cid, not chat.get("angeheftet"))),
+                           ("Als gelesen markieren" if self.account.unread(cid) else "Als ungelesen markieren",
+                            lambda: self.account.mark_read(cid) if self.account.unread(cid) else self.account.mark_unread(cid)),
+                           ("Hinweise einblenden" if chat.get("stumm") else "Hinweise ausblenden", lambda: self.account.mute(cid, not chat.get("stumm"))),
+                           ("Konversation löschen …", lambda: self.account.delete_chat(cid))]
+            for label, job in entries:
+                item = Gtk.Button(label=label, css_classes=["flat"] + (["lichat-destructive"] if "löschen" in label else []))
+                item.connect("clicked", lambda _b, j=job: (popover.popdown(), self.worker.do(j, lambda *_: self.after_list_change(cid))))
+                box.append(item)
+            popover.set_parent(widget)
+            popover.popup()
+            self.row_menu = popover
+        click = Gtk.GestureClick(button=3)
+        click.connect("pressed", show)
+        widget.add_controller(click)
+
+    def after_list_change(self, cid):
+        if self.current == cid and (self.account.chats[cid].get("geloescht")):
+            self.current = None
+        self.fill_list()
+        self.show_conversation()
+
     def fill_list(self):
         wanted = self.search.get_text().strip().lower() if hasattr(self, "search") else ""
+        if hasattr(self, "pins"):
+            self.fill_pins()
         self.filling = True
         while (row := self.list.get_row_at_index(0)) is not None:
             self.list.remove(row)
@@ -610,7 +773,7 @@ class Window(Adw.ApplicationWindow):
             row.cid = cid
             box = Gtk.Box(spacing=10, margin_start=8, margin_end=10, margin_top=8, margin_bottom=8)
             dot = Gtk.Box(css_classes=["lichat-unread"], valign=Gtk.Align.CENTER,
-                          opacity=1 if len(chat["messages"]) > self.seen.get(cid, 0) and cid != self.current else 0)
+                          opacity=1 if self.account.unread(cid) and cid != self.current else 0)
             box.append(dot)
             others = [u for u in chat["roster"] if u != self.account.username]
             box.append(avatar(title, 40, self.account.picture(others[0]) if len(others) == 1 else self.account.group_picture(cid)))
@@ -626,6 +789,7 @@ class Window(Adw.ApplicationWindow):
                                   ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
             box.append(text)
             row.set_child(box)
+            self.add_row_menu(row, cid)
             self.list.append(row)
             if cid == self.current:
                 self.list.select_row(row)
@@ -680,7 +844,13 @@ class Window(Adw.ApplicationWindow):
             self.title_box.append(Gtk.Label(label=f"{len(others) + 1} Personen", css_classes=["lichat-subtitle"]))
         group = len(others) > 1 or bool(chat.get("title"))     # a chat with a name is a group too (Michelle)
         previous = None
+        # „↑ Zur ersten ungelesenen“ (300129f8): worked out before this view counts as read.
+        first = self.account.first_unread(cid) if self.shown_unread_for != cid else None
+        self.shown_unread_for = cid
+        self.bubble_of = {}
         for m in chat["messages"]:
+            if m.get("geloescht"):
+                continue        # in „Zuletzt gelöscht“
             if m.get("system"):
                 self.bubbles.append(Gtk.Label(label=m["text"], css_classes=["lichat-stamp"], wrap=True))
                 previous = m      # the next bubble names its sender again, no extra time stamp
@@ -722,6 +892,7 @@ class Window(Adw.ApplicationWindow):
                 row.append(piece)
                 piece = row
             if m.get("mid"):
+                self.bubble_of[m["mid"]] = piece
                 # Right click (or a long press on a touch screen): tapbacks, Antworten, Kopieren – like Messages on the Mac.
                 for gesture in (Gtk.GestureClick(button=3), Gtk.GestureLongPress()):
                     gesture.connect("pressed" if isinstance(gesture, Gtk.GestureClick) else "pressed",
@@ -758,6 +929,14 @@ class Window(Adw.ApplicationWindow):
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
+        if first and first in self.bubble_of:
+            count = self.account.unread(cid)
+            self.first_pill.set_label("↑ 1 ungelesene Nachricht" if count == 1 else f"↑ {count} ungelesene Nachrichten")
+            self.first_pill.target = self.bubble_of[first]
+            self.first_pill.set_visible(True)
+            GLib.timeout_add(250, self.first_unread_in_view)
+        elif self.shown_unread_for != cid or first is None:
+            self.first_pill.set_visible(False)
         typing = self.account.typing_now(cid)
         if typing and not chat.get("removed"):
             # „…“ in a grey bubble, in a group with who it is (card 884f7c8a); gone a few seconds after the last sign.
@@ -847,6 +1026,25 @@ class Window(Adw.ApplicationWindow):
         adjustment = self.scroller.get_vadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
+    def first_unread_in_view(self):
+        """Like the Mac: the pill only when the first unread message is above what is shown."""
+        target = getattr(self.first_pill, "target", None)
+        if target is not None and target.get_root() is self:
+            ok, bounds = target.compute_bounds(self.scroller)
+            if ok and bounds.get_y() >= 0:
+                self.first_pill.set_visible(False)
+        return False
+
+    def to_first_unread(self):
+        target = getattr(self.first_pill, "target", None)
+        self.first_pill.set_visible(False)
+        if target is None:
+            return
+        ok, point = target.compute_point(self.bubbles, Graphene.Point())
+        if ok:
+            self.stick, self.held = False, max(0.0, point.y - 40)
+            self.scroller.get_vadjustment().set_value(self.held)
+
     def scroll_down(self):
         if self.stick:
             self.to_end()
@@ -892,6 +1090,20 @@ class Window(Adw.ApplicationWindow):
                                    active=bool(self.account.chats[cid].get("stumm")))
             mute.connect("toggled", lambda c: self.account.mute(cid, c.get_active()))
             box.append(mute)
+            # Read receipts for this conversation (3c0400ad) – otherwise the general setting applies.
+            receipts = Gtk.CheckButton(label="Lesebestätigungen senden", active=self.account.receipts_for(cid))
+            receipts.connect("toggled", lambda c: self.worker.do(lambda: self.account.set_receipts_for(cid, c.get_active()),
+                                                                 lambda *_: self.show_conversation()))
+            box.append(receipts)
+            if not group:
+                person = next((u for u in self.account.chats[cid]["roster"] if u != self.account.username), None)
+                if person:
+                    blocked = person in self.account.blocked
+                    block = Gtk.Button(label=f"{self.account.display(person)} {'nicht mehr blockieren' if blocked else 'blockieren'}",
+                                       css_classes=["flat", "lichat-remove"], halign=Gtk.Align.START)
+                    block.connect("clicked", lambda *_: (button.popdown(), self.worker.do(lambda: self.account.block(person, not blocked),
+                                                                                           lambda *_: self.fill_list())))
+                    box.append(block)
             if group:
                 leave = Gtk.Button(label="Unterhaltung verlassen", css_classes=["flat", "lichat-remove"], halign=Gtk.Align.START)
                 leave.connect("clicked", lambda *_: (button.popdown(), self.group_job(lambda a: a.leave(cid))))
@@ -1063,6 +1275,10 @@ class Window(Adw.ApplicationWindow):
             copy = Gtk.Button(label="Kopieren", css_classes=["flat"])
             copy.connect("clicked", lambda *_: (popover.popdown(), self.get_clipboard().set(message["text"])))
             box.append(copy)
+        delete = Gtk.Button(label="Löschen", css_classes=["flat", "lichat-destructive"])
+        delete.connect("clicked", lambda *_: (popover.popdown(), self.worker.do(lambda: self.account.delete_message(cid, message["mid"]),
+                                                                                 lambda *_: self.show_conversation())))
+        box.append(delete)
         if self.account.can_edit(message):
             change = Gtk.Button(label="Bearbeiten", css_classes=["flat"])
             change.connect("clicked", lambda *_: (popover.popdown(), self.start_edit(message)))
