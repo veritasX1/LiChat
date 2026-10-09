@@ -6,6 +6,7 @@ import io.github.veritasx1.lichat.core.LiChatException
 import io.github.veritasx1.lichat.core.News
 import io.github.veritasx1.lichat.core.TYPING_EVERY_MS
 import org.junit.After
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -323,6 +324,22 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Noch da?"), left)
     }
 
+    /** Michelle f09a8086: the token is sealed (token.bin), never in account.json; an old account.json with it is taken over. */
+    @Test
+    fun tokenSealed() {
+        val anna = person("anna")
+        val folder = File(root, "anna")
+        assertFalse(JSONObject(File(folder, "account.json").readText()).has("token"))
+        val token = anna.server.token!!
+        assertFalse(folder.listFiles()!!.filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains(token) })
+        File(folder, "account.json").writeText(JSONObject(File(folder, "account.json").readText()).put("token", token).toString())
+        File(folder, "token.bin").delete()
+        val again = Account(folder, File(folder, "key").readBytes())
+        assertEquals(token, again.server.token)
+        assertFalse(JSONObject(File(folder, "account.json").readText()).has("token"))
+        again.fetch()
+    }
+
     /** Card d54175ed: „@name“ members only, „@alle“ everyone, a mention of me is flagged (notifies even when muted). */
     @Test
     fun mentions() {
@@ -395,10 +412,11 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals("gelesen", anna.tick(cid, mine()).first)
         // Not sent: marked, and sent again with the same mid.
         val server = File(root, "server")
+        val token = anna.server.token
         anna.server.token = "falsch"
         try { anna.send(cid, "Kommt das an?"); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
         assertEquals("fehler", anna.tick(cid, mine()).first)
-        anna.server.token = anna.info.getString("token")
+        anna.server.token = token
         anna.retry(cid, mine().getString("mid"))
         assertEquals("gesendet", anna.tick(cid, mine()).first)
         assertEquals(listOf("Kommt das an?"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
@@ -460,7 +478,7 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
                 }
             }
         }.start()
-        val broken = io.github.veritasx1.lichat.core.Server("http://127.0.0.1:${page.localPort}", anna.info.getString("token"))
+        val broken = io.github.veritasx1.lichat.core.Server("http://127.0.0.1:${page.localPort}", anna.server.token)
         val error = try { broken.call("GET", "/v1/messages"); null } catch (e: LiChatException) { e }
         assertNotNull("eine LiChatException statt eines Absturzes", error)
         assertTrue(error!!.message!!.contains("502"))

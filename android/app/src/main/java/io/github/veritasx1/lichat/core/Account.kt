@@ -32,6 +32,7 @@ private const val WELCOME: Byte = 'W'.code.toByte()
 private const val MLS: Byte = 'M'.code.toByte()
 private val CHATS_MAGIC = "LICHATC1".toByteArray()
 private val PROFILE_MAGIC = "LICHATP1".toByteArray()
+private val TOKEN_MAGIC = "LICHATT1".toByteArray()     // the device's server token, sealed like the rest (Michelle f09a8086)
 const val SUPPLY = 20
 const val PICTURE_MAX = 150 * 1024
 private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
@@ -233,7 +234,19 @@ class Account(val folder: File, private val key: ByteArray) {
         chats = File(folder, "chats.bin").takeIf { it.exists() }?.let { JSONObject(String(unseal(key, CHATS_MAGIC, it.readBytes()))) } ?: JSONObject()
         profiles = File(folder, "profile.bin").takeIf { it.exists() }?.let { JSONObject(String(unseal(key, PROFILE_MAGIC, it.readBytes()))) }
             ?: JSONObject().put("me", JSONObject.NULL).put("people", JSONObject())
-        server = Server(info.getString("server"), info.getString("token"))
+        val plain = info.optString("token")
+        val token = if (plain.isNotEmpty()) {
+            // An account from before 09.10. evening: the token moves out of account.json into token.bin (sealed), no new
+            // sign-in (Michelle f09a8086: a copied account.json let someone fetch – and so lose – this device's packets).
+            writePrivate(File(folder, "token.bin"), seal(key, TOKEN_MAGIC, JSONObject().put("token", plain).toString().toByteArray()))
+            info.remove("token")
+            writePrivate(accountFile, info.toString(1).toByteArray())
+            plain
+        } else {
+            File(folder, "token.bin").takeIf { it.exists() }?.let { JSONObject(String(unseal(key, TOKEN_MAGIC, it.readBytes()))).optString("token") }
+                ?.takeIf { it.isNotEmpty() } ?: throw LiChatException("Anmeldedaten fehlen – dieses Gerät bitte neu koppeln")
+        }
+        server = Server(info.getString("server"), token)
     }
 
     val username: String get() = info.getString("username")
@@ -248,11 +261,12 @@ class Account(val folder: File, private val key: ByteArray) {
             val answer = anonymous.call("POST", "/v1/register", JSONObject().put("invite", invite).put("username", username)
                 .put("identity", b64(device.identityKey())))
             val info = JSONObject().put("server", anonymous.url).put("username", username)
-                .put("device", answer.getString("device")).put("token", answer.getString("token"))
+                .put("device", answer.getString("device"))
             // Key packages are made – their private halves kept in the state – before they are offered.
             val packages = device.keyPackages(SUPPLY.toUInt())
             val reserve = device.lastResortKeyPackage()
             writePrivate(File(folder, "state.bin"), device.save(key))
+            writePrivate(File(folder, "token.bin"), seal(key, TOKEN_MAGIC, JSONObject().put("token", answer.getString("token")).toString().toByteArray()))
             writePrivate(File(folder, "account.json"), info.toString(1).toByteArray())
             device.close()
             val account = Account(folder, key)
@@ -300,10 +314,11 @@ class Account(val folder: File, private val key: ByteArray) {
             val device = Device(username)
             val answer = anonymous.call("POST", "$path/geraet", JSONObject().put("identity", b64(device.identityKey())))
             val info = JSONObject().put("server", anonymous.url).put("username", username)
-                .put("device", answer.getString("device")).put("token", answer.getString("token"))
+                .put("device", answer.getString("device"))
             val packages = device.keyPackages(SUPPLY.toUInt())
             val reserve = device.lastResortKeyPackage()
             writePrivate(File(folder, "state.bin"), device.save(key))
+            writePrivate(File(folder, "token.bin"), seal(key, TOKEN_MAGIC, JSONObject().put("token", answer.getString("token")).toString().toByteArray()))
             writePrivate(File(folder, "account.json"), info.toString(1).toByteArray())
             device.close()
             val account = Account(folder, key)
