@@ -1,0 +1,61 @@
+/* LiChat – the look of Messages on the Mac (macOS 15 Sequoia, no Liquid Glass): Inter, light grey sidebar with the
+   chosen conversation in blue, white transcript, blue bubbles for me (LiChat network), grey for the others.
+   Dark appearance through .lichat-dark (set by the window). */
+
+window.lichat, .lichat-sidebar, .lichat-transcript, .lichat-setup { font-family: Inter, "Ubuntu Sans", sans-serif; font-size: 13px; }
+
+window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-color: #ffffff; color: #1d1d1f; }
+.lichat-sidebar { background-color: #f2f2f4; color: #1d1d1f; }
+.lichat-dark, .lichat-dark .lichat-transcript, .lichat-dark .lichat-setup, .lichat-dark .lichat-pane { background-color: #1e1e1e; color: #f5f5f7; }
+.lichat-dark .lichat-sidebar { background-color: #2a2a2c; color: #f5f5f7; }
+
+/* ---------- top bars ---------- */
+.lichat-bar { background: none; box-shadow: none; min-height: 52px; }
+.lichat-tool { background: none; box-shadow: none; border-radius: 6px; min-height: 28px; min-width: 32px; color: #6e6e73; }
+.lichat-tool:hover { background-color: rgba(120, 120, 128, 0.14); }
+.lichat-dark .lichat-tool { color: #aeaeb2; }
+.lichat-search { border-radius: 7px; min-height: 28px; background-color: rgba(120, 120, 128, 0.12); box-shadow: none; margin: 0 10px 8px 10px; }
+.lichat-title { font-weight: 600; font-size: 13px; }
+.lichat-subtitle { font-size: 11px; color: rgba(60, 60, 67, 0.6); }
+.lichat-dark .lichat-subtitle { color: rgba(235, 235, 245, 0.6); }
+.lichat-hairline { background-color: rgba(60, 60, 67, 0.18); min-height: 1px; }
+.lichat-dark .lichat-hairline { background-color: rgba(84, 84, 88, 0.6); }
+
+/* ---------- conversation list ---------- */
+.lichat-list, .lichat-list > row { background: none; }
+.lichat-list > row { border-radius: 8px; margin: 0 8px; padding: 0; }
+.lichat-list > row:selected { background-color: #0a7aff; color: #ffffff; }
+.lichat-list > row:selected .lichat-preview, .lichat-list > row:selected .lichat-time { color: rgba(255, 255, 255, 0.85); }
+.lichat-name { font-weight: 600; font-size: 13px; }
+.lichat-preview { font-size: 13px; color: rgba(60, 60, 67, 0.6); }
+.lichat-time { font-size: 12px; color: rgba(60, 60, 67, 0.6); }
+.lichat-dark .lichat-preview, .lichat-dark .lichat-time { color: rgba(235, 235, 245, 0.6); }
+.lichat-unread { background-color: #0a7aff; border-radius: 999px; min-width: 9px; min-height: 9px; }
+.lichat-avatar { border-radius: 999px; color: #ffffff; font-weight: 600; background-image: linear-gradient(#a5abb8, #858994); }
+.lichat-avatar-small { font-size: 11px; }
+.lichat-avatar-big { font-size: 15px; }
+
+/* ---------- transcript ---------- */
+.lichat-bubble { border-radius: 18px; padding: 6px 12px; font-size: 13px; }
+.lichat-mine { background-color: #0a7aff; color: #ffffff; }
+.lichat-theirs { background-color: #e9e9eb; color: #000000; }
+.lichat-dark .lichat-theirs { background-color: #3b3b3d; color: #ffffff; }
+.lichat-sender { font-size: 11px; color: rgba(60, 60, 67, 0.6); margin: 6px 0 1px 12px; }
+.lichat-stamp { font-size: 11px; color: rgba(60, 60, 67, 0.6); font-weight: 600; margin: 12px 0 4px 0; }
+.lichat-dark .lichat-sender, .lichat-dark .lichat-stamp { color: rgba(235, 235, 245, 0.6); }
+.lichat-empty { font-size: 15px; color: rgba(60, 60, 67, 0.45); }
+.lichat-dark .lichat-empty { color: rgba(235, 235, 245, 0.45); }
+.lichat-notice { font-size: 11px; color: #ff3b30; }
+
+/* ---------- input ---------- */
+.lichat-input { border-radius: 16px; min-height: 30px; border: 1px solid rgba(60, 60, 67, 0.25); background-color: #ffffff; box-shadow: none; padding: 0 10px; }
+.lichat-dark .lichat-input { background-color: #1e1e1e; border-color: rgba(235, 235, 245, 0.25); color: #f5f5f7; }
+.lichat-to { font-size: 13px; color: rgba(60, 60, 67, 0.6); }
+.lichat-to-entry { background: none; box-shadow: none; border: none; }
+
+/* ---------- setup ---------- */
+.lichat-big { font-size: 22px; font-weight: 700; }
+.lichat-field { border-radius: 6px; min-height: 28px; }
+.lichat-blue { background-color: #0a7aff; color: #ffffff; border-radius: 6px; font-weight: 600; min-height: 28px; padding: 0 14px; }
+.lichat-blue:disabled { background-color: rgba(120, 120, 128, 0.2); color: rgba(255, 255, 255, 0.8); }
+.lichat-code { font-family: "Inter", monospace; font-feature-settings: "tnum"; font-size: 15px; letter-spacing: 1px; }

@@ -14,7 +14,8 @@ fn key(bytes: &[u8]) -> PyResult<[u8; 32]> {
     bytes.try_into().map_err(|_| PyValueError::new_err("Schlüssel muss 32 Bytes haben"))
 }
 
-#[pyclass(unsendable)]
+// Send: the app calls it from its worker and its window thread – never at the same time, every call holds the GIL.
+#[pyclass]
 struct Device {
     inner: Core,
 }

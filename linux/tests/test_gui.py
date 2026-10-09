@@ -1,0 +1,186 @@
+"""The real window against a real server in this process, with invented people (isolated folders, no keyring):
+first start, the list, a conversation both ways, a group, „Neue Nachricht“, dark. Pictures with --shots <folder>.
+
+    python3 tests/test_gui.py [--shots DIR]
+"""
+
+import os
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from wsgiref.simple_server import WSGIRequestHandler, make_server
+
+SCRATCH = tempfile.mkdtemp(prefix="lichat-gui-")
+os.environ["XDG_DATA_HOME"] = os.environ["XDG_CONFIG_HOME"] = os.environ["XDG_CACHE_HOME"] = SCRATCH
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "linux"))
+sys.path.insert(0, str(ROOT / "server"))
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("Graphene", "1.0")
+from gi.repository import Adw, GLib, Graphene, Gtk  # noqa: E402
+
+from lichat import app as app_module  # noqa: E402
+from lichat.account import Account  # noqa: E402
+from lichat_server.app import create_app  # noqa: E402
+
+SHOTS = Path(sys.argv[sys.argv.index("--shots") + 1]) if "--shots" in sys.argv else None
+
+
+class Quiet(WSGIRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+def settle(seconds=0.3):
+    context = GLib.MainContext.default()
+    end = time.time() + seconds
+    while time.time() < end:
+        while context.pending():
+            context.iteration(False)
+        time.sleep(0.01)
+
+
+def until(check, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        settle(0.1)
+        if check():
+            return True
+    raise AssertionError("nicht eingetreten")
+
+
+def shot(widget, name):
+    if SHOTS is None:
+        return
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(10):
+        settle(0.2)
+        width, height = widget.get_width(), widget.get_height()
+        snapshot = Gtk.Snapshot()
+        Gtk.WidgetPaintable.new(widget).snapshot(snapshot, width, height)
+        node = snapshot.to_node()
+        if node is not None:
+            widget.get_native().get_renderer().render_texture(node, Graphene.Rect().init(0, 0, width, height)).save_to_png(str(SHOTS / name))
+            return
+
+
+def walk(widget):
+    yield widget
+    child = widget.get_first_child()
+    while child is not None:
+        yield from walk(child)
+        child = child.get_next_sibling()
+
+
+def texts(widget):
+    return [w.get_label() for w in walk(widget) if isinstance(w, Gtk.Label)]
+
+
+def main():
+    server = create_app(str(Path(SCRATCH) / "server"), notifier=lambda url: None, push_hosts="")
+    httpd = make_server("127.0.0.1", 0, server, handler_class=Quiet)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_port}"
+    people = Path(SCRATCH) / "andere"
+    bernd = Account.register(people / "bernd", url, server.store.create_invite(), "bernd")
+    erna = Account.register(people / "erna", url, server.store.create_invite(), "erna")
+
+    Adw.init()
+    app_module.load_css()
+    app = Adw.Application(application_id="io.github.veritasx1.LiChat.Test")
+    app.register(None)
+
+    # First start: the sign-in page; signing in with an invitation.
+    window = app_module.Window(app, folder=Path(SCRATCH) / "anna")
+    window.present()
+    settle(0.5)
+    assert "Bei LiChat anmelden" in texts(window)
+    shot(window, "01-anmelden.png")
+    window.f_server.set_text(url)
+    window.f_invite.set_text(server.store.create_invite())
+    window.f_name.set_text("anna")
+    window.sign_in()
+    until(lambda: getattr(window, "list", None) is not None)
+    assert "Keine Konversation ausgewählt" in texts(window)
+    anna = window.account
+
+    # Bernd writes to Anna; the list shows it with the blue dot.
+    cid = bernd.start(["anna"])
+    bernd.send(cid, "Hallo Anna! Kommst du Samstag zum Grillen?")
+    window.fetch()
+    until(lambda: cid in anna.chats and anna.chats[cid]["messages"])
+    settle(0.3)
+    assert "bernd" in texts(window.list)
+    shot(window, "02-liste-neu.png")
+
+    # Open it, answer – the blue bubble, Bernd reads it.
+    window.list.select_row(window.list.get_row_at_index(0))
+    settle(0.2)
+    window.input.set_text("Ja, gern! Ich bringe Kartoffelsalat mit.")
+    window.send()
+    until(lambda: len(anna.chats[cid]["messages"]) == 2)
+    assert [n["text"] for n in bernd.fetch()] == ["Ja, gern! Ich bringe Kartoffelsalat mit."]
+    bernd.send(cid, "Super, bis dann 🙂")
+    window.fetch()
+    until(lambda: len(anna.chats[cid]["messages"]) == 3)
+    settle(0.3)
+    assert "Super, bis dann 🙂" in texts(window.bubbles)
+    shot(window, "03-gespraech.png")
+
+    # The safety code in the info popover equals Bernd's.
+    window.fill_info(window.info)
+    window.info.popup()
+    settle(0.3)
+    assert bernd.safety_code(cid).split()[0] in " ".join(texts(window.info.get_popover()))
+    shot(window, "04-info-code.png")
+    window.info.popdown()
+
+    # „Neue Nachricht“ to a group: An: bernd, erna.
+    window.start_composing()
+    window.to_entry.set_text("bernd, erna")
+    window.input.set_text("Wer bringt Getränke mit?")
+    shot(window, "05-neue-nachricht.png")
+    window.send()
+    until(lambda: len(anna.chats) == 2)
+    group = window.current
+    erna.fetch()
+    erna.send(group, "Ich nehme Apfelschorle mit")
+    bernd.fetch()
+    window.fetch()
+    until(lambda: len(anna.chats[group]["messages"]) == 2)
+    settle(0.3)
+    assert "3 Personen" in texts(window.title_box)
+    assert "erna" in texts(window.bubbles)          # the sender's name over the bubble in a group
+    shot(window, "06-gruppe.png")
+
+    # Search in the list.
+    window.search.set_text("Kartoffel")
+    settle(0.5)
+    assert len(list(walk(window.list))) and window.list.get_row_at_index(1) is None
+    window.search.set_text("")
+    settle(0.5)
+
+    # Dark.
+    Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+    settle(0.3)
+    assert window.has_css_class("lichat-dark")
+    window.list.select_row(window.list.get_row_at_index(1))
+    settle(0.3)
+    shot(window, "07-dunkel.png")
+
+    # After a restart the conversations are there again (sealed on disk).
+    again = Account(window.folder)
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 3
+    window.close()
+    httpd.shutdown()
+    print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")
+
+
+if __name__ == "__main__":
+    main()
