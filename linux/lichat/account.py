@@ -109,6 +109,31 @@ MENTION = re.compile(r"(?<![\w@])@([a-z0-9][a-z0-9._-]{1,31})", re.IGNORECASE)
 EVERYONE = ("alle", "all")
 
 
+LINK_WEB = re.compile(r"""(?i)\b(?:https?://|www\.)[^\s<>"']+""")
+LINK_MAIL = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+LINK_PHONE = re.compile(r"(?<![\w/])\+?\d[\d \-/]{5,}\d(?![\w/])")
+
+
+def find_links(text):
+    """Web, mail and phone in a message (Olaf 22c918ce) as [(start, end, target)] – recognised here only, nothing is
+    fetched for a preview. The twin of Kotlin's findLinks."""
+    found = []
+
+    def free(a, b):
+        return all(b <= s or a >= e for s, e, _ in found)
+    for m in LINK_WEB.finditer(text):
+        value = m.group(0).rstrip(".,;:!?)]»“")
+        found.append((m.start(), m.start() + len(value), ("https://" + value) if value.lower().startswith("www.") else value))
+    for m in LINK_MAIL.finditer(text):
+        if free(m.start(), m.end()):
+            found.append((m.start(), m.end(), "mailto:" + m.group(0)))
+    for m in LINK_PHONE.finditer(text):
+        digits = sum(c.isdigit() for c in m.group(0))
+        if 7 <= digits <= 15 and free(m.start(), m.end()):
+            found.append((m.start(), m.end(), "tel:" + "".join(c for c in m.group(0) if c.isdigit() or c == "+")))
+    return sorted(found)
+
+
 def gif_without_metadata(data):
     """A GIF block by block (Michelle 999f37be): frames, colour tables, timing (graphic control) and the loop
     (NETSCAPE2.0 / ANIMEXTS1.0) stay; comments, XMP and every other application or text block go. Not a GIF: refused."""

@@ -27,7 +27,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
-from .account import MENTION, TYPING_FRESH, Account, LiChatError, short, unb64  # noqa: E402
+from .account import MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -135,37 +135,69 @@ def autostart(on):
         AUTOSTART.unlink()
 
 
-def typing_dots(dark=False):
-    """Olaf's template (typing-animation-3x.gif, measured by Michelle, 884f7c8a): a grey capsule, three dots; a wave runs
-    left to right – each dot in turn darker (#B0B2B4 → #606060) and ~38 % bigger, peaks at 380/580/760 ms, a cycle of
-    1.84 s with a rest. Without animations (GNOME „Animationen“ off) the dots stand still."""
-    import cairo  # noqa: F401  (pycairo draws the capsule)
-    area = Gtk.DrawingArea(content_width=58, content_height=34, halign=Gtk.Align.START, margin_top=2)
-    capsule = (0.23, 0.23, 0.24) if dark else (0.925, 0.925, 0.925)
-    rest = (0.42, 0.42, 0.45) if dark else (0.69, 0.70, 0.71)      # dark #6C6C72 → #E6E6EA (Michelle)
+def bubble_markup(text):
+    """The bubble's text: links (web, mail, phone – 22c918ce) clickable, „@name“ bold (d54175ed); everything escaped."""
+    links = find_links(text)
+    out, at = [], 0
+
+    def plain(piece):
+        return MENTION.sub(lambda f: f"<b>{f.group(0)}</b>", GLib.markup_escape_text(piece))
+    for start, end, target in links:
+        out.append(plain(text[at:start]))
+        out.append(f'<a href="{GLib.markup_escape_text(target)}">{GLib.markup_escape_text(text[start:end])}</a>')
+        at = end
+    out.append(plain(text[at:]))
+    return "".join(out)
+
+
+def typing_dots(dark=False, group=False):
+    """„… tippt“ as Olaf chose it (884f7c8a): alone a thought bubble – the wave in a grey capsule with two small circles at
+    its lower left; in a group a smaller wave (the line „X schreibt …“ above it comes from the window). The wave: each dot
+    in turn darker (#B0B2B4 → #606060) and ~38 % bigger, peaks at 380/580/760 ms, a cycle of 1.84 s with a rest. Without
+    animations (GNOME „Animationen“ off) the dots breathe together – lighter and darker, no movement."""
+    width, height = (44, 24) if group else (66, 46)
+    area = Gtk.DrawingArea(content_width=width, content_height=height, halign=Gtk.Align.START, margin_top=2)
+    capsule = (0.15, 0.145, 0.165) if dark else (0.925, 0.925, 0.925)
+    rest = (0.42, 0.42, 0.45) if dark else (0.69, 0.70, 0.71)
     peak = (0.90, 0.90, 0.92) if dark else (0.376, 0.376, 0.376)
     moving = Gtk.Settings.get_default().get_property("gtk-enable-animations")
     start = GLib.get_monotonic_time()
 
-    def draw(_area, cr, width, height):
-        radius = height / 2
+    def draw(_area, cr, w, h):
+        tall = 24 if group else 34
+        left = 0 if group else 8
+        radius = tall / 2
         cr.set_source_rgb(*capsule)
         cr.new_sub_path()
-        cr.arc(radius, radius, radius, math.pi / 2, 3 * math.pi / 2)
-        cr.arc(width - radius, radius, radius, 3 * math.pi / 2, math.pi / 2)
+        cr.arc(left + radius, radius, radius, math.pi / 2, 3 * math.pi / 2)
+        cr.arc(w - radius, radius, radius, 3 * math.pi / 2, math.pi / 2)
         cr.close_path()
         cr.fill()
-        t = ((GLib.get_monotonic_time() - start) / 1000) % 1840 if moving else 0
+        if not group:          # the thought bubble's two little circles
+            cr.arc(7, tall + 2, 6, 0, 2 * math.pi)
+            cr.fill()
+            cr.arc(2.5, tall + 9, 3, 0, 2 * math.pi)
+            cr.fill()
+        t = ((GLib.get_monotonic_time() - start) / 1000) % 1840
+        size, gap = (3.0, 10) if group else (4.5, 14)
         for i, top in enumerate((380, 580, 760)):
-            strength = max(0.0, 1 - abs(t - top) / 200)
+            strength = max(0.0, 1 - abs(t - top) / 200) if moving else 0.5 - 0.5 * math.cos(2 * math.pi * t / 1840)
             color = tuple(r + (p - r) * strength for r, p in zip(rest, peak))
             cr.set_source_rgb(*color)
-            cr.arc(15 + i * 14, radius, 4.5 * (1 + 0.38 * strength), 0, 2 * math.pi)
+            cr.arc(left + (12 if group else 15) + i * gap, radius, size * (1 + 0.38 * strength if moving else 1), 0, 2 * math.pi)
             cr.fill()
     area.set_draw_func(draw)
-    if moving:
-        area.add_tick_callback(lambda widget, _clock: (widget.queue_draw(), True)[1])
+    area.add_tick_callback(lambda widget, _clock: (widget.queue_draw(), True)[1])   # breathing needs frames too
     return area
+
+
+def typing_label(names):
+    """„Anna schreibt …“, „Anna und Bernd schreiben …“, „Anna, Bernd und Erna schreiben …“"""
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"{names[0]} schreibt …"
+    return ", ".join(names[:-1]) + f" und {names[-1]} schreiben …"
 
 
 class Worker:
@@ -215,6 +247,7 @@ class Window(Adw.ApplicationWindow):
         self.seen = {}             # chat → number of messages already looked at (the blue dot)
         self.full_images = {}      # attachment id → the photo itself (sharp in the bubble, ed0686a1)
         self.loading_images = set()
+        self.gif_data = {}         # attachment id → GIF bytes (to run on in a rebuilt bubble)
         self.listener = None
         self.settings = self.load_settings()
         self.connect("close-request", self.on_close)
@@ -926,7 +959,7 @@ class Window(Adw.ApplicationWindow):
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
                 # „@name“ bold (card d54175ed)
-                piece.set_markup(MENTION.sub(lambda f: f"<b>{f.group(0)}</b>", GLib.markup_escape_text(m["text"])))
+                piece.set_markup(bubble_markup(m["text"]))
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
                 row = Gtk.Box(spacing=6, halign=Gtk.Align.START)
@@ -984,9 +1017,9 @@ class Window(Adw.ApplicationWindow):
         typing = self.account.typing_now(cid)
         if typing and not chat.get("removed"):
             # „…“ in a grey bubble, in a group with who it is (card 884f7c8a); gone a few seconds after the last sign.
-            if len(others) > 1:
-                self.bubbles.append(Gtk.Label(label=", ".join(self.account.display(u) for u in typing), css_classes=["lichat-sender"], xalign=0))
-            dots = typing_dots(self.has_css_class("lichat-dark"))
+            if group:
+                self.bubbles.append(Gtk.Label(label=typing_label([self.account.display(u) for u in typing]), css_classes=["lichat-sender"], xalign=0))
+            dots = typing_dots(self.has_css_class("lichat-dark"), group)
             dots.update_property([Gtk.AccessibleProperty.LABEL], [f"{', '.join(self.account.display(u) for u in typing)} tippt"])
             self.bubbles.append(dots)
             if self.typing_timer:
@@ -1427,13 +1460,20 @@ class Window(Adw.ApplicationWindow):
             try:
                 texture = self.full_images.get(info.get("id")) or Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info["vorschau"])))
                 picture = Gtk.Picture(paintable=texture, can_shrink=True, content_fit=Gtk.ContentFit.COVER)
-                if (kind == "bild" and info.get("id") not in self.full_images and info.get("id") not in self.loading_images
+                if info.get("id") in self.gif_data and Gtk.Settings.get_default().get_property("gtk-enable-animations"):
+                    self.animate_gif(picture, self.gif_data[info["id"]], info["id"])      # rebuilt bubble: run on
+                elif (kind == "bild" and info.get("id") not in self.full_images and info.get("id") not in self.loading_images
                         and (info.get("groesse") or 0) <= 15 * 1024 * 1024):
                     self.loading_images.add(info.get("id"))
                     # The photo itself replaces the 320 px preview (Olaf ed0686a1: blurry) – loaded once, kept while LiChat runs.
                     account = self.account
 
-                    def loaded(data, error, p=picture, key=info.get("id")):
+                    def loaded(data, error, p=picture, key=info.get("id"), gif=info.get("mime") == "image/gif"):
+                        if data and gif and Gtk.Settings.get_default().get_property("gtk-enable-animations"):
+                            # A GIF runs in the bubble like in Messages (999f37be) – still when animations are off.
+                            self.gif_data[key] = data
+                            self.animate_gif(p, data, key)
+                            return
                         if data:
                             try:
                                 sharp = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
@@ -1464,6 +1504,33 @@ class Window(Adw.ApplicationWindow):
         button.connect("clicked", lambda *_: self.open_attachment(info))
         box.append(button)
         return box
+
+    def animate_gif(self, picture, data, key):
+        try:
+            from gi.repository import GdkPixbuf
+            loader = GdkPixbuf.PixbufLoader.new_with_type("gif")
+            loader.write(data)
+            loader.close()
+            animation = loader.get_animation()
+        except GLib.Error:
+            return
+        if animation.is_static_image():
+            texture = Gdk.Texture.new_for_pixbuf(animation.get_static_image())
+            self.full_images[key] = texture
+            picture.set_paintable(texture)
+            return
+        frames = animation.get_iter(None)
+        self.full_images[key] = Gdk.Texture.new_for_pixbuf(frames.get_pixbuf())
+
+        def step():
+            if picture.get_root() is None:
+                return False                  # the bubble was rebuilt – its successor runs its own GIF
+            frames.advance(None)
+            picture.set_paintable(Gdk.Texture.new_for_pixbuf(frames.get_pixbuf()))
+            GLib.timeout_add(max(20, frames.get_delay_time()), step)
+            return False
+        picture.set_paintable(self.full_images[key])
+        GLib.timeout_add(max(20, frames.get_delay_time()), step)
 
     @staticmethod
     def size_text(size):
