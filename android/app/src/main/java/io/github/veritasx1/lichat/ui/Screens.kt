@@ -824,6 +824,7 @@ fun OnceViewer(bytes: ByteArray, secret: Boolean, onScreenshot: () -> Unit, onCl
         onDispose {
             if (android.os.Build.VERSION.SDK_INT >= 34 && callback != null) activity?.unregisterScreenCaptureCallback(callback as android.app.Activity.ScreenCaptureCallback)
             activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+            (activity as? io.github.veritasx1.lichat.MainActivity)?.applyOverview()     // the app lock's protection stays (99eea3f7)
         }
     }
     androidx.activity.compose.BackHandler(onBack = onClose)
@@ -1311,7 +1312,8 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                    receipts: Boolean = false, onReceipts: (Boolean) -> Unit = {}, onName: (String, String) -> Unit = { _, _ -> },
                    typing: Boolean = false, onTyping: (Boolean) -> Unit = {},
                    devices: List<Account.OwnDevice>? = null, linking: String? = null, onAddDevice: (String) -> Unit = {},
-                   onRemoveDevice: (String) -> Unit = {}, onScanDevice: () -> Unit = {}) {
+                   onRemoveDevice: (String) -> Unit = {}, onScanDevice: () -> Unit = {},
+                   lock: Boolean = false, lockAfter: Int = 0, lockPossible: Boolean = true, onLock: (Boolean) -> Unit = {}, onLockAfter: (Int) -> Unit = {}) {
     val colors = palette()
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
@@ -1350,6 +1352,26 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
             Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             SwitchRow("Absender und Text zeigen", preview, onPreview)
         }
+        // 99eea3f7 (Olaf): off by default; unlocked with the phone's own screen lock, no password of its own
+        var choosingLock by remember { mutableStateOf(false) }
+        Section("APP-SPERRE", footer = if (!lockPossible) "Dafür braucht das Handy eine Displaysperre (PIN, Muster oder Passwort) – in den Android-Einstellungen einrichten."
+            else "Entsperrt wird mit der Displaysperre des Handys oder dem Fingerabdruck. Solange die Sperre an ist, zeigen Mitteilungen keinen Inhalt und die App-Übersicht kein Bild.") {
+            Row(Modifier.fillMaxWidth().toggleable(value = lock, enabled = lockPossible || lock, role = Role.Switch, onValueChange = onLock)
+                .padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicText("Mit Displaysperre schützen", style = style(17f, 400, if (lockPossible || lock) colors.label else colors.tertiary), modifier = Modifier.weight(1f))
+                Switch(lock)
+            }
+            if (lock) {
+                Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                Row(Modifier.fillMaxWidth().clickable { choosingLock = true }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicText("Sperren", style = style(17f, 400, colors.label), modifier = Modifier.weight(1f))
+                    BasicText(LOCK_TIMES.first { it.first == lockAfter }.second, style = style(17f, 400, colors.secondary))
+                    GlyphIcon(Glyph.Chevron, colors.tertiary, 14.dp, Modifier.padding(start = 6.dp))
+                }
+            }
+        }
+        if (choosingLock) ChoiceSheet(LOCK_TIMES.map { it.second }, LOCK_TIMES.indexOfFirst { it.first == lockAfter },
+            onChoose = { onLockAfter(LOCK_TIMES[it].first); choosingLock = false }, onCancel = { choosingLock = false })
         Section("NACHRICHTEN", footer = "Wenn eingeschaltet, sehen andere, dass du ihre Nachrichten gelesen hast oder gerade schreibst – und " +
             "du siehst es bei ihnen (blaue Haken, „•••“). Ausgeschaltet gilt beides nicht. „Zugestellt“ gibt es immer.") {
             SwitchRow("Lesebestätigungen senden", receipts, onReceipts)
@@ -1412,6 +1434,24 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                 BasicText(account.server.url.removePrefix("https://"), style = style(15f, 400, colors.secondary), maxLines = 1)
             }
         }
+    }
+}
+
+val LOCK_TIMES = listOf(0 to "Sofort", 60 to "Nach 1 Minute", 900 to "Nach 15 Minuten", 3600 to "Nach 1 Stunde")
+
+/** LiChat locked (99eea3f7): nothing of the chats shows; „Entsperren“ asks for the phone's screen lock – at once when it appears. */
+@Composable
+fun LockScreen(onUnlock: () -> Unit) {
+    val colors = palette()
+    LaunchedEffect(Unit) { onUnlock() }
+    Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.systemBars),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        AppIcon(72.dp)
+        GlyphIcon(Glyph.Lock, colors.secondary, 22.dp, Modifier.padding(top = 24.dp))
+        BasicText("LiChat ist gesperrt", style = style(22f, 600, colors.label), modifier = Modifier.padding(top = 8.dp))
+        BasicText("Mit der Displaysperre deines Handys entsperren.", style = style(15f, 400, colors.secondary), modifier = Modifier.padding(top = 6.dp))
+        Box(Modifier.padding(top = 28.dp).clip(RoundedCornerShape(14.dp)).background(colors.blue).clickable(role = Role.Button, onClick = onUnlock)
+            .padding(horizontal = 40.dp, vertical = 14.dp)) { BasicText("Entsperren", style = style(17f, 600, Color.White)) }
     }
 }
 

@@ -411,6 +411,48 @@ httpd.serve_forever()
     @Test
     fun settings() = shot("6-einstellungen") { SettingsScreen(anna, false, false, {}, {}, {}, {}) }
 
+    /** 99eea3f7: the app lock – off by default, „Sperren“ with its times once on; the lock screen itself. */
+    @Test
+    fun appLock() {
+        var on: Boolean? = null; var after = -1
+        var lockOn by androidx.compose.runtime.mutableStateOf(false)
+        shot("6c-app-sperre") { SettingsScreen(anna, false, false, {}, {}, {}, {}, lock = lockOn, onLock = { on = it; lockOn = it }, onLockAfter = { after = it }) }
+        compose.onNodeWithText("Mit Displaysperre schützen").performScrollTo().performClick()
+        org.junit.Assert.assertEquals(true, on)
+        compose.onNodeWithText("Sofort").performScrollTo().performClick()
+        compose.onNodeWithText("Nach 15 Minuten").performClick()
+        org.junit.Assert.assertEquals(900, after)
+    }
+
+    @Test
+    fun lockScreen() {
+        var asked = 0
+        shot("6d-gesperrt") { io.github.veritasx1.lichat.ui.LockScreen { asked++ } }
+        compose.onNodeWithText("Entsperren").performClick()
+        org.junit.Assert.assertEquals("gleich beim Erscheinen und auf Antippen", 2, asked)
+    }
+
+    @Test
+    fun appLockTimes() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        Settings.setLock(context, false)
+        AppLock.started(context)
+        org.junit.Assert.assertFalse("ab Werk aus", AppLock.locked.value)
+        Settings.setLock(context, true); Settings.setLockAfter(context, 60)
+        AppLock.started(context)
+        org.junit.Assert.assertTrue("Kaltstart: gesperrt", AppLock.locked.value)
+        AppLock.locked.value = false
+        AppLock.stopped(); AppLock.started(context)
+        org.junit.Assert.assertFalse("kurz weg, unter 1 Minute: offen", AppLock.locked.value)
+        Settings.setLockAfter(context, 0)
+        AppLock.stopped(); AppLock.started(context)
+        org.junit.Assert.assertTrue("„Sofort“: gesperrt", AppLock.locked.value)
+        AppLock.locked.value = false; AppLock.prompting = true
+        AppLock.stopped(); AppLock.started(context)
+        org.junit.Assert.assertFalse("zurück von der PIN-Abfrage: nicht gleich wieder sperren", AppLock.locked.value)
+        AppLock.prompting = false; Settings.setLock(context, false)
+    }
+
     /** Michelle: the switches had no checked state and only their pixels reacted – now the whole row is one switch. */
     /** da5cbfcb: the devices in the settings – this one, another with „Abmelden“ (asked twice), „Gerät hinzufügen …“ with the code. */
     @Test
