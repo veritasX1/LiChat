@@ -74,8 +74,74 @@ sealed class Page {
     data object Settings : Page()
 }
 
+/** The app lock's state (99eea3f7): locked at a cold start and after the chosen time in the background. */
+object AppLock {
+    val locked = mutableStateOf(false)
+    private var stoppedAt = -1L
+    /** The system's PIN screen is an activity of its own: coming back from it must not lock again. */
+    @Volatile var prompting = false
+
+    fun started(context: android.content.Context) {
+        if (!Settings.lock(context)) { locked.value = false; return }
+        if (prompting) return
+        val away = if (stoppedAt < 0) Long.MAX_VALUE else (android.os.SystemClock.elapsedRealtime() - stoppedAt) / 1000
+        if (away >= Settings.lockAfter(context)) locked.value = true
+    }
+
+    fun stopped() { stoppedAt = android.os.SystemClock.elapsedRealtime() }
+}
+
 class MainActivity : ComponentActivity() {
     private val opened = mutableStateOf<String?>(null)
+
+    /** The app overview shows no content while the lock is on (Android 13+: without blocking screenshots; before: FLAG_SECURE). */
+    fun applyOverview() {
+        val on = Settings.lock(this)
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!on)
+        else if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    /** Unlock with the phone's own screen lock – fingerprint/face where set up, else PIN, pattern or password. No own password. */
+    @Suppress("DEPRECATION")
+    fun unlock() {
+        if (AppLock.prompting) return
+        AppLock.prompting = true
+        if (Build.VERSION.SDK_INT >= 29) {
+            val builder = android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle("LiChat entsperren")
+            if (Build.VERSION.SDK_INT >= 30) builder.setAllowedAuthenticators(
+                android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_WEAK or android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+            else builder.setDeviceCredentialAllowed(true)
+            builder.build().authenticate(android.os.CancellationSignal(), mainExecutor, object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
+                    AppLock.prompting = false; AppLock.locked.value = false
+                }
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) { AppLock.prompting = false }
+            })
+        } else {
+            val intent = getSystemService(android.app.KeyguardManager::class.java)?.createConfirmDeviceCredentialIntent("LiChat entsperren", null)
+            if (intent == null) { AppLock.prompting = false; AppLock.locked.value = false } else startActivityForResult(intent, UNLOCK)
+        }
+    }
+
+    @Deprecated("only for Android 8–9")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == UNLOCK) { AppLock.prompting = false; if (resultCode == RESULT_OK) AppLock.locked.value = false }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppLock.started(this)
+        applyOverview()
+    }
+
+    override fun onStop() {
+        AppLock.stopped()
+        super.onStop()
+    }
+
+    companion object { const val UNLOCK = 41 }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -121,6 +187,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var page by remember { mutableStateOf<Page>(Page.List) }
     val seen = remember { mutableStateMapOf<String, Int>() }
     var preview by remember { mutableStateOf(Settings.preview(context)) }
+    var lockOn by remember { mutableStateOf(Settings.lock(context)) }
+    var lockAfter by remember { mutableStateOf(Settings.lockAfter(context)) }
+    val locked by AppLock.locked
     var unrestricted by remember { mutableStateOf(runCatching { Settings.unrestricted(context) }.getOrDefault(true)) }
     var explaining by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf(false) }
@@ -328,6 +397,10 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             }
             return@CompositionLocalProvider
         }
+        if (locked) {
+            io.github.veritasx1.lichat.ui.LockScreen { (context as? MainActivity)?.unlock() }
+            return@CompositionLocalProvider
+        }
         LaunchedEffect(Unit) { if (!Settings.explained(context)) explaining = true }
         Navigation(page, onBack = { page = it }) { p -> when (p) {
             Page.List -> ChatList(acc, version, seen, serverProblem, unrestricted,
@@ -387,6 +460,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             }
             Page.Settings -> {
                 SettingsScreen(acc, preview, unrestricted, onPreview = { preview = it; Settings.setPreview(context, it) },
+                    lock = lockOn, lockAfter = lockAfter, lockPossible = Settings.lockPossible(context),
+                    onLock = { on -> lockOn = on; Settings.setLock(context, on); (context as? MainActivity)?.applyOverview() },
+                    onLockAfter = { seconds -> lockAfter = seconds; Settings.setLockAfter(context, seconds) },
                     onPicture = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onUnrestrict = { askBattery() }, onBack = { page = Page.List }, notifying = notifying,
                     onNotifications = { openNotificationSettings() }, receipts = receipts,

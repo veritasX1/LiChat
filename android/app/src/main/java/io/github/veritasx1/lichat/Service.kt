@@ -70,6 +70,15 @@ object Settings {
             (manager.getNotificationChannel(Notifications.MESSAGES)?.importance ?: NotificationManager.IMPORTANCE_DEFAULT) != NotificationManager.IMPORTANCE_NONE
     }
 
+    /** App lock (99eea3f7, Olaf: can be switched on, off by default): unlocked with the phone's own screen lock. */
+    fun lock(context: Context) = prefs(context).getBoolean("sperre", false)
+    fun setLock(context: Context, on: Boolean) = prefs(context).edit().putBoolean("sperre", on).apply()
+    /** Seconds in the background before it locks again: 0, 60, 900 or 3600. */
+    fun lockAfter(context: Context) = prefs(context).getInt("sperre_nach", 0)
+    fun setLockAfter(context: Context, seconds: Int) = prefs(context).edit().putInt("sperre_nach", seconds).apply()
+    /** A lock needs a screen lock on the phone (PIN, pattern, password) – else there is nothing to unlock with. */
+    fun lockPossible(context: Context) = context.getSystemService(android.app.KeyguardManager::class.java)?.isDeviceSecure == true
+
     /** Without this, Android stops the connection in Doze and messages come late (Michelle Z6: said honestly). */
     fun unrestricted(context: Context) =
         (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName)
@@ -111,7 +120,7 @@ object Notifications {
      *  as soon as the conversation is read here or on another of my devices. */
     fun message(context: Context, news: News, who: String = news.from, group: String? = null) {
         val chat = news.chat ?: return
-        val preview = Settings.preview(context)
+        val preview = Settings.preview(context) && !Settings.lock(context)     // locked app: notifications without content
         val text = if (preview) (if (news.mention) "hat dich erwähnt: ${news.text}" else news.text) else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
         val list = synchronized(lines) { lines.getOrPut(chat) { mutableListOf() }.also { it.add(Triple(if (preview) who else "", text, System.currentTimeMillis())); while (it.size > 6) it.removeAt(0) }.toList() }
         val builder = Notification.Builder(context, MESSAGES)
