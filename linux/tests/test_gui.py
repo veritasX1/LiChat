@@ -156,6 +156,27 @@ def main():
     assert any(w.has_css_class("lichat-avatar-picture") for w in walk(window.list))
 
 
+    # Attachments (card 9780f3a0): Bernd's photo shows as a picture; Anna sends a file, it opens from a private folder.
+    from PIL import Image as PilImage
+    PilImage.new("RGB", (1600, 1200), (60, 160, 90)).save(Path(SCRATCH) / "garten.jpg")
+    bernd.send_attachment(cid, (Path(SCRATCH) / "garten.jpg").read_bytes(), "garten.jpg", "image/jpeg", "bild")
+    until(lambda: any(m.get("anhang") for m in anna.chats[cid]["messages"]))
+    settle(0.3)
+    assert any(w.has_css_class("lichat-photo") for w in walk(window.bubbles)), "Foto nicht als Bild"
+    (Path(SCRATCH) / "Einkauf.txt").write_text("Kohle, Würstchen")
+    window.send_attachment(Path(SCRATCH) / "Einkauf.txt")
+    until(lambda: sum(1 for m in anna.chats[cid]["messages"] if m.get("anhang")) == 2)
+    got = [n for n in bernd.fetch() if n.get("anhang")]
+    assert got and bernd.open_attachment(got[-1]["anhang"]) == "Kohle, Würstchen".encode()
+    launched = []
+    Gtk.FileLauncher.launch = lambda self, parent, cancel, callback: launched.append(self.get_file().get_path())
+    window.open_attachment(got[-1]["anhang"] | {"id": [m for m in anna.chats[cid]["messages"] if m.get("anhang")][-1]["anhang"]["id"]})
+    until(lambda: launched)
+    opened = Path(launched[0])
+    assert opened.read_text() == "Kohle, Würstchen" and oct(opened.stat().st_mode & 0o777) == "0o600"
+    assert str(opened).startswith(os.environ.get("XDG_RUNTIME_DIR", "/tmp")), opened
+    shot(window, "03b-anhaenge.png")
+
     # The safety code in the info popover equals Bernd's.
     window.fill_info(window.info)
     window.info.popup()
@@ -230,7 +251,7 @@ def main():
 
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
-    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 4
+    assert set(again.chats) == {cid, group} and len(again.chats[cid]["messages"]) == 6
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

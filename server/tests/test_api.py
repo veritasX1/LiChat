@@ -55,6 +55,19 @@ class ApiTest(unittest.TestCase):
         data = b"".join(self.app(environ, start))
         return result["status"], json.loads(data)
 
+    def raw(self, method, path, data=b"", token=None, length=None):
+        environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "CONTENT_LENGTH": str(len(data) if length is None else length),
+                   "wsgi.input": io.BytesIO(data), "REMOTE_ADDR": "10.0.0.1", "QUERY_STRING": ""}
+        if token:
+            environ["HTTP_AUTHORIZATION"] = "Bearer " + token
+        result = {}
+
+        def start(status, headers):
+            result["status"] = int(status.split()[0])
+            result["headers"] = dict(headers)
+        body = b"".join(self.app(environ, start))
+        return result["status"], result["headers"], body
+
     def account(self, name):
         invite = self.app.store.create_invite()
         status, data = self.call("POST", "/v1/register", {"invite": invite, "username": name,
@@ -294,6 +307,58 @@ class ApiTest(unittest.TestCase):
         stored = [r[0] for r in db.execute("SELECT token FROM devices")]
         db.close()
         self.assertNotIn(token, stored)
+
+
+    # Attachments (card 9780f3a0) ----------------------------------------------------------------
+
+    def test_attachment_round_trip_opaque(self):
+        _, anna = self.account("anna")
+        _, bernd = self.account("bernd")
+        secret = os.urandom(300_000)
+        status, _, body = self.raw("PUT", "/v1/anhaenge", secret, token=anna)
+        self.assertEqual(status, 200, body)
+        attachment = json.loads(body)["id"]
+        self.assertRegex(attachment, r"^[0-9a-f]{32}$")
+        status, headers, got = self.raw("GET", f"/v1/anhaenge/{attachment}", token=bernd)
+        self.assertEqual((status, headers["Content-Type"], got), (200, "application/octet-stream", secret))
+        columns = [r[1] for r in self.app.store.db.execute("PRAGMA table_info(attachments)")]
+        self.assertEqual(columns, ["id", "device", "size", "created"], "kein Name, keine Art")
+
+    def test_attachment_needs_sign_in_and_known_id(self):
+        _, anna = self.account("anna")
+        self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"x")[0], 401)
+        self.assertEqual(self.raw("GET", "/v1/anhaenge/" + "0" * 32, token=anna)[0], 404)
+        self.assertEqual(self.raw("GET", "/v1/anhaenge/../lichat.db", token=anna)[0], 404)
+        self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"", token=anna)[0], 400)
+
+    def test_attachment_limits(self):
+        from lichat_server import store as store_module
+        _, anna = self.account("anna")
+        self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"", token=anna, length=101 * 1024 * 1024)[0], 413)
+        self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"abc", token=anna, length=10)[0], 400, "abgebrochen")
+        self.assertEqual(list((self.app.store.dir / "anhaenge").glob("*.teil")), [], "Rest weg")
+        before = store_module.ATTACHMENTS_PER_DEVICE
+        store_module.ATTACHMENTS_PER_DEVICE = 1000
+        try:
+            self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"x" * 800, token=anna)[0], 200)
+            self.assertEqual(self.raw("PUT", "/v1/anhaenge", b"x" * 300, token=anna)[0], 413)
+        finally:
+            store_module.ATTACHMENTS_PER_DEVICE = before
+
+    def test_attachment_gone_after_30_days_and_with_its_device(self):
+        _, anna = self.account("anna")
+        _, bernd = self.account("bernd")
+        first = json.loads(self.raw("PUT", "/v1/anhaenge", b"alt", token=anna)[2])["id"]
+        self.clock.now += KEEP_UNFETCHED + 60
+        second = json.loads(self.raw("PUT", "/v1/anhaenge", b"neu", token=anna)[2])["id"]
+        self.app.store.purge()
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{first}", token=bernd)[0], 404)
+        self.assertFalse(self.app.store.attachment_path(first).exists())
+        self.assertEqual(self.raw("GET", f"/v1/anhaenge/{second}", token=bernd)[2], b"neu")
+        self.call("DELETE", "/v1/devices/me", token=anna)
+        self.app.store.purge()
+        self.assertFalse(self.app.store.attachment_path(second).exists(), "abgemeldet = Anhänge weg")
+
 
 
 if __name__ == "__main__":

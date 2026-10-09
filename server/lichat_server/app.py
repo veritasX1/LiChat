@@ -14,6 +14,8 @@ them once fetched. Endpoints (all JSON, blobs base64):
     GET    /v1/messages[?warten=s]  own mailbox; with warten (1–60) the answer waits until something
                                      arrives or the time is up (the apps' standing connection) -> {messages: [...]}
     POST   /v1/messages/ack         {ids: [...]}  delivered, delete now
+    PUT    /v1/anhaenge             raw encrypted bytes (≤ 100 MB, 1 GB per device) -> {id}   (card 9780f3a0)
+    GET    /v1/anhaenge/<id>        the bytes again (signed in; gone after 30 days)
     GET    /v1/health
 
 Signed in = header "Authorization: Bearer <token>" (the device token from register).
@@ -32,7 +34,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 
-from .store import Store
+from .store import ATTACHMENT_BYTES, Store
 
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
 DEVICE = re.compile(r"^[0-9a-f]{16}$")
@@ -129,6 +131,8 @@ class App:
             ("GET", r"/v1/messages", self.mailbox, True),
             ("POST", r"/v1/messages/ack", self.ack, True),
             ("GET", r"/v1/health", lambda env, body, me: {"ok": True}, False),
+            ("PUT", r"/v1/anhaenge", self.put_attachment, True),
+            ("GET", r"/v1/anhaenge/(?P<attachment>[0-9a-f]{32})", self.get_attachment, True),
         ]
 
     # WSGI ----------------------------------------------------------------------------------------
@@ -138,6 +142,10 @@ class App:
             status, payload = 200, self.dispatch(environ)
         except HttpError as error:
             status, payload = error.status, {"error": error.message}
+        if isinstance(payload, Raw):
+            start_response("200 OK", [("Content-Type", "application/octet-stream"), ("Content-Length", str(payload.size)),
+                                      ("Cache-Control", "no-store")])
+            return payload
         data = json.dumps(payload).encode()
         reason = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
                   405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
@@ -157,7 +165,8 @@ class App:
             if verb != method:
                 continue
             me = self.authenticate(environ) if signed_in else None
-            return handler(environ, self.body(environ, method), me, **match.groupdict())
+            body = {} if handler == self.put_attachment else self.body(environ, method)
+            return handler(environ, body, me, **match.groupdict())
         raise HttpError(405 if allowed else 404, "unbekannt")
 
     def address(self, environ):
@@ -278,12 +287,48 @@ class App:
             found = self.store.fetch(me[0])
         return {"messages": [{"id": m["id"], "blob": b64(m["blob"]), "received": m["received"]} for m in found]}
 
+    def put_attachment(self, environ, body, me):
+        try:
+            size = int(environ.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            size = 0
+        if size <= 0:
+            raise HttpError(400, "Anhang leer")
+        if size > ATTACHMENT_BYTES:
+            raise HttpError(413, "Anhang zu groß (höchstens 100 MB)")
+        if not self.send_limit.hit(me[0]):
+            raise HttpError(429, "zu viele Anhänge")
+        try:
+            return {"id": self.store.keep_attachment(me[0], environ["wsgi.input"], size)}
+        except ValueError:
+            raise HttpError(413, "Speicher für Anhänge voll – ältere verschwinden nach 30 Tagen")
+        except EOFError:
+            raise HttpError(400, "Anhang unvollständig")
+
+    def get_attachment(self, environ, body, me, attachment):
+        found = self.store.attachment(attachment)
+        if found is None:
+            raise HttpError(404, "Anhang nicht mehr da")
+        return Raw(*found)
+
     def ack(self, environ, body, me):
         ids = body.get("ids")
         if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
             raise HttpError(400, "ids fehlen")
         self.store.acknowledge(me[0], ids)
         return {"ok": True}
+
+
+class Raw:
+    """A file answered as bytes, read in pieces (an attachment can be 100 MB)."""
+
+    def __init__(self, path, size):
+        self.path, self.size = path, size
+
+    def __iter__(self):
+        with open(self.path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                yield chunk
 
 
 def create_app(data_dir=None, **kwargs):

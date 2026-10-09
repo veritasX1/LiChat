@@ -17,12 +17,20 @@ On disk, in the profile folder (files 600, folder 700):
     chats.bin      rosters, titles and the history, sealed here (LICHATC1, AES-256-GCM)
     profile.bin    my picture and the pictures the others sent me (LICHATP1, AES-256-GCM)
 
+Attachments (card 9780f3a0): each file gets its own random key (AES-256-GCM, LICHATA1); the server keeps only the
+encrypted bytes under a random id. The MLS message carries id, key, SHA-256, name, type and kind:
+    {"t": "anhang", "id", "schluessel", "sha256", "name", "mime", "groesse", "art": bild|video|sprache|datei,
+     "dauer"?, "vorschau"? (small JPEG, also without EXIF)}
+Photos leave without EXIF and at most 2048 px, like Messages sends them.
+
 Profile pictures (Michelle B7) travel only inside the conversations, end-to-end like a text: {"t": "profile", "bild":
 <JPEG base64>}. Made square, 512 px, JPEG, without EXIF (no place, no camera, Michelle 09.10.) before they leave.
 """
 
 import base64
+import hashlib
 import io
+import re
 import json
 import os
 import threading
@@ -44,6 +52,10 @@ CHATS_MAGIC = b"LICHATC1"
 PROFILE_MAGIC = b"LICHATP1"
 PICTURE_PX = 512
 PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
+ATTACHMENT_MAGIC = b"LICHATA1"
+ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
+PHOTO_PX = 2048
+KINDS = ("bild", "video", "sprache", "datei")
 SUPPLY = 20          # key packages uploaded at the start
 TIMEOUT = 20
 
@@ -93,6 +105,24 @@ def check_server(url):
 class Server:
     def __init__(self, url, token=None):
         self.url, self.token = check_server(url), token
+
+    def raw(self, method, path, data=None, timeout=120):
+        """Bytes in, bytes out – the attachments (no JSON around 100 MB)."""
+        request = urllib.request.Request(self.url + path, data=data, method=method)
+        request.add_header("Content-Type", "application/octet-stream")
+        if self.token:
+            request.add_header("Authorization", "Bearer " + self.token)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            try:
+                message = json.loads(error.read()).get("error", "")
+            except ValueError:
+                message = ""
+            raise LiChatError(f"Server: {message or error.reason} ({error.code})") from None
+        except (urllib.error.URLError, OSError) as error:
+            raise LiChatError(f"Server nicht erreichbar: {getattr(error, 'reason', error)}") from None
 
     def call(self, method, path, body=None, timeout=TIMEOUT):
         data = json.dumps(body).encode() if body is not None else None
@@ -316,6 +346,76 @@ class Account:
         chat["messages"].append(line)
         return line
 
+    # ------------------------------------------------------------------------------------------ attachments
+
+    @staticmethod
+    def prepare_photo(data):
+        """A photo as it may leave: upright, at most 2048 px, JPEG – nothing else of the file (no EXIF: place, camera)."""
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((PHOTO_PX, PHOTO_PX), Image.LANCZOS)
+            out = io.BytesIO()
+            image.save(out, "JPEG", quality=85, optimize=True)
+            preview = image.copy()
+            preview.thumbnail((320, 320), Image.LANCZOS)
+            small = io.BytesIO()
+            preview.save(small, "JPEG", quality=70)
+        return out.getvalue(), small.getvalue()
+
+    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None):
+        """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat."""
+        if kind not in KINDS:
+            raise LiChatError("unbekannte Art von Anhang")
+        if self.chats[cid].get("removed"):
+            raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
+        if kind == "bild":
+            data, preview = self.prepare_photo(data)
+            mime, name = "image/jpeg", (name.rsplit(".", 1)[0] or "Foto") + ".jpg"
+        if len(data) > ATTACHMENT_MAX:
+            raise LiChatError("Anhang zu groß (höchstens 100 MB)")
+        key, nonce = os.urandom(32), os.urandom(12)
+        sealed = nonce + AESGCM(key).encrypt(nonce, data, ATTACHMENT_MAGIC)
+        attachment = json.loads(self.server.raw("PUT", "/v1/anhaenge", sealed))["id"]
+        info = {"id": attachment, "schluessel": b64(key), "sha256": hashlib.sha256(sealed).hexdigest(),
+                "name": str(name)[:200], "mime": str(mime)[:100], "groesse": len(data), "art": kind}
+        if duration is not None:
+            info["dauer"] = round(float(duration), 1)
+        if preview:
+            info["vorschau"] = b64(preview)
+        self._keep_sealed(attachment, sealed)
+        at = int(time.time())
+        with self.lock:
+            packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "anhang", "at": at, **info}))
+            self.chats[cid]["messages"].append({"from": self.username, "text": "", "at": at, "anhang": info})
+            self.save()
+            targets = self.targets(cid)
+        return self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
+
+    def _keep_sealed(self, attachment, sealed):
+        folder = self.folder / "anhaenge"
+        folder.mkdir(exist_ok=True, mode=0o700)
+        write_private(folder / attachment, sealed)
+
+    def open_attachment(self, info):
+        """The plain bytes: from the local (still encrypted) copy or fetched again – checked against the SHA-256 the sender
+        announced, then decrypted. Nothing plain is stored here; the app writes a temporary file only to show it."""
+        path = self.folder / "anhaenge" / info["id"]
+        sealed = path.read_bytes() if path.exists() else self.server.raw("GET", f"/v1/anhaenge/{info['id']}")
+        if hashlib.sha256(sealed).hexdigest() != info["sha256"]:
+            raise LiChatError("Anhang beschädigt oder verändert")
+        if not path.exists():
+            self._keep_sealed(info["id"], sealed)
+        return AESGCM(unb64(info["schluessel"])).decrypt(sealed[:12], sealed[12:], ATTACHMENT_MAGIC)
+
+    @staticmethod
+    def describe(message):
+        """One line for the list and notifications: the text, or what the attachment is."""
+        info = message.get("anhang")
+        if not info:
+            return message.get("text", "")
+        return {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
+
     def members(self, cid):
         if self.chats.get(cid, {}).get("removed"):
             return [self.username]
@@ -422,6 +522,20 @@ class Account:
             else:
                 self.profiles["people"].pop(sender, None)
             return [{"chat": cid, "picture": sender}]
+        if data.get("t") == "anhang":
+            info = {k: data.get(k) for k in ("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau") if data.get(k) is not None}
+            try:
+                good = (re.fullmatch(r"[0-9a-f]{32}", str(info.get("id"))) and len(unb64(info.get("schluessel", ""))) == 32
+                        and re.fullmatch(r"[0-9a-f]{64}", str(info.get("sha256"))) and info.get("art") in KINDS
+                        and len(info.get("vorschau", "")) <= 64 * 1024)
+            except (ValueError, TypeError):
+                good = False
+            if not good:
+                return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
+            info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
+            message = {"from": sender, "text": "", "at": int(data.get("at") or time.time()), "anhang": info}
+            chat["messages"].append(message)
+            return [{"chat": cid, "from": sender, "text": self.describe(message), "at": message["at"], "anhang": info}]
         if data.get("t") == "text":
             message = {"from": sender, "text": str(data.get("text", "")), "at": int(data.get("at") or time.time())}
             chat["messages"].append(message)
