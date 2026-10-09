@@ -34,6 +34,9 @@ object Pictures {
 
     private fun jpeg(bitmap: Bitmap, quality: Int) = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
 
+    /** A picture sent as a file: full size, upright, JPEG 95 – only the metadata (EXIF: place, camera, time) stays behind. */
+    fun withoutMetadata(source: ByteArray): ByteArray = jpeg(upright(source, Int.MAX_VALUE / 4), 95)
+
     /** A photo as it leaves (card 9780f3a0): upright, at most 2048 px, JPEG without EXIF – and a small preview (320 px). */
     fun photo(source: ByteArray): Pair<ByteArray, ByteArray> {
         val image = fit(upright(source, PHOTO_PX), PHOTO_PX)

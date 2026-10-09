@@ -47,6 +47,15 @@ class Media(private val context: Context) {
                 val clean = clean(bytes, "m4a") ?: throw LiChatException("Aufnahme lässt sich nicht ohne Metadaten verschicken")
                 account.sendAttachment(cid, clean, name.substringBeforeLast('.') + ".m4a", "audio/mp4", "sprache")
             }
+            // Sent as a file the content stays as it is – but never its metadata (Michelle: an MP4 via „Datei“ kept its place).
+            asFile && mime.startsWith("image/") && mime != "image/gif" && mime != "image/svg+xml" ->
+                account.sendAttachment(cid, Pictures.withoutMetadata(bytes), name.substringBeforeLast('.') + ".jpg", "image/jpeg", "datei")
+            asFile && mime.startsWith("video/") -> account.sendAttachment(cid,
+                clean(bytes, "mp4") ?: throw LiChatException("Video lässt sich nicht ohne Ortsangaben verschicken"),
+                name.substringBeforeLast('.') + ".mp4", "video/mp4", "datei")
+            asFile && mime.startsWith("audio/") -> account.sendAttachment(cid,
+                clean(bytes, "m4a") ?: throw LiChatException("Aufnahme lässt sich nicht ohne Metadaten verschicken"),
+                name.substringBeforeLast('.') + ".m4a", "audio/mp4", "datei")
             else -> account.sendAttachment(cid, bytes, name, mime, "datei")
         }
     }

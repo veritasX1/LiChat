@@ -76,15 +76,15 @@ httpd.serve_forever()
         val anna = person("anna")
         val bernd = person("bernd")
         val cid = anna.start(listOf("bernd"))
-        assertEquals(listOf(News.Kind.Joined), bernd.fetch().map { it.kind })
+        assertEquals(listOf(News.Kind.Joined), bernd.fetch().filter { it.kind != News.Kind.Receipt }.map { it.kind })
         anna.send(cid, "Hallo Bernd!")
-        val news = bernd.fetch()
+        val news = bernd.fetch().filter { it.kind != News.Kind.Receipt }
         assertEquals(listOf("Hallo Bernd!"), news.filter { it.kind == News.Kind.Text }.map { it.text })
         assertTrue("Serverzeit fehlt", news.first { it.kind == News.Kind.Text }.received > 0)
         // Restart: everything from disk, with the same key.
         val again = Account(bernd.folder, KeyVault.Plain.load(bernd.folder)!!)
         again.send(cid, "Hallo Anna")
-        assertEquals(listOf("Hallo Anna"), anna.fetch().map { it.text })
+        assertEquals(listOf("Hallo Anna"), anna.fetch().filter { it.kind != News.Kind.Receipt }.map { it.text })
         assertEquals(anna.safetyCode(cid), again.safetyCode(cid))
         assertEquals(8, anna.safetyCode(cid).split(" ").size)
         // Nothing readable on disk.
@@ -112,8 +112,8 @@ httpd.serve_forever()
         bernd.fetch(); erna.fetch()
         assertEquals("Verein", bernd.title(cid))
         anna.remove(cid, listOf("erna"))
-        assertEquals(listOf(News.Kind.Removed), erna.fetch().map { it.kind })
-        assertEquals(listOf("anna hat erna aus der Unterhaltung entfernt."), bernd.fetch().map { it.text })
+        assertEquals(listOf(News.Kind.Removed), erna.fetch().filter { it.kind != News.Kind.Receipt }.map { it.kind })
+        assertEquals(listOf("anna hat erna aus der Unterhaltung entfernt."), bernd.fetch().filter { it.kind != News.Kind.Receipt }.map { it.text })
         try { erna.send(cid, "Hallo?"); throw AssertionError("Senden muss abgelehnt werden") } catch (e: LiChatException) { }
     }
 
@@ -126,7 +126,7 @@ httpd.serve_forever()
         var seconds = 0.0
         val listener = Thread {
             val started = System.nanoTime()
-            got = bernd.fetch(30)
+            got = bernd.fetch(30).filter { it.kind != News.Kind.Receipt }
             seconds = (System.nanoTime() - started) / 1e9
         }.apply { start() }
         Thread.sleep(500)
@@ -163,7 +163,7 @@ httpd.serve_forever()
         val raw = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
         val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
         anna.sendAttachment(cid, jpeg, "garten.jpg", "image/jpeg", "bild", preview = preview)
-        val news = bernd.fetch()
+        val news = bernd.fetch().filter { it.kind != News.Kind.Receipt }
         assertEquals(listOf("Datei: Plan.pdf", "Sprachnachricht", "Foto"), news.map { it.text })
         assertEquals(document.toList(), bernd.openAttachment(news[0].attachment!!).toList())
         assertEquals(3.4, news[1].attachment!!.getDouble("dauer"), 0.001)
@@ -197,5 +197,36 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(out, 0, process.waitFor())
         val news = anna.fetch().filter { it.attachment != null }
         assertEquals("Kohle, Wuerstchen", String(anna.openAttachment(news.single().attachment!!)))
+    }
+
+    /** Card db70d358: ✓ sent, ✓✓ delivered, blue ✓✓ read – read receipts off by default and mutual; a failed send is marked. */
+    @Test
+    fun ticks() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.send(cid, "Hallo")
+        val list = anna.chat(cid).getJSONArray("messages")
+        fun mine() = list.getJSONObject(list.length() - 1)
+        assertEquals("gesendet", anna.tick(cid, mine()).first)
+        bernd.fetch(); anna.fetch()
+        assertEquals("zugestellt", anna.tick(cid, mine()).first)
+        bernd.markRead(cid); anna.fetch()
+        assertEquals("zugestellt", anna.tick(cid, mine()).first)
+        bernd.readReceipts = true
+        bernd.markRead(cid); anna.fetch()
+        assertEquals("gegenseitig", "zugestellt", anna.tick(cid, mine()).first)
+        anna.readReceipts = true
+        assertEquals("gelesen", anna.tick(cid, mine()).first)
+        // Not sent: marked, and sent again with the same mid.
+        val server = File(root, "server")
+        anna.server.token = "falsch"
+        try { anna.send(cid, "Kommt das an?"); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        assertEquals("fehler", anna.tick(cid, mine()).first)
+        anna.server.token = anna.info.getString("token")
+        anna.retry(cid, mine().getString("mid"))
+        assertEquals("gesendet", anna.tick(cid, mine()).first)
+        assertEquals(listOf("Kommt das an?"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        assertFalse(server.walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("quittung") })
     }
 }

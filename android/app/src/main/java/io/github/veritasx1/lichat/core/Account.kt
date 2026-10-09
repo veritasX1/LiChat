@@ -46,7 +46,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
                 val attachment: JSONObject? = null) {
-    enum class Kind { Text, Joined, Picture, Removed, System, Problem }
+    enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt }
 }
 
 /** One line for the list and notifications: the text, or what the attachment is (the same words as Ubuntu). */
@@ -166,6 +166,8 @@ class Account(val folder: File, private val key: ByteArray) {
     /** Held while the state changes (never during a call to the server); the screens read under it too. */
     val lock = Any()
     private val owePicture = mutableSetOf<String>()
+    /** Chat → mids that arrived and still get their „zugestellt“ (card db70d358). */
+    private val oweDelivered = mutableMapOf<String, MutableList<String>>()
 
     init {
         val accountFile = File(folder, "account.json")
@@ -282,15 +284,86 @@ class Account(val folder: File, private val key: ByteArray) {
         if (clean.isEmpty()) throw LiChatException("Leere Nachricht")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
         val at = System.currentTimeMillis() / 1000
+        val message = JSONObject().put("from", username).put("text", clean).put("at", at).put("mid", newMid()).put("status", "wartet")
+        synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
+        return deliver(cid, message, JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid")))
+    }
+
+    private fun newMid() = ByteArray(8).also { SecureRandom().nextBytes(it) }.hex()
+
+    /** Encrypts and posts one of my messages; its status follows: wartet → gesendet, or fehler (a red line, retry). */
+    private fun deliver(cid: String, message: JSONObject, content: JSONObject): JSONObject {
+        val answer = try {
+            val packet: ByteArray
+            val targets: List<String>
+            synchronized(lock) {
+                packet = device.encrypt(cid.unhex(), payload(content))
+                save()
+                targets = targets(cid)
+            }
+            post(targets, byteArrayOf(MLS) + packet)
+        } catch (e: Exception) {
+            synchronized(lock) { message.put("status", "fehler"); save() }
+            throw (e as? LiChatException) ?: LiChatException("Nicht gesendet")
+        }
+        synchronized(lock) { message.put("status", "gesendet").put("gesendet", System.currentTimeMillis() / 1000); save() }
+        return answer
+    }
+
+    /** „Nicht gesendet“ tapped: the same message (same mid) once more. */
+    fun retry(cid: String, mid: String): JSONObject {
+        val list = chat(cid).getJSONArray("messages")
+        val message = (0 until list.length()).map { list.getJSONObject(it) }.first { it.optString("mid") == mid }
+        val content = message.optJSONObject("anhang")?.let { JSONObject(it.toString()).put("t", "anhang") }
+            ?: JSONObject().put("t", "text").put("text", message.optString("text"))
+        content.put("at", message.optLong("at")).put("mid", mid)
+        message.put("status", "wartet")
+        return deliver(cid, message, content)
+    }
+
+    // ------------------------------------------------------------------------------------------ delivery state (db70d358)
+
+    /** Read receipts: off by default like the iPhone (Olaf), mutual – off means none sent and no blue ticks seen. */
+    var readReceipts: Boolean
+        get() = profiles.optBoolean("lesebestaetigungen", false)
+        set(on) = synchronized(lock) { profiles.put("lesebestaetigungen", on); save() }
+
+    private fun receipt(cid: String, kind: String, mids: List<String>) {
+        if (mids.isEmpty() || chat(cid).optString("removed").isNotEmpty()) return
         val packet: ByteArray
         val targets: List<String>
         synchronized(lock) {
-            packet = device.encrypt(cid.unhex(), payload(JSONObject().put("t", "text").put("text", clean).put("at", at)))
-            chat(cid).getJSONArray("messages").put(JSONObject().put("from", username).put("text", clean).put("at", at))
+            packet = device.encrypt(cid.unhex(), payload(JSONObject().put("t", "quittung").put("art", kind)
+                .put("mids", JSONArray(mids)).put("at", System.currentTimeMillis() / 1000)))
             save()
             targets = targets(cid)
         }
-        return post(targets, byteArrayOf(MLS) + packet)
+        post(targets, byteArrayOf(MLS) + packet)
+    }
+
+    /** The chat is on screen: with read receipts on, the others learn which of their messages were read. */
+    fun markRead(cid: String) {
+        if (!readReceipts) return
+        val mids = synchronized(lock) {
+            val list = chat(cid).getJSONArray("messages")
+            (0 until list.length()).map { list.getJSONObject(it) }
+                .filter { it.has("mid") && it.optString("from") !in setOf("", username) && !it.optBoolean("gelesen_gemeldet") }
+                .onEach { it.put("gelesen_gemeldet", true) }.map { it.getString("mid") }
+        }
+        receipt(cid, "gelesen", mids)
+    }
+
+    /** (state, time) of one of my messages: wartet | fehler | gesendet | zugestellt | gelesen – in a group once everyone has. */
+    fun tick(cid: String, message: JSONObject): Pair<String, Long> {
+        val state = message.optString("status", "gesendet")
+        if (state == "wartet" || state == "fehler") return state to message.optLong("at")
+        val others = others(cid)
+        val delivered = message.optJSONObject("zugestellt") ?: JSONObject()
+        val read = message.optJSONObject("gelesen") ?: JSONObject()
+        if (others.isNotEmpty() && readReceipts && others.all { read.has(it) }) return "gelesen" to others.maxOf { read.getLong(it) }
+        if (others.isNotEmpty() && others.all { delivered.has(it) || read.has(it) })
+            return "zugestellt" to others.maxOf { if (delivered.has(it)) delivered.getLong(it) else read.getLong(it) }
+        return "gesendet" to message.optLong("gesendet", message.optLong("at"))
     }
 
     fun remove(cid: String, names: List<String>) {
@@ -356,16 +429,9 @@ class Account(val folder: File, private val key: ByteArray) {
         preview?.let { info.put("vorschau", b64(it)) }
         keepSealed(id, sealed)
         val at = System.currentTimeMillis() / 1000
-        val packet: ByteArray
-        val targets: List<String>
-        synchronized(lock) {
-            val announce = JSONObject(info.toString()).put("t", "anhang").put("at", at)
-            packet = device.encrypt(cid.unhex(), payload(announce))
-            chat(cid).getJSONArray("messages").put(JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info))
-            save()
-            targets = targets(cid)
-        }
-        return post(targets, byteArrayOf(MLS) + packet)
+        val message = JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info).put("mid", newMid()).put("status", "wartet")
+        synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
+        return deliver(cid, message, JSONObject(info.toString()).put("t", "anhang").put("at", at).put("mid", message.getString("mid")))
     }
 
     private fun sha256(data: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(data).hex()
@@ -450,6 +516,11 @@ class Account(val folder: File, private val key: ByteArray) {
             val packages = synchronized(lock) { device.keyPackages(joined.toUInt()).also { save() } }
             server.call("POST", "/v1/key-packages", JSONObject().put("key_packages", JSONArray(packages.map { b64(it) })))
         }
+        if (oweDelivered.isNotEmpty()) {
+            // „zugestellt“ for what just arrived (always on – only „gelesen“ can be switched off).
+            val owed = synchronized(lock) { oweDelivered.toMap().also { oweDelivered.clear() } }
+            owed.forEach { (cid, mids) -> receipt(cid, "zugestellt", mids) }
+        }
         if (owePicture.isNotEmpty()) {
             val sends = synchronized(lock) {
                 val me = profiles.opt("me") as? String
@@ -461,6 +532,14 @@ class Account(val folder: File, private val key: ByteArray) {
             sends.forEach { (targets, packet) -> post(targets, byteArrayOf(MLS) + packet) }
         }
         return news
+    }
+
+    private fun rememberMid(cid: String, message: JSONObject, data: JSONObject) {
+        val mid = data.optString("mid")
+        if (Regex("[0-9a-f]{16}").matches(mid)) {
+            message.put("mid", mid)
+            oweDelivered.getOrPut(cid) { mutableListOf() }.add(mid)
+        }
     }
 
     private fun take(received: Incoming, at: Double): List<News> {
@@ -515,6 +594,20 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (raw.isEmpty()) people.remove(sender) else people.put(sender, picture)
                         return listOf(News(cid, News.Kind.Picture, from = sender, received = at))
                     }
+                    "quittung" -> {
+                        val kind = data.optString("art")
+                        val mids = data.optJSONArray("mids")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
+                        if (kind in setOf("zugestellt", "gelesen") && sender != username) {
+                            val sentAt = data.optLong("at", System.currentTimeMillis() / 1000)
+                            val list = chat.getJSONArray("messages")
+                            for (k in 0 until list.length()) {
+                                val m = list.getJSONObject(k)
+                                if (m.optString("from") == username && m.optString("mid") in mids)
+                                    (m.optJSONObject(kind) ?: JSONObject().also { m.put(kind, it) }).put(sender, sentAt)
+                            }
+                        }
+                        return listOf(News(cid, News.Kind.Receipt, received = at))
+                    }
                     "anhang" -> {
                         val info = JSONObject()
                         for (k in listOf("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau")) if (data.has(k)) info.put(k, data.get(k))
@@ -526,13 +619,16 @@ class Account(val folder: File, private val key: ByteArray) {
                         info.put("name", info.optString("name", "Datei").take(200).replace('/', '_'))
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", "").put("at", sent).put("anhang", info)
+                        rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = describe(message), at = sent, received = at, attachment = info))
                     }
                     "text" -> {
                         val text = data.optString("text")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
-                        chat.getJSONArray("messages").put(JSONObject().put("from", sender).put("text", text).put("at", sent))
+                        val message = JSONObject().put("from", sender).put("text", text).put("at", sent)
+                        rememberMid(cid, message, data)
+                        chat.getJSONArray("messages").put(message)
                         return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at))
                     }
                 }

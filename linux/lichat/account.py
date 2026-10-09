@@ -444,6 +444,15 @@ class Account:
         return out.getvalue(), small.getvalue()
 
     @staticmethod
+    def picture_without_metadata(data):
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            out = io.BytesIO()
+            image.save(out, "JPEG", quality=95)
+        return out.getvalue()
+
+    @staticmethod
     def clean_media(data, suffix):
         """The tracks copied unchanged into a fresh MP4 – no place, no times, no user data (ffmpeg, no re-encoding)."""
         import subprocess
@@ -471,6 +480,13 @@ class Account:
         if kind == "bild":
             data, preview = self.prepare_photo(data)
             mime, name = "image/jpeg", (name.rsplit(".", 1)[0] or "Foto") + ".jpg"
+        elif kind == "datei" and mime.startswith("image/") and mime not in ("image/gif", "image/svg+xml"):
+            # Sent as a file: full size – but never with its metadata (Michelle: place, camera, time).
+            data, mime, name = self.picture_without_metadata(data), "image/jpeg", name.rsplit(".", 1)[0] + ".jpg"
+        elif kind == "datei" and (mime.startswith("video/") or mime.startswith("audio/")):
+            video = mime.startswith("video/")
+            data = self.clean_media(data, "mp4" if video else "m4a")
+            mime, name = ("video/mp4", name.rsplit(".", 1)[0] + ".mp4") if video else ("audio/mp4", name.rsplit(".", 1)[0] + ".m4a")
         elif kind in ("video", "sprache"):
             # Without the container's metadata: an MP4 carries the place (©xyz) and the time of recording (Michelle).
             data = self.clean_media(data, "mp4" if kind == "video" else "m4a")

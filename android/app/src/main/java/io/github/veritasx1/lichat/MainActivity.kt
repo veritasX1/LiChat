@@ -204,7 +204,13 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         },
         recording = recording,
         playing = playing,
+        retry = { mid ->
+            val acc = account
+            val cid = chatId()
+            if (acc != null && cid != null) work({ acc.retry(cid, mid) }) { _, error -> problem = error; Hub.changed() }
+        },
     )
+    var receipts by remember { mutableStateOf(account?.readReceipts ?: false) }
 
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
@@ -232,7 +238,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 onUnrestrict = { askBattery() }, notifying = notifying, onNotifications = { openNotificationSettings() })
             is Page.Chat -> {
                 BackHandler { page = Page.List }
-                LaunchedEffect(version, p.cid) { seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() } }
+                LaunchedEffect(version, p.cid) {
+                    seen[p.cid] = synchronized(acc.lock) { acc.chat(p.cid).getJSONArray("messages").length() }
+                    // On screen = read (only reported with read receipts on, card db70d358).
+                    if (receipts) work({ acc.markRead(p.cid) }) { _, _ -> }
+                }
                 ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) },
                     onSend = { text -> work({ acc.send(p.cid, text) }) { _, error -> problem = error; Hub.changed() } }, actions = actions)
             }
@@ -257,7 +267,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 SettingsScreen(acc, preview, unrestricted, onPreview = { preview = it; Settings.setPreview(context, it) },
                     onPicture = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onUnrestrict = { askBattery() }, onBack = { page = Page.List }, notifying = notifying,
-                    onNotifications = { openNotificationSettings() })
+                    onNotifications = { openNotificationSettings() }, receipts = receipts,
+                    onReceipts = { on -> receipts = on; work({ acc.readReceipts = on }) { _, _ -> Hub.changed() } })
             }
         }
         if (sheet) AttachmentSheet(

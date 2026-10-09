@@ -12,6 +12,8 @@
     lichat-cli [--profil NAME] mitglieder <gespräch>
     lichat-cli [--profil NAME] code <gespräch>              # Sicherheitscode zum Vergleichen
     lichat-cli [--profil NAME] entfernen <gespräch> <person …>  # aus dem Gespräch nehmen
+    lichat-cli [--profil NAME] datei <gespräch> <pfad>      # Datei/Foto/Video schicken (ohne Metadaten)
+    lichat-cli [--profil NAME] anhang <gespräch> <nr> <ziel> # Anhang Nr. (aus „verlauf“) entschlüsselt speichern
     lichat-cli [--profil NAME] bild <datei>|--weg           # Profilbild (512 px, ohne EXIF, nur in den Gesprächen)
 
 Daten: $XDG_DATA_HOME/lichat-cli/<profil> (Standard „standard“, oder LICHAT_PROFIL). Ein <gespräch> ist die kurze
@@ -105,14 +107,19 @@ def main(argv):
     elif command == "verlauf":
         cid = account.chat(args[0] if args else "")
         print(f"— {account.title(cid)} —")
+        count = 0
         marks = {"wartet": "◷", "fehler": "! nicht gesendet", "gesendet": "✓", "zugestellt": "✓✓", "gelesen": "✓✓ gelesen"}
         for m in account.chats[cid]["messages"]:
             if m.get("system"):
                 print(f"{when(m['at'])} — {m['text']}")
-            elif m["from"] == account.username:
-                print(f"{when(m['at'])} ich: {account.describe(m) or m['text']}  {marks[account.tick(cid, m)[0]]}")
             else:
-                print(f"{when(m['at'])} {m['from']}: {account.describe(m) or m['text']}")
+                number = ""
+                if m.get("anhang"):
+                    count += 1
+                    number = f" [Anhang {count}]"
+                who = "ich" if m["from"] == account.username else m["from"]
+                tick = f"  {marks[account.tick(cid, m)[0]]}" if m["from"] == account.username else ""
+                print(f"{when(m['at'])} {who}: {account.describe(m) or m['text']}{number}{tick}")
     elif command == "mitglieder":
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":
@@ -123,6 +130,30 @@ def main(argv):
         cid = account.chat(args[0])
         account.remove(cid, args[1:])
         print(f"{', '.join(args[1:])} aus {short(bytes.fromhex(cid))} entfernt")
+    elif command == "datei":
+        import mimetypes
+        if len(args) != 2:
+            raise LiChatError("datei <gespräch> <pfad>")
+        cid, path = account.chat(args[0]), Path(args[1])
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        kind = "bild" if mime.startswith("image/") and mime != "image/svg+xml" else "video" if mime.startswith("video/") \
+            else "sprache" if mime.startswith("audio/") else "datei"
+        account.send_attachment(cid, path.read_bytes(), path.name, mime, kind)
+        print(f"{account.describe(account.chats[cid]['messages'][-1])} gesendet · gesendet_ms={int(time.time() * 1000)}")
+    elif command == "anhang":
+        if len(args) != 3:
+            raise LiChatError("anhang <gespräch> <nr> <ziel>")
+        cid = account.chat(args[0])
+        attachments = [m["anhang"] for m in account.chats[cid]["messages"] if m.get("anhang")]
+        number = int(args[1])
+        if not 1 <= number <= len(attachments):
+            raise LiChatError(f"Es gibt {len(attachments)} Anhänge (Nr. 1–{len(attachments)})")
+        target = Path(args[2])
+        if target.is_dir():
+            target = target / attachments[number - 1]["name"]
+        data = account.open_attachment(attachments[number - 1])
+        target.write_bytes(data)
+        print(f"{target} ({len(data)} Bytes)")
     elif command == "bild":
         if not args:
             raise LiChatError("bild <datei> | bild --weg")
