@@ -1475,9 +1475,11 @@ class Account:
         return {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
 
     def members(self, cid):
+        """The people in it – each once, however many devices they have (Michelle 8534fe11: Olaf's second device made his
+        chat with Michelle look like a group of three)."""
         if self.chats.get(cid, {}).get("removed"):
             return [self.username]
-        return list(self.device.members(bytes.fromhex(cid)))
+        return list(dict.fromkeys(self.device.members(bytes.fromhex(cid))))
 
     def safety_code(self, cid):
         if self.chats.get(cid, {}).get("removed"):

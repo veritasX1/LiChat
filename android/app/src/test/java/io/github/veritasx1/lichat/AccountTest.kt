@@ -254,6 +254,7 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         tablet.fetch()
         assertTrue(tablet.readReceipts)
         assertTrue(bernd.fetch().any { it.text == "anna benutzt jetzt ein weiteres Gerät." })
+        assertEquals(listOf("anna", "bernd"), bernd.members(cid).sorted())      // people, not devices (8534fe11)
         bernd.send(cid, "An beide")
         assertEquals(listOf("An beide"), phone.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
         assertEquals(listOf("An beide"), tablet.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
