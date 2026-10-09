@@ -240,6 +240,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
     val chat = remember(version, cid) { synchronized(account.lock) { JSONObject(account.chat(cid).toString()) } }
     val title = account.title(cid)
     val others = account.others(cid)
+    // A group: more than two, or a chat with a name (Michelle: „Gruppentest“ of two had no suggestions, no sender line).
+    val isGroup = others.size > 1 || chat.optString("title").isNotEmpty()
     val list = messages(chat)
     // Newest at the bottom and the list anchored there (reverseLayout): the keyboard, a growing input line and a long
     // last bubble never hide the end (card 0c01f599). Item 0 is the newest message.
@@ -283,7 +285,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
                 val who = typing.joinToString(", ") { account.display(it) }
                 Column(Modifier.fillMaxWidth().padding(vertical = 2.dp).semantics(mergeDescendants = true) { contentDescription = "$who tippt" }) {
-                    if (others.size > 1) BasicText(who, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                    if (isGroup) BasicText(who, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
                     BasicText("•••", style = style(17f, 700, colors.secondary).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(2f, androidx.compose.ui.unit.TextUnitType.Sp)),
                         modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(colors.theirs).padding(horizontal = 14.dp, vertical = 7.dp))
                 }
@@ -314,7 +316,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp))
                     return@Column
                 }
-                if (!mine && others.size > 1 && previous?.optString("from") != m.optString("from"))
+                if (!mine && isGroup && previous?.optString("from") != m.optString("from"))
                     BasicText(account.display(m.optString("from")), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
                 m.optJSONObject("antwort")?.let { quoted ->
                     // The message this answers, small above the bubble; a tap jumps to it.
@@ -353,7 +355,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
-                    if (!mine && others.size > 1 && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
+                    if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(m.optString("from"), account.picture(m.optString("from")), 28.dp) }
                     Reacted(m, account, gestures) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
                             Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
@@ -403,7 +405,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             if (edited != null) { onEdit(edited.optString("mid"), text); editing = null }
             else { onSend(text, replyTo?.optString("mid")); replyTo = null }
         }, actions, preset = editing?.optString("text"),
-            mentions = if (others.size > 1) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null)
+            mentions = if (isGroup) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null)
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
@@ -645,7 +647,10 @@ fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
 fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null,
              mentions: ((String) -> List<Pair<String, String>>)? = null) {
     val colors = palette()
-    var text by remember { mutableStateOf("") }
+    // The text with its cursor: after „Bearbeiten“ or a suggested name the cursor stands at the end (Michelle 4ceca163).
+    var field by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+    val text = field.text
+    fun setText(value: String) { field = androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length)) }
     // „@…“ at the end in a group: the members that fit as a row above the input, a tap writes „@name “ (card d54175ed).
     val typedMention = mentions?.let { Regex("(?:^|\\s)@([\\w.-]*)$").find(text) }
     val suggestions = typedMention?.let { mentions(it.groupValues[1]) }.orEmpty()
@@ -654,11 +659,11 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
             BasicText(name, style = style(15f, 600, colors.blue), modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(16.dp))
                 .background(colors.fill).clickable {
                     val start = text.lastIndexOf('@')
-                    text = text.substring(0, start) + "@$user "
+                    setText(text.substring(0, start) + "@$user ")
                 }.padding(horizontal = 12.dp, vertical = 6.dp).semantics { contentDescription = "$name erwähnen" })
         }
     }
-    LaunchedEffect(preset) { if (preset != null) text = preset }     // „Bearbeiten“: the message's text to correct
+    LaunchedEffect(preset) { if (preset != null) setText(preset) }     // „Bearbeiten“: the message's text to correct
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -685,11 +690,11 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
         Box(Modifier.weight(1f).heightIn(min = 36.dp).clip(RoundedCornerShape(18.dp)).background(colors.background)
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
-            BasicTextField(text, { text = it; if (it.isNotEmpty()) actions.typing() }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+            BasicTextField(field, { field = it; if (it.text.isNotEmpty()) actions.typing() }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 40.dp, top = 8.dp, bottom = 8.dp).semantics { contentDescription = "Nachricht" },
                 decorationBox = { inner -> Box { if (text.isEmpty()) BasicText("LiChat", style = style(17f, 400, colors.tertiary)); inner() } })
             if (text.isNotBlank()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
-                .clickable(role = Role.Button) { onSend(text); text = "" }.semantics { contentDescription = "Senden" },
+                .clickable(role = Role.Button) { onSend(text); setText("") }.semantics { contentDescription = "Senden" },
                 contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
             else actions.micStart?.let { mic ->
                 Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).clickable(role = Role.Button, onClick = mic)

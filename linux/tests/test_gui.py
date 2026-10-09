@@ -332,6 +332,29 @@ def main():
     assert "erna" not in texts(window.info.get_popover()), texts(window.info.get_popover())
     assert "Du hast erna aus der Unterhaltung entfernt." in texts(window.bubbles)
 
+    # A second device (da5cbfcb): a new window shows a code, Anna's „Meine Geräte“ accepts it, the new one is Anna too.
+    second = app_module.Window(app, folder=Path(SCRATCH) / "anna-zwei")
+    second.present()
+    settle(0.3)
+    second.show_link_setup()
+    settle(0.2)
+    entry = next(w for w in walk(second.get_content()) if isinstance(w, Gtk.Entry))
+    entry.set_text(url)
+    next(w for w in walk(second.get_content()) if isinstance(w, Gtk.Button) and w.get_label() == "Code anzeigen").emit("clicked")
+    until(lambda: second.link_code.get_visible())
+    shot(second, "08-koppeln.png")
+    window.show_devices()
+    settle(0.3)
+    dialog_entries = [w for w in walk(window.devices_dialog) if isinstance(w, Gtk.Entry)]
+    dialog_entries[0].set_text(second.link_code.get_label())
+    next(w for w in walk(window.devices_dialog) if isinstance(w, Gtk.Button) and w.get_label() == "Gerät hinzufügen").emit("clicked")
+    until(lambda: second.account is not None and second.account.username == "anna", seconds=30)
+    until(lambda: len(anna.chats[cid]["roster"]["anna"]) == 2, seconds=30)
+    assert any("Dieses Gerät" in (t or "") for t in texts(window.devices_dialog))
+    shot(window, "08b-geraete.png")
+    window.devices_dialog.close()
+    second.close()
+
     # Search in the list.
     window.search.set_text("Kartoffel")
     settle(0.5)

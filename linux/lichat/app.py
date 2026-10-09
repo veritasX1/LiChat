@@ -154,6 +154,18 @@ class Worker:
     def do(self, job, done=None):
         self.jobs.put((job, done))
 
+    @staticmethod
+    def wait(job, done=None):
+        """A long wait (a device to link, up to 10 minutes) on its own thread – sending must not queue behind it."""
+        def run():
+            try:
+                result, error = job(), None
+            except (LiChatError, ValueError, OSError) as e:
+                result, error = None, str(e)
+            if done:
+                GLib.idle_add(done, result, error)
+        threading.Thread(target=run, daemon=True).start()
+
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app, account=None, folder=None, key_store=None, separate=False):
@@ -231,7 +243,8 @@ class Window(Adw.ApplicationWindow):
         box.append(Gtk.Label(label="Bei LiChat anmelden", css_classes=["lichat-big"], margin_top=8))
         box.append(Gtk.Label(label="Mit der Einladung deines Servers. Alles, was du schreibst, ist Ende-zu-Ende verschlüsselt.",
                              wrap=True, justify=Gtk.Justification.CENTER, css_classes=["lichat-subtitle"], margin_bottom=8))
-        self.f_server = Gtk.Entry(placeholder_text="Server (https://…)", css_classes=["lichat-field"])
+        # Our own server as a default (Tante Erna types nothing) – any other one can be entered.
+        self.f_server = Gtk.Entry(text="https://exampleserver.lisoftware.de", placeholder_text="Server (https://…)", css_classes=["lichat-field"])
         self.f_invite = Gtk.Entry(placeholder_text="Einladung", css_classes=["lichat-field"])
         # Name as people write it (Olaf: capitals, spaces) – the user name is made from it, and can still be changed.
         self.f_first = Gtk.Entry(placeholder_text="Vorname", css_classes=["lichat-field"])
@@ -257,10 +270,137 @@ class Window(Adw.ApplicationWindow):
         self.setup_button = Gtk.Button(label="Anmelden", css_classes=["lichat-blue"], halign=Gtk.Align.END)
         self.setup_button.connect("clicked", lambda *_: self.sign_in())
         box.append(self.setup_button)
+        other = Gtk.Button(label="Mit vorhandenem Gerät verbinden", css_classes=["flat", "lichat-link"], halign=Gtk.Align.CENTER, margin_top=12)
+        other.connect("clicked", lambda *_: self.show_link_setup())
+        box.append(other)
         page = Gtk.WindowHandle(child=box)
         page.add_css_class("lichat-setup")
         self.set_content(Adw.ToolbarView(content=page, top_bar_style=Adw.ToolbarStyle.FLAT))
         self.get_content().add_top_bar(Adw.HeaderBar(show_title=False, css_classes=["lichat-bar"]))
+
+    def show_link_setup(self):
+        """A second device (card da5cbfcb), like Signal: this one shows a code, the existing device accepts it."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["lichat-setup"],
+                      halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, width_request=360)
+        logo = avatar("Li Chat", 72)
+        logo.set_halign(Gtk.Align.CENTER)
+        box.append(logo)
+        box.append(Gtk.Label(label="Mit vorhandenem Gerät verbinden", css_classes=["lichat-big"], margin_top=8))
+        server = Gtk.Entry(text=self.f_server.get_text() if hasattr(self, "f_server") else "https://exampleserver.lisoftware.de",
+                           css_classes=["lichat-field"])
+        box.append(server)
+        self.link_code = Gtk.Label(css_classes=["lichat-code"], selectable=True, visible=False)
+        box.append(self.link_code)
+        self.link_note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, css_classes=["lichat-subtitle"])
+        box.append(self.link_note)
+        show = Gtk.Button(label="Code anzeigen", css_classes=["lichat-blue"], halign=Gtk.Align.CENTER)
+        box.append(show)
+        back = Gtk.Button(label="Abbrechen", css_classes=["flat", "lichat-link"], halign=Gtk.Align.CENTER)
+        back.connect("clicked", lambda *_: (setattr(self, "linking", None), self.show_setup()))
+        box.append(back)
+        folder, store = self.folder, self.key_store
+
+        def opened(result, error):
+            if error:
+                self.link_note.set_label(error)
+                show.set_sensitive(True)
+                return
+            url, code = result
+            self.linking = code
+            server.set_visible(False)
+            show.set_visible(False)
+            self.link_code.set_label(code)
+            self.link_code.set_visible(True)
+            self.link_note.set_label("Auf deinem anderen Gerät: Einstellungen › Geräte › „Gerät hinzufügen …“ und diesen Code eingeben. "
+                                     "Er gilt 10 Minuten.\n\nWarte auf dein anderes Gerät …")
+
+            def wait():
+                end = time.time() + 600
+                while not Account.link_state(url, code).get("username"):
+                    if time.time() > end or getattr(self, "linking", None) != code:
+                        raise LiChatError("Abgelaufen – noch einmal „Code anzeigen“")
+                    time.sleep(2)
+                return Account.link_finish(folder, url, code, "Ubuntu", store.create(folder) if store else None)
+
+            def finished(account, error):
+                if getattr(self, "linking", None) != code:
+                    return
+                if error:
+                    self.link_note.set_label(error)
+                    return
+                self.linking = None
+                self.account = account
+                if self.settings["hintergrund"] and not self.separate:
+                    autostart(True)
+                self.show_main()
+            Worker.wait(wait, finished)
+
+        def start(*_):
+            show.set_sensitive(False)
+            self.link_note.set_label("")
+            url = server.get_text().strip()
+            self.worker.do(lambda: Account.link_open(url), opened)
+        show.connect("clicked", start)
+        page = Gtk.WindowHandle(child=box)
+        page.add_css_class("lichat-setup")
+        self.set_content(Adw.ToolbarView(content=page, top_bar_style=Adw.ToolbarStyle.FLAT))
+        self.get_content().add_top_bar(Adw.HeaderBar(show_title=False, css_classes=["lichat-bar"]))
+
+    def show_devices(self):
+        """My devices (card da5cbfcb): this one, the others with „Abmelden“ (asked twice), „Gerät hinzufügen“ with the code
+        the new device shows."""
+        dialog = Adw.AlertDialog(heading="Meine Geräte",
+                                 body="Ein neues Gerät liest alles, was ab dann kommt; ältere Nachrichten bleiben hier. "
+                                      "Gerätenamen bleiben auf dem Gerät – der Server kennt sie nicht.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.append(rows)
+        code = Gtk.Entry(placeholder_text="Code vom neuen Gerät", margin_top=8)
+        add = Gtk.Button(label="Gerät hinzufügen", css_classes=["suggested-action"])
+        note = Gtk.Label(wrap=True, xalign=0, css_classes=["lichat-subtitle"])
+        box.append(code)
+        box.append(add)
+        box.append(note)
+        dialog.set_extra_child(box)
+        dialog.add_response("fertig", "Fertig")
+        account = self.account
+
+        def show(devices, error=None):
+            while (child := rows.get_first_child()) is not None:
+                rows.remove(child)
+            note.set_label(error or "")
+            for d in devices or []:
+                line = Gtk.Box(spacing=8)
+                since = time.strftime("%d.%m.%Y, %H:%M", time.localtime(d["since"])) if d["since"] else "?"
+                title = ("Dieses Gerät" + (f" ({d['name']})" if d["name"] else "")) if d["this"] else "Gerät"
+                line.append(Gtk.Label(label=f"{title} – seit {since}", xalign=0, hexpand=True))
+                if not d["this"]:
+                    out = Gtk.Button(label="Abmelden", css_classes=["flat", "lichat-destructive"])
+
+                    def ask(button, device=d["device"]):
+                        if button.get_label() == "Abmelden":
+                            button.set_label("Wirklich abmelden?")
+                            return
+                        self.worker.do(lambda: (account.remove_my_device(device), account.my_devices())[1], show)
+                    out.connect("clicked", ask)
+                    line.append(out)
+                rows.append(line)
+
+        def link(*_):
+            typed = code.get_text().strip()
+            if len(typed.replace("-", "")) < 8:
+                note.set_label("Den 8-stelligen Code vom neuen Gerät eingeben.")
+                return
+            add.set_sensitive(False)
+            note.set_label("Warte auf das neue Gerät …")
+            Worker.wait(lambda: (account.accept_link(typed), account.my_devices())[1],
+                        lambda result, error: (add.set_sensitive(True), code.set_text(""), show(result, error),
+                                               self.fill_list(), self.show_conversation()))
+        add.connect("clicked", link)
+        code.connect("activate", link)
+        self.worker.do(account.my_devices, show)
+        dialog.present(self)
+        self.devices_dialog = dialog
 
     def sign_in(self):
         server, invite = self.f_server.get_text().strip(), self.f_invite.get_text().strip()
@@ -307,6 +447,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Lesebestätigungen senden", "win.lesebestaetigungen")
         menu.append("Tipp-Anzeige senden", "win.tippanzeige")
         menu.append("Name ändern …", "win.name")
+        menu.append("Meine Geräte …", "win.geraete")
         menu.append("Profilbild wählen …", "win.bild")
         menu.append("LiChat beenden", "win.beenden")
         for name in ("hintergrund", "vorschau"):
@@ -321,6 +462,9 @@ class Window(Adw.ApplicationWindow):
         typing = Gio.SimpleAction.new_stateful("tippanzeige", None, GLib.Variant.new_boolean(self.account.typing_indicator))
         typing.connect("change-state", self.on_typing_setting)
         self.add_action(typing)
+        devices_action = Gio.SimpleAction.new("geraete", None)
+        devices_action.connect("activate", lambda *_: self.show_devices())
+        self.add_action(devices_action)
         name_action = Gio.SimpleAction.new("name", None)
         name_action.connect("activate", lambda *_: self.edit_name())
         self.add_action(name_action)
@@ -514,7 +658,7 @@ class Window(Adw.ApplicationWindow):
         others = [u for u in chat["roster"] if u != self.account.username]
         if len(others) > 1:
             self.title_box.append(Gtk.Label(label=f"{len(others) + 1} Personen", css_classes=["lichat-subtitle"]))
-        group = len(others) > 1
+        group = len(others) > 1 or bool(chat.get("title"))     # a chat with a name is a group too (Michelle)
         previous = None
         for m in chat["messages"]:
             if m.get("system"):
@@ -627,7 +771,8 @@ class Window(Adw.ApplicationWindow):
             self.suggestions.remove(child)
         cid = self.current
         found = re.search(r"(?:^|\s)@([\w.-]*)$", entry.get_text())
-        group = cid and not self.composing and len(self.account.chats.get(cid, {}).get("roster", {})) > 2
+        chat = self.account.chats.get(cid, {}) if cid else {}
+        group = cid and not self.composing and (len(chat.get("roster", {})) > 2 or bool(chat.get("title")))
         names = self.account.mention_candidates(cid, found.group(1)) if group and found else []
         for user in names:
             button = Gtk.Button(label=self.account.display(user), css_classes=["lichat-suggestion"], tooltip_text=f"@{user}")
