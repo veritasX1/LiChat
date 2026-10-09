@@ -54,6 +54,7 @@ class ScreensShotTest {
 
     @Before
     fun conversations() {
+        io.github.veritasx1.lichat.ui.TypingAnimation.running = false
         val script = """
 import sys
 sys.path.insert(0, "${File(repo, "server").absolutePath}")
@@ -176,6 +177,20 @@ httpd.serve_forever()
         compose.onAllNodesWithText("🐶").fetchSemanticsNodes().size.let { org.junit.Assert.assertEquals(2, it) }   // tab + grid
         compose.onAllNodesWithText("🐶")[1].performClick()
         org.junit.Assert.assertEquals("🐶", reacted)
+    }
+
+    /** 18cfe3d2: a wrapped message's bubble is only as wide as its longest line – no blue space on the right; links tappable. */
+    @Test
+    fun wrappedBubbleIsTight() {
+        anna.send(cid, "für Gruppen wie du\nvorgeschlagen hast")
+        anna.send(cid, "Mehr auf www.lisoftware.de")
+        shot("2j-umbruch") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        val bubble = compose.onNodeWithText("für Gruppen wie du\nvorgeschlagen hast").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue("schmal: ${bubble.width}", bubble.width < 220f * 3)
+        val link = compose.onNodeWithText("Mehr auf www.lisoftware.de").fetchSemanticsNode()
+        val text = link.config[androidx.compose.ui.semantics.SemanticsProperties.Text].first()
+        org.junit.Assert.assertEquals("https://www.lisoftware.de",
+            (text.getLinkAnnotations(0, text.length).single().item as androidx.compose.ui.text.LinkAnnotation.Url).url)
     }
 
     /** 20eb5cc5: a long message lifted for its menu is cut to six lines, the original hidden. */

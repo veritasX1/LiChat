@@ -54,7 +54,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -365,8 +364,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
                 val who = typing.joinToString(", ") { account.display(it) }
                 Column(Modifier.fillMaxWidth().padding(vertical = 2.dp).semantics(mergeDescendants = true) { contentDescription = "$who tippt" }) {
-                    if (isGroup) BasicText(who, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
-                    TypingBubble()
+                    TypingBubble(group = isGroup, label = typingLabel(typing.map { account.display(it) }))
                 }
             }
             chat.optString("removed").takeIf { it.isNotEmpty() }?.let { by ->
@@ -550,23 +548,38 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
     val colors = palette()
     val info = m.optJSONObject("anhang")
     if (info != null) Box(modifier.then(interact)) { AttachmentBubble(info, mine, playing, load) { open(info) } }
-    else BasicText(withMentions(m.optString("text")), style = style(17f, 400, if (mine) Color.White else colors.label),
-        maxLines = maxLines, overflow = TextOverflow.Ellipsis,
-        modifier = modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
-            .then(interact).padding(horizontal = 12.dp, vertical = 7.dp))
+    else {
+        // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
+        val text = withMentions(m.optString("text"), if (mine) Color.White else colors.blue)
+        val textStyle = style(17f, 400, if (mine) Color.White else colors.label)
+        val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val inner = with(density) { (280.dp - 24.dp).roundToPx() }
+        val tight = remember(text, textStyle, inner, maxLines) {
+            val layout = measurer.measure(text, textStyle, maxLines = maxLines, constraints = androidx.compose.ui.unit.Constraints(maxWidth = inner))
+            val widest = (0 until layout.lineCount).maxOfOrNull { layout.getLineRight(it) - layout.getLineLeft(it) } ?: 0f
+            with(density) { kotlin.math.ceil(widest).toInt().coerceAtMost(inner).toDp() }
+        }
+        BasicText(text, style = textStyle, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
+            modifier = modifier.clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+                .then(interact).padding(horizontal = 12.dp, vertical = 7.dp).width(tight + 1.dp))
+    }
 }
 
-/** „@name“ bold in a bubble (card d54175ed). */
-fun withMentions(text: String): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
-    var last = 0
-    for (match in io.github.veritasx1.lichat.core.MENTION.findAll(text)) {
-        append(text.substring(last, match.range.first))
-        pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
-        append(match.value)
-        pop()
-        last = match.range.last + 1
+/** „@name“ bold and links tappable in a bubble (cards d54175ed, 22c918ce): a tap on a link opens it (browser, mail, phone);
+ *  underlined in the bubble's own colour. No preview is fetched. */
+fun withMentions(text: String, linkColor: Color = Color.Unspecified): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
+    append(text)
+    val links = io.github.veritasx1.lichat.core.findLinks(text)
+    for (link in links) {
+        addLink(androidx.compose.ui.text.LinkAnnotation.Url(link.target, androidx.compose.ui.text.TextLinkStyles(
+            androidx.compose.ui.text.SpanStyle(color = linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline))),
+            link.range.first, link.range.last + 1)
     }
-    append(text.substring(last))
+    for (match in io.github.veritasx1.lichat.core.MENTION.findAll(text)) {
+        if (links.any { it.range.first <= match.range.last && match.range.first <= it.range.last }) continue
+        addStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), match.range.first, match.range.last + 1)
+    }
 }
 
 /** The bubble with its reactions small at its lower right corner (Olaf: „unten rechts“ – for every bubble, Michelle a7d9d987). */
@@ -636,6 +649,21 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                 if (message.optString("text").isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
                     BasicText("Kopieren", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onCopy).padding(14.dp))
+                }
+                // A link in it (22c918ce): copy or share it, like the iPhone's long press on a link.
+                io.github.veritasx1.lichat.core.findLinks(message.optString("text")).firstOrNull()?.let { link ->
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    val shown = link.target.removePrefix("mailto:").removePrefix("tel:")
+                    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Link kopieren", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth()
+                        .clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString(shown)); onClose() }.padding(14.dp))
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText("Link teilen …", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable {
+                        runCatching { context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND)
+                            .setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, shown), null)) }
+                        onClose()
+                    }.padding(14.dp))
                 }
                 onEdit?.let { edit ->
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
@@ -830,13 +858,20 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
         }
     }
     val preview = full ?: small
+    // An animated GIF runs in the bubble like in Messages (Michelle 999f37be) – still with „Animationen entfernen“.
+    val gifBytes by androidx.compose.runtime.produceState<ByteArray?>(null, id) {
+        if (info.optString("mime") == "image/gif" && load != null && android.os.Build.VERSION.SDK_INT >= 28)
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { load(info) }.getOrNull() }
+    }
     val label = when (kind) { "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"; else -> "Datei ${info.optString("name")}" }
     if ((kind == "bild" || kind == "video") && preview != null) {
         val width = 220.dp
         val height = width * (preview.height.toFloat() / preview.width.coerceAtLeast(1)).coerceIn(0.4f, 1.6f)
         Box(Modifier.size(width, height).clip(RoundedCornerShape(18.dp)).clickable(onClick = onOpen).semantics { contentDescription = label },
             contentAlignment = Alignment.Center) {
-            Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            val bytes = gifBytes
+            if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) GifView(bytes, Modifier.fillMaxSize())
+            else Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             if (kind == "video") Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
                 GlyphIcon(Glyph.Play, Color.White, 24.dp)
             }
@@ -1264,29 +1299,77 @@ fun Explain(onContinue: () -> Unit, onLater: () -> Unit) {
     }
 }
 
-/** Olaf's template (typing-animation-3x.gif, measured by Michelle, 884f7c8a): a grey capsule, three dots; a wave runs
- *  left to right – each dot in turn darker (#B0B2B4 → #606060) and ~38 % bigger, peaks at 380/580/760 ms, a cycle of
- *  1.84 s with a rest. With „Animationen entfernen“ the dots stand still. */
+/** „… tippt“ as Olaf chose it (884f7c8a, variants 4 and 5 of the template page): alone a thought bubble – the wave in a
+ *  grey capsule with two small circles at its lower left; in a group „X schreibt …“ over a smaller wave. The wave: each dot
+ *  in turn darker and ~38 % bigger, peaks at 380/580/760 ms, a cycle of 1.84 s with a rest. With „Animationen entfernen“
+ *  the dots breathe together (lighter, darker – no movement). */
 @Composable
-fun TypingBubble() {
+fun TypingBubble(group: Boolean = false, label: String = "") {
     val context = androidx.compose.ui.platform.LocalContext.current
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val colors = palette()
     val still = remember {
         runCatching { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
     }
-    val time = if (still) null else androidx.compose.animation.core.rememberInfiniteTransition(label = "tippt").animateFloat(0f, 1840f,
-        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1840, easing = androidx.compose.animation.core.LinearEasing)), label = "welle")
-    // Dark: the capsule is the incoming bubble's colour, like iOS (Michelle: #3B3B3D was too light against #26252A).
-    val capsule = if (dark) palette().theirs else Color(0xFFECECEC)
+    // Our own clock (frames, not the animator): it runs for the breathing too when the system's animations are off.
+    var time by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        if (!TypingAnimation.running) return@LaunchedEffect
+        val start = androidx.compose.runtime.withFrameMillis { it }
+        while (true) androidx.compose.runtime.withFrameMillis { time = ((it - start) % 1840).toFloat() }
+    }
+    val capsule = if (dark) colors.theirs else Color(0xFFECECEC)
     val rest = if (dark) Color(0xFF6C6C72) else Color(0xFFB0B2B4)
     val peak = if (dark) Color(0xFFE6E6EA) else Color(0xFF606060)
-    Row(Modifier.clip(RoundedCornerShape(18.dp)).background(capsule).padding(horizontal = 12.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-        listOf(380f, 580f, 760f).forEach { top ->
-            val t = time?.value ?: 0f
-            val strength = (1f - kotlin.math.abs(t - top) / 200f).coerceIn(0f, 1f)
-            Box(Modifier.size(9.dp).graphicsLayer { scaleX = 1f + 0.38f * strength; scaleY = 1f + 0.38f * strength }
-                .clip(CircleShape).background(androidx.compose.ui.graphics.lerp(rest, peak, strength)))
+    val dot = if (group) 6.dp else 9.dp
+    fun strength(top: Float) = if (still) (0.5f - 0.5f * kotlin.math.cos(2 * Math.PI.toFloat() * time / 1840f))
+        else (1f - kotlin.math.abs(time - top) / 200f).coerceIn(0f, 1f)
+    Column {
+        if (group && label.isNotEmpty()) BasicText(label, style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 2.dp))
+        Box(Modifier.padding(start = if (group) 0.dp else 6.dp, bottom = if (group) 0.dp else 10.dp)) {
+            if (!group) {
+                // the thought bubble's two little circles at the lower left
+                Box(Modifier.align(Alignment.BottomStart).offset(x = (-2).dp, y = 6.dp).size(12.dp).clip(CircleShape).background(capsule))
+                Box(Modifier.align(Alignment.BottomStart).offset(x = (-7).dp, y = 13.dp).size(6.dp).clip(CircleShape).background(capsule))
+            }
+            Row(Modifier.clip(RoundedCornerShape(18.dp)).background(capsule).padding(horizontal = if (group) 10.dp else 12.dp, vertical = if (group) 8.dp else 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (group) 4.dp else 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf(380f, 580f, 760f).forEach { top ->
+                    val power = strength(top)
+                    val grow = if (still) 1f else 1f + 0.38f * power
+                    Box(Modifier.size(dot).graphicsLayer { scaleX = grow; scaleY = grow }.clip(CircleShape)
+                        .background(androidx.compose.ui.graphics.lerp(rest, peak, power)))
+                }
+            }
         }
     }
+}
+
+/** Tests switch the endless frame clock off (it would drive their virtual clock past the 6 s of a „tippt“). */
+object TypingAnimation { @Volatile var running = true }
+
+/** „Anna schreibt …“, „Anna und Bernd schreiben …“, „Anna, Bernd und Erna schreiben …“ */
+fun typingLabel(names: List<String>): String = when (names.size) {
+    0 -> ""
+    1 -> "${names[0]} schreibt …"
+    else -> names.dropLast(1).joinToString(", ") + " und ${names.last()} schreiben …"
+}
+
+/** A GIF playing (Android 9+): ImageDecoder's AnimatedImageDrawable in an ImageView, cropped like a photo; it stands still
+ *  when the system's animations are off (a tap opens it in the viewer). */
+@androidx.annotation.RequiresApi(28)
+@Composable
+fun GifView(bytes: ByteArray, modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val still = remember {
+        runCatching { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
+    }
+    val drawable = remember(bytes) {
+        runCatching { android.graphics.ImageDecoder.decodeDrawable(android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))) }.getOrNull()
+    }
+    androidx.compose.ui.viewinterop.AndroidView({ c -> android.widget.ImageView(c).apply { scaleType = android.widget.ImageView.ScaleType.CENTER_CROP } }, modifier,
+        update = { view ->
+            view.setImageDrawable(drawable)
+            (drawable as? android.graphics.drawable.AnimatedImageDrawable)?.let { if (still) it.stop() else it.start() }
+        })
 }
