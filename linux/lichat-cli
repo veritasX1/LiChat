@@ -7,6 +7,8 @@
     lichat-cli [--profil NAME] senden [--sofort] <gespräch> <text …>   # tippt so lange wie ein Mensch (mit „…“)
     lichat-cli [--profil NAME] abholen                      # Postfach holen, Neues zeigen
     lichat-cli [--profil NAME] warten [--bis SEKUNDEN]      # wartet, bis etwas kommt, zeigt es und endet (für Claude-Instanzen)
+    lichat-cli [--profil NAME] reagieren <gespräch> <textstück|letzte> <emoji> | zuruecknehmen <gespräch> <textstück|letzte>
+    lichat-cli [--profil NAME] bearbeiten <gespräch> <text …> | zurueckrufen <gespräch>   # meine letzte Nachricht
     lichat-cli [--profil NAME] gespraeche                   # alle Gespräche
     lichat-cli [--profil NAME] verlauf <gespräch>
     lichat-cli [--profil NAME] mitglieder <gespräch>
@@ -123,6 +125,11 @@ def main(argv):
                     print(f"[{chat}] {item['from']} nimmt die Reaktion {item.get('before') or ''} auf „{item.get('target', '')}“ zurück".replace("  ", " "))
             elif item.get("picture"):
                 print(f"[{chat}] neues Profilbild von {item['picture']}")
+            elif item.get("edited"):
+                edited = next((m for m in account.chats[item["chat"]]["messages"] if m.get("mid") == item["edited"]), {})
+                print(f"[{chat}] {item['from']} hat bearbeitet: {edited.get('text', '')}")
+            elif item.get("unsent"):
+                print(f"[{chat}] {item['from']} hat eine Nachricht zurückgerufen")
             elif item.get("problem"):
                 print(f"[{chat}] ⚠ {item['problem']}")
             else:
@@ -156,7 +163,39 @@ def main(argv):
                 quote = m.get("antwort")
                 about = f" (↪ {quote.get('from')}: {quote.get('text', '')[:40]})" if quote else ""
                 reactions = "".join(f"  [{u} {e}]" for u, e in (m.get("reaktionen") or {}).items())
-                print(f"{when(m['at'])} {who}{about}: {account.describe(m) or m['text']}{number}{tick}{reactions}")
+                edited = "  (bearbeitet)" if m.get("bearbeitet") else ""
+                print(f"{when(m['at'])} {who}{about}: {account.describe(m) or m['text']}{number}{edited}{tick}{reactions}")
+    elif command in ("reagieren", "zuruecknehmen"):
+        # Michelle: Reaktionen ohne Handy prüfen. Die Nachricht: ein Stück ihres Textes oder „letzte“ (die letzte der anderen).
+        if len(args) < (3 if command == "reagieren" else 2):
+            raise LiChatError("reagieren <gespräch> <textstück|letzte> <emoji>  |  zuruecknehmen <gespräch> <textstück|letzte>")
+        cid = account.chat(args[0])
+        candidates = [m for m in account.chats[cid]["messages"] if m.get("mid") and not m.get("system") and not m.get("zurueckgerufen")]
+        if args[1] == "letzte":
+            candidates = [m for m in candidates if m.get("from") != account.username]
+        else:
+            candidates = [m for m in candidates if args[1].lower() in (account.describe(m) or "").lower()]
+        if not candidates:
+            raise LiChatError(f"Keine Nachricht mit „{args[1]}“")
+        target = candidates[-1]
+        emoji = args[2] if command == "reagieren" else ""
+        account.react(cid, target["mid"], emoji)
+        print(f"{'reagiert ' + emoji if emoji else 'Reaktion zurückgenommen'} auf „{(account.describe(target) or '')[:60]}“")
+    elif command in ("bearbeiten", "zurueckrufen"):
+        # Meine letzte Nachricht in diesem Gespräch (iOS: 15 min / 5× bearbeiten, 2 min zurückrufen).
+        if not args or (command == "bearbeiten" and len(args) < 2):
+            raise LiChatError("bearbeiten <gespräch> <neuer text …>  |  zurueckrufen <gespräch>")
+        cid = account.chat(args[0])
+        mine = [m for m in account.chats[cid]["messages"] if m.get("from") == account.username and m.get("mid")
+                and not m.get("zurueckgerufen")]
+        if not mine:
+            raise LiChatError("Hier gibt es keine Nachricht von dir")
+        if command == "bearbeiten":
+            account.edit(cid, mine[-1]["mid"], " ".join(args[1:]))
+            print("bearbeitet")
+        else:
+            account.unsend(cid, mine[-1]["mid"])
+            print("zurückgerufen")
     elif command == "mitglieder":
         print("\n".join(account.members(account.chat(args[0] if args else ""))))
     elif command == "code":

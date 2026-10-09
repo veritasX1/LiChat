@@ -78,6 +78,10 @@ KINDS = ("bild", "video", "sprache", "datei")
 TYPING_EVERY = 3     # s between two „tippt“ of mine
 TYPING_FRESH = 6     # s a „tippt“ stays shown after it arrived
 TYPING_LATE = 30     # s after which an arriving „tippt“ is ignored (fetched late; allows for clocks a little apart)
+EDIT_WINDOW = 15 * 60   # s – like iOS: a message can be edited for 15 minutes …
+EDIT_MAX = 5            # … at most five times
+UNSEND_WINDOW = 2 * 60  # s – and called back for two minutes
+LATE = 60               # s of slack for clocks a little apart (only the sender's own times are compared)
 TYPING_PACE = 3.5    # characters per second with thumbs on a phone (Olaf 09.10.: everyone types as long as the text is)
 TYPING_LONGEST = 180 # s – nobody types longer than this, however long the text
 SUPPLY = 20          # key packages uploaded at the start
@@ -611,6 +615,61 @@ class Account:
                 reactions.pop(self.username, None)
         self._group_message(cid, {"t": "reaktion", "mid": mid, "emoji": emoji})
 
+    # ------------------------------------------------------------------------------------------ edit / unsend (4ceca163)
+
+    def can_edit(self, message, now=None):
+        now = now or time.time()
+        return (message.get("from") == self.username and bool(message.get("text")) and not message.get("zurueckgerufen")
+                and message.get("mid") and now - message.get("at", 0) <= EDIT_WINDOW
+                and len(message.get("bearbeitet", [])) < EDIT_MAX)
+
+    def can_unsend(self, message, now=None):
+        now = now or time.time()
+        return (message.get("from") == self.username and message.get("mid") and not message.get("zurueckgerufen")
+                and now - message.get("at", 0) <= UNSEND_WINDOW)
+
+    def edit(self, cid, mid, text):
+        """My message, corrected (iOS: 15 minutes, five times). Everyone sees „Bearbeitet“ and can look at the earlier
+        versions – end-to-end like the message itself."""
+        text = text.strip()
+        if not text:
+            raise LiChatError("Leere Nachricht – zum Entfernen „Zurückrufen“")
+        with self.lock:
+            message = self._mine(cid, mid)
+            if not self.can_edit(message):
+                raise LiChatError("Bearbeiten geht nur 15 Minuten lang und höchstens fünfmal")
+            now = int(time.time())
+            self._apply_edit(message, text, now)
+            self.save()
+        self._group_message(cid, {"t": "bearbeiten", "mid": mid, "text": text, "at": now})
+
+    def unsend(self, cid, mid):
+        """My message taken back (iOS: two minutes) – for everyone a grey line instead of the bubble."""
+        with self.lock:
+            message = self._mine(cid, mid)
+            if not self.can_unsend(message):
+                raise LiChatError("Zurückrufen geht nur in den ersten zwei Minuten")
+            self._apply_unsend(self.chats[cid], message)
+            self.save()
+        self._group_message(cid, {"t": "zurueckrufen", "mid": mid, "at": int(time.time())})
+
+    @staticmethod
+    def _apply_edit(message, text, at):
+        message.setdefault("bearbeitet", []).append({"text": message.get("text", ""), "at": message.get("bearbeitet_am", message.get("at"))})
+        message["text"] = text
+        message["bearbeitet_am"] = at
+
+    @staticmethod
+    def _apply_unsend(chat, message):
+        for key in ("text", "anhang", "bearbeitet", "bearbeitet_am", "antwort", "reaktionen"):
+            message.pop(key, None)
+        message["text"] = ""
+        message["zurueckgerufen"] = True
+        for other in chat["messages"]:     # quotes of it go too
+            if (other.get("antwort") or {}).get("mid") == message.get("mid"):
+                other["antwort"]["text"] = ""
+                other["antwort"]["zurueckgerufen"] = True
+
     def _deliver(self, cid, message, payload):
         """Encrypts and posts one of my messages; its status follows: wartet → gesendet, or fehler (a red line, retry)."""
         try:
@@ -871,6 +930,8 @@ class Account:
     @staticmethod
     def describe(message):
         """One line for the list and notifications: the text, or what the attachment is."""
+        if message.get("zurueckgerufen"):
+            return "Nachricht zurückgerufen"
         info = message.get("anhang")
         if not info:
             return message.get("text", "")
@@ -1061,6 +1122,25 @@ class Account:
                 reactions.pop(sender, None)
             return [{"chat": cid, "reaction": emoji, "before": before, "from": sender,
                      "target": (self.describe(target) or target.get("text", ""))[:60]}]
+        if data.get("t") in ("bearbeiten", "zurueckrufen"):
+            # Only the one who wrote it, only within the windows – measured on the sender's own clock (message „at“
+            # against the edit's „at“), so a phone that was offline for a day still takes a correction made in time.
+            mid = str(data.get("mid", ""))
+            target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
+            at = int(data.get("at") or 0)
+            if target is None or target.get("from") != sender or target.get("zurueckgerufen"):
+                return []
+            if data["t"] == "bearbeiten":
+                text = str(data.get("text") or "").strip()
+                if (not text or at - target.get("at", 0) > EDIT_WINDOW + LATE or len(target.get("bearbeitet", [])) >= EDIT_MAX
+                        or not target.get("text")):
+                    return []
+                self._apply_edit(target, text, at)
+                return [{"chat": cid, "edited": mid, "from": sender}]
+            if at - target.get("at", 0) > UNSEND_WINDOW + LATE:
+                return []
+            self._apply_unsend(chat, target)
+            return [{"chat": cid, "unsent": mid, "from": sender}]
         if data.get("t") == "tippt":
             # Late ones (fetched after a while offline) mean nothing any more.
             if sender == self.username or not self.typing_indicator or abs(time.time() - int(data.get("at") or 0)) > TYPING_LATE:
