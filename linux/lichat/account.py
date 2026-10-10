@@ -82,6 +82,7 @@ PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
 ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 OUTBOX = "ausgang-"        # an attachment's local id until it is up (cf647f61)
+RESEND_S = 24 * 3600       # „Nicht gesendet“ goes out by itself when the connection is back – for a day (like Android 72c8a716)
 ALBUM_MAX = 10             # photos picked together at most (5749ebd0, like Messages)
 WAVE_MAX = 100             # bars in a voice message's wave at most (1a682a79)
 PHOTO_PX = 2048
@@ -1074,8 +1075,9 @@ class Account:
     def _payload(data):
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send(self, cid, text, reply_to=None):
-        """[reply_to]: the mid of the message this answers – its sender and a short quote travel along."""
+    def send(self, cid, text, reply_to=None, changed=None):
+        """[reply_to]: the mid of the message this answers – its sender and a short quote travel along. [changed]: called
+        once the bubble is there, before it goes out (it shows at once, even while the server is slow)."""
         text = text.strip()
         if not text:
             raise LiChatError("Leere Nachricht")
@@ -1092,6 +1094,8 @@ class Account:
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
+        if changed:
+            changed()
         return self._deliver(cid, message, payload)
 
     def react(self, cid, mid, emoji):
@@ -1222,6 +1226,23 @@ class Account:
             payload["album"] = message["album"]
         message["status"] = "wartet"
         return self._deliver(cid, message, payload)
+
+    def resend_failed(self, now=None, changed=None):
+        """The connection is back: what failed (my own messages from the last day) goes out again, oldest first."""
+        now = int(time.time()) if now is None else now
+        with self.lock:
+            failed = sorted(((cid, m) for cid, chat in self.chats.items() if not chat.get("removed")
+                             for m in chat["messages"]
+                             if m.get("from") == self.username and m.get("status") == "fehler" and now - m.get("at", 0) <= RESEND_S),
+                            key=lambda pair: pair[1].get("at", 0))
+        sent = 0
+        for cid, message in failed:
+            try:
+                self.retry(cid, message["mid"], changed)
+                sent += 1
+            except LiChatError:
+                pass
+        return sent
 
     # ------------------------------------------------------------------------------------------ delivery state (db70d358)
 

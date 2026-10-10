@@ -1045,6 +1045,7 @@ class Account(val folder: File, private val key: ByteArray) {
             content.put("antwort", answer)
         }
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
+        onChange()          // the bubble is there at once, before it goes out (Olaf 10.10.)
         return deliver(cid, message, content)
     }
 

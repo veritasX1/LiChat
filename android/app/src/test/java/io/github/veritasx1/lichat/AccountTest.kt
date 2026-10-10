@@ -732,6 +732,30 @@ print([m["album"]["nr"] for m in a.chats["$cid"]["messages"] if m.get("album")])
         assertTrue(bernd.fetch().none { it.kind == News.Kind.Text })
     }
 
+    /** Olaf 10.10.: a photo going up holds up nothing – a text sent meanwhile shows at once and arrives first. */
+    @Test
+    fun textGoesWhileAPhotoGoesUp() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        val going = java.util.concurrent.CountDownLatch(1); val goOn = java.util.concurrent.CountDownLatch(1)
+        val data = ByteArray(50_000).also { java.util.Random(5).nextBytes(it) }
+        val upload = Thread {
+            anna.sendAttachment(cid, data, "Plan.pdf", "application/pdf", "datei",
+                changed = { if (anna.uploads.isNotEmpty() && going.count > 0) { going.countDown(); goOn.await(10, java.util.concurrent.TimeUnit.SECONDS) } })
+        }.also { it.start() }
+        assertTrue(going.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        val shown = mutableListOf<String>()
+        val list = anna.chat(cid).getJSONArray("messages")
+        anna.onChange = { shown.add(list.getJSONObject(list.length() - 1).optString("text")) }
+        anna.send(cid, "Schon unterwegs")
+        assertEquals("die Blase ist da, bevor sie rausgeht", "Schon unterwegs", shown.first())
+        assertEquals(listOf("Schon unterwegs"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        goOn.countDown()
+        upload.join(10_000)
+        assertEquals(1, bernd.fetch().count { it.attachment != null })
+    }
+
     /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
     @Test
     fun unreachablePlainSentence() {
