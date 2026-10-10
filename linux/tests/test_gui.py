@@ -14,6 +14,7 @@ from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 SCRATCH = tempfile.mkdtemp(prefix="lichat-gui-")
+os.environ["LICHAT_MIKROFON"] = "audiotestsrc is-live=true wave=sine volume=0.3"     # a test tone, never the real microphone
 os.environ["XDG_DATA_HOME"] = os.environ["XDG_CONFIG_HOME"] = os.environ["XDG_CACHE_HOME"] = SCRATCH
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "linux"))
@@ -520,6 +521,33 @@ def main():
     # After a restart the conversations are there again (sealed on disk).
     again = Account(window.folder)
     assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 18  # + Geheim- und Einmal-Bild, „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
+
+    # f0-05/f0-12: the field empty → a microphone; record (a test tone, never a real microphone), stop, hear, send.
+    window.input.set_text("")
+    settle(0.2)
+    assert window.mic.get_visible()
+    window.input.set_text("a")
+    assert not window.mic.get_visible()
+    window.input.set_text("")
+    bernd.fetch()
+    window.record()
+    settle(1.5)
+    assert window.record_box.get_visible() and not window.input.get_visible() and "Aufnahme  0:01" in window.record_label.get_label()
+    window.recording_pressed()                  # ■ – keep it for listening first
+    settle(0.2)
+    assert window.recorded is not None and window.record_play.get_tooltip_text() == "Anhören"
+    shot(window, "08-aufnahme.png")
+    window.end_recording(send=True)
+    assert window.input.get_visible() and not window.record_box.get_visible()
+    until(lambda: any((m.get("anhang") or {}).get("art") == "sprache" and anna.tick(cid, m)[0] == "gesendet" for m in anna.chats[cid]["messages"]))
+    voice = [n for n in bernd.fetch() if n.get("anhang")][0]["anhang"]
+    assert voice["art"] == "sprache" and len(voice["welle"]) == 50 and voice["dauer"] >= 1.0
+    assert bernd.open_attachment(voice)[4:8] == b"ftyp"
+    window.record()
+    settle(0.6)
+    window.end_recording(send=False)             # ✕ – nothing sent
+    settle(0.5)
+    assert [n for n in bernd.fetch() if n.get("anhang")] == []
     window.quit_all()
     httpd.shutdown()
     print("ok – LiChat-Fenster wie Nachrichten am Mac (Ubuntu)")

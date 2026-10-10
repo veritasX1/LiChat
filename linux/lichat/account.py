@@ -1570,7 +1570,7 @@ class Account:
             return target.read_bytes()
 
     def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None,
-                        caption="", album=None, defer=False):
+                        caption="", album=None, defer=False, wave=None):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
         [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
@@ -1613,6 +1613,8 @@ class Account:
                 "name": str(name)[:200], "mime": str(mime)[:100], "groesse": len(data), "art": kind}
         if duration is not None:
             info["dauer"] = round(float(duration), 1)
+        if kind == "sprache" and wave:
+            info["welle"] = [max(0, min(31, int(v))) for v in list(wave)[:WAVE_MAX]]     # measured while recording (1a682a79)
         if preview:
             info["vorschau"] = b64(preview)
         if once:

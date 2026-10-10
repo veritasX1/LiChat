@@ -17,6 +17,7 @@ import os
 import re
 import queue
 import sys
+import tempfile
 import threading
 import urllib.parse
 import time
@@ -27,6 +28,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
+
+from .recorder import Recorder  # noqa: E402
 
 from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
 
@@ -840,6 +843,14 @@ class Window(Adw.ApplicationWindow):
         self.input.connect("changed", self.suggest_mentions)
         self.typing_timer = 0
         line.append(self.input)
+        # f0-05/f0-12, like Messages on the Mac: with the field empty a microphone at its end – a click records, Enter sends text.
+        self.mic = Gtk.Button(icon_name="audio-input-microphone-symbolic", css_classes=["lichat-tool"], valign=Gtk.Align.CENTER,
+                              tooltip_text="Sprachnachricht aufnehmen")
+        self.mic.update_property([Gtk.AccessibleProperty.LABEL], ["Sprachnachricht aufnehmen"])
+        self.mic.connect("clicked", lambda *_: self.record())
+        self.input.connect("changed", lambda *_: self.show_mic())
+        line.append(self.mic)
+        line.append(self.recording_line())
         self.input_line = line
         # „@…“ in a group: the members that fit, as buttons above the input; a click writes „@name “ (card d54175ed).
         self.suggestions = Gtk.Box(spacing=6, margin_start=16, margin_end=16, margin_top=4, visible=False)
@@ -1047,6 +1058,8 @@ class Window(Adw.ApplicationWindow):
         self._draft_loading = False
 
     def show_conversation(self):
+        if getattr(self, "mic", None) is not None:
+            self.show_mic()
         self.switch_draft()
         while (child := self.bubbles.get_first_child()) is not None:
             self.bubbles.remove(child)
@@ -2081,6 +2094,117 @@ class Window(Adw.ApplicationWindow):
 
     WAVE = (6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12)
 
+    # f0-12 – recording like Messages on the Mac: the microphone runs with a red dot and the time; ■ ends it and the
+    # recording can be heard first (▶), ✕ throws it away, ↑ sends it (also straight from recording).
+
+    def show_mic(self):
+        recording = getattr(self, "recorded", None) is not None or self.recorder_running()
+        self.mic.set_visible(not recording and not self.input.get_text() and not self.composing and self.current is not None)
+        self.input.set_visible(not recording)
+        self.record_box.set_visible(recording)
+
+    def recorder_running(self):
+        return getattr(self, "recorder", None) is not None and self.recorder.running
+
+    def recording_line(self):
+        box = Gtk.Box(spacing=8, hexpand=True, visible=False, css_classes=["lichat-recording"])
+        drop = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat", "circular"], tooltip_text="Aufnahme verwerfen")
+        drop.connect("clicked", lambda *_: self.end_recording(send=False))
+        self.record_dot = Gtk.Label(label="●", css_classes=["lichat-record-dot"])
+        self.record_label = Gtk.Label(xalign=0, hexpand=True)
+        self.record_play = Gtk.Button(css_classes=["flat", "circular"])
+        self.record_play.connect("clicked", lambda *_: self.recording_pressed())
+        send = Gtk.Button(label="↑", css_classes=["circular", "lichat-send"], tooltip_text="Sprachnachricht senden",
+                          valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        send.update_property([Gtk.AccessibleProperty.LABEL], ["Sprachnachricht senden"])
+        send.connect("clicked", lambda *_: self.end_recording(send=True))
+        for child in (drop, self.record_dot, self.record_label, self.record_play, send):
+            box.append(child)
+        self.record_box = box
+        return box
+
+    def record(self):
+        if self.current is None or self.recorder_running():
+            return
+        if getattr(self, "recorder", None) is None:
+            self.recorder = Recorder()
+        self.recorded = None
+        if not self.recorder.start():
+            self.show_notice("Kein Mikrofon gefunden – ist eines angeschlossen und freigegeben?")
+            return
+        self.recording_for = self.current
+        self.record_dot.set_visible(True)
+        self.record_play.set_icon_name("media-playback-stop-symbolic")
+        self.record_play.set_tooltip_text("Aufnahme beenden und anhören")
+        self.show_mic()
+        self.record_tick()
+        GLib.timeout_add(250, self.record_tick)
+
+    def record_tick(self):
+        if not self.recorder_running():
+            return False
+        seconds = int(self.recorder.seconds)
+        self.record_label.set_label(f"Aufnahme  {seconds // 60}:{seconds % 60:02d}")
+        return True
+
+    def recording_pressed(self):
+        """■ while recording: stop and keep it for listening; ▶/⏸ afterwards: hear it first."""
+        if self.recorder_running():
+            self.recorded = self.recorder.stop(keep=True)
+            if self.recorded is None:
+                self.show_notice("Die Aufnahme war zu kurz.")
+                self.show_mic()
+                return
+            data, seconds, _bars = self.recorded
+            fd, name = tempfile.mkstemp(prefix="lichat-vorhoeren-", suffix=".m4a")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            self.record_preview = Gtk.MediaFile.new_for_filename(name)
+            self.record_preview_path = Path(name)
+            self.record_preview.connect("notify::ended", lambda m, _p: m.get_ended() and (m.set_playing(False), m.seek(0),
+                                                                                           self.record_play.set_icon_name("media-playback-start-symbolic")))
+            self.record_dot.set_visible(False)
+            self.record_label.set_label(f"Sprachnachricht  {int(seconds) // 60}:{int(round(seconds)) % 60:02d}")
+            self.record_play.set_icon_name("media-playback-start-symbolic")
+            self.record_play.set_tooltip_text("Anhören")
+            self.show_mic()
+            return
+        media = getattr(self, "record_preview", None)
+        if media is not None:
+            media.set_playing(not media.get_playing())
+            self.record_play.set_icon_name("media-playback-pause-symbolic" if media.get_playing() else "media-playback-start-symbolic")
+
+    def end_recording(self, send):
+        if self.recorder_running():
+            self.recorded = self.recorder.stop(keep=send)
+        recorded, self.recorded = getattr(self, "recorded", None), None
+        media = getattr(self, "record_preview", None)
+        if media is not None:
+            media.set_playing(False)
+            self.record_preview = None
+            self.record_preview_path.unlink(missing_ok=True)
+        cid = getattr(self, "recording_for", None)
+        self.show_mic()
+        self.input.grab_focus()
+        if not send or recorded is None or cid is None:
+            if send:
+                self.show_notice("Die Aufnahme war zu kurz.")
+            return
+        data, seconds, bars = recorded
+        account = self.account
+
+        def job():
+            account.send_attachment(cid, data, "Sprachnachricht.m4a", "audio/mp4", "sprache", duration=seconds, wave=bars,
+                                    changed=self.upload_moved)
+            return cid
+
+        def done(_cid, error):
+            self.show_notice(error)
+            self.fill_list()
+            self.show_conversation()
+
+        self.uploader.do(job, done)
+
     def voice_bubble(self, info, mine, box, message=None):
         bubble = Gtk.Box(spacing=8, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs", "lichat-voice"])
         toggle = Gtk.Button(css_classes=["flat", "lichat-voice-button"], tooltip_text="Abspielen")
@@ -2174,7 +2298,7 @@ class Window(Adw.ApplicationWindow):
                 self.voice = {"id": key, "media": media}
                 media.play()
                 GLib.timeout_add(100, refresh)
-            self.worker.do(job, loaded)
+            Worker.wait(job, loaded)          # a download holds up neither texts nor uploads
         toggle.connect("clicked", pressed)
         refresh()
         if state()[0] is not None:
