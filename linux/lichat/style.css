@@ -107,3 +107,5 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-recording { border-radius: 16px; min-height: 30px; padding: 0 4px; background-color: rgba(120, 120, 128, 0.12); }
 .lichat-record-dot { color: #ff3b30; }
 .lichat-send { background-color: #0a7aff; color: #ffffff; min-width: 26px; min-height: 26px; padding: 0; margin: 2px 0; font-weight: 700; font-size: 15px; }
+.lichat-peek-time { font-size: 11px; color: rgba(60, 60, 67, 0.6); min-width: 36px; }
+.lichat-dark .lichat-peek-time { color: rgba(235, 235, 245, 0.6); }

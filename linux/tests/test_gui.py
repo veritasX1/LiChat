@@ -522,6 +522,25 @@ def main():
     again = Account(window.folder)
     assert set(again.visible_chats()) == {cid, group} and again.own_group_id() and len(again.chats[cid]["messages"]) == 18  # + Geheim- und Einmal-Bild, „Noch was: Grillkohle?“, Grillen um 7, widerrufen, Neu eins/zwei
 
+    # f0-07: two fingers to the left show every time, letting go hides them; to the right on a bubble answers it.
+    window.open_chat(cid)
+    settle(0.3)
+    assert window.peek_times and not any(t.get_visible() for t in window.peek_times)
+    window.peek_scrolled(window.peek_swipe, 30.0, 0.0)
+    assert all(t.get_visible() for t in window.peek_times)
+    shot(window, "08b-uhrzeiten.png")
+    window.peek(False)
+    assert not any(t.get_visible() for t in window.peek_times)
+    window.peek_scrolled(window.peek_swipe, -30.0, 0.0)          # to the right: not the times
+    assert not any(t.get_visible() for t in window.peek_times)
+    last = [m for m in anna.chats[cid]["messages"] if m.get("mid") and not m.get("system") and not m.get("zurueckgerufen")][-1]
+    answer = [c for c in window.bubble_of[last["mid"]].observe_controllers() if isinstance(c, Gtk.EventControllerScroll)][0]
+    window.answer_scrolled(answer, -40.0, last)
+    window.answer_scrolled(answer, -40.0, last)
+    window.answer_scrolled(answer, None, last)
+    assert window.reply_to is last and window.reply_line.get_visible()
+    window.end_reply()
+
     # f0-05/f0-12: the field empty → a microphone; record (a test tone, never a real microphone), stop, hear, send.
     window.input.set_text("")
     settle(0.2)

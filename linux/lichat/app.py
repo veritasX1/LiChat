@@ -801,6 +801,15 @@ class Window(Adw.ApplicationWindow):
                                margin_top=8, margin_bottom=8, valign=Gtk.Align.END)
         self.scroller = Gtk.ScrolledWindow(child=self.bubbles, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
                                            css_classes=["lichat-transcript"])
+        # f0-07, like Messages on the Mac: two fingers to the left on the touchpad show every message's time at the right,
+        # letting go hides them; two fingers to the right on a bubble answer it.
+        self.peek_times, self.peek_dx, self.peek_timer = [], 0.0, 0
+        swipe = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.HORIZONTAL)
+        swipe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        swipe.connect("scroll", self.peek_scrolled)
+        swipe.connect("scroll-end", lambda *_: self.peek(False))
+        self.scroller.add_controller(swipe)
+        self.peek_swipe = swipe
         # The end stays in view – new bubbles, „•••“, a narrower window (cards 0c01f599, be8f93c3). Reading further up,
         # a new message shows „↓ Neue Nachricht“ instead of pulling the view away.
         self.stick, self.upper, self.held, self.unseen, self.shown, self.end_pending = True, 0.0, None, 0, None, False
@@ -1102,6 +1111,7 @@ class Window(Adw.ApplicationWindow):
         first = self.account.first_unread(cid) if self.shown_unread_for != cid else None
         self.shown_unread_for = cid
         self.bubble_of = {}
+        self.peek_times = []
         leaders, hidden = album_runs([m for m in chat["messages"] if not m.get("geloescht")])
         for m in chat["messages"]:
             if m.get("geloescht"):
@@ -1156,6 +1166,15 @@ class Window(Adw.ApplicationWindow):
                 row.append(face)
                 row.append(piece)
                 piece = row
+            # the time beside it, hidden until a swipe to the left (f0-07)
+            stamp = Gtk.Label(label=time.strftime("%H:%M", time.localtime(m["at"])), css_classes=["lichat-peek-time"],
+                              valign=Gtk.Align.CENTER, visible=False)
+            self.peek_times.append(stamp)
+            if m.get("mid"):
+                answer = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.HORIZONTAL)
+                answer.connect("scroll", lambda c, dx, _dy, msg=m: self.answer_scrolled(c, dx, msg))
+                answer.connect("scroll-end", lambda c, msg=m: self.answer_scrolled(c, None, msg))
+                piece.add_controller(answer)
             if m.get("mid"):
                 self.bubble_of[m["mid"]] = piece
                 # Right click (or a long press on a touch screen): tapbacks, Antworten, Kopieren – like Messages on the Mac.
@@ -1176,9 +1195,12 @@ class Window(Adw.ApplicationWindow):
                 column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=piece.get_halign())
                 column.append(piece)
                 column.append(badge)
-                self.bubbles.append(column)
-            else:
-                self.bubbles.append(piece)
+                piece = column
+            line = Gtk.Box(spacing=8)
+            piece.set_hexpand(True)
+            line.append(piece)
+            line.append(stamp)
+            self.bubbles.append(line)
             if m.get("bearbeitet"):
                 # „Bearbeitet“ (iOS): a click shows the earlier versions.
                 edited = Gtk.Button(label="Bearbeitet", css_classes=["flat", "lichat-edited"], halign=Gtk.Align.END if mine else Gtk.Align.START,
@@ -1793,6 +1815,40 @@ class Window(Adw.ApplicationWindow):
     def unsend(self, cid, mid):
         account = self.account
         self.worker.do(lambda: account.unsend(cid, mid), lambda _r, error: (self.show_notice(error), self.show_conversation(), self.fill_list()))
+
+    def peek_scrolled(self, _controller, dx, _dy):
+        """Two fingers to the left (dx > 0): the times show; to the right it is the bubble's (answer)."""
+        if dx <= 0 and not self.peek_dx:
+            return False
+        self.peek_dx = max(0.0, self.peek_dx + dx)
+        self.peek(self.peek_dx > 20)
+        if self.peek_timer:
+            GLib.source_remove(self.peek_timer)
+        # a mouse with a side wheel never says „end“ – the times go after a moment without scrolling
+        self.peek_timer = GLib.timeout_add(700, lambda: self.peek(False))
+        return True
+
+    def peek(self, show):
+        if not show:
+            self.peek_dx = 0.0
+            if self.peek_timer:
+                GLib.source_remove(self.peek_timer)
+                self.peek_timer = 0
+        for stamp in self.peek_times:
+            stamp.set_visible(show)
+        return False
+
+    def answer_scrolled(self, controller, dx, message):
+        """Two fingers to the right on a bubble: far enough and let go – answer it (like swiping on the iPhone)."""
+        if dx is None:
+            if getattr(controller, "pulled", 0) > 60:
+                self.start_reply(message)
+            controller.pulled = 0
+            return False
+        if dx >= 0:
+            return False
+        controller.pulled = getattr(controller, "pulled", 0) - dx
+        return True
 
     def start_reply(self, message):
         """Answering: a line above the input with the quote, ✕ takes it back."""
