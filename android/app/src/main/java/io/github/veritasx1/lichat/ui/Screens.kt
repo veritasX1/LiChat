@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -384,6 +385,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         val typing = remember(version, cid, clock) { account.typingNow(cid) }
         LaunchedEffect(typing, clock, version) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
         LaunchedEffect(typing.isNotEmpty()) { if (typing.isNotEmpty() && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
+        val albums = remember(list, version) { albumRuns(list) }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), state = listState, reverseLayout = true) {
             if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
                 val who = typing.joinToString(", ") { account.display(it) }
@@ -399,7 +401,10 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             items(list.size, key = { list[list.size - 1 - it].optString("mid").ifEmpty { "n${list.size - 1 - it}" } }) { row -> Column {
                 val i = list.size - 1 - row
                 val m = list[i]
-                val previous = list.getOrNull(i - 1)
+                // An album's photos are drawn together in its last one (5749ebd0) – the others leave no row of their own.
+                if (m.optString("mid") in albums.hidden) return@Column
+                val album = albums.leaders[m.optString("mid")]
+                val previous = list.getOrNull((album?.first()?.let { first -> list.indexOf(first) } ?: i) - 1)
                 if (previous == null || m.optLong("at") - previous.optLong("at") > 15 * 60) {
                     BasicText(whenShort(m.optLong("at")).let { if (':' in it) "Heute $it" else it }, style = style(11f, 600, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp))
                 }
@@ -460,8 +465,9 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     // While its menu is open the bubble is shown lifted – the original is hidden (Michelle 20eb5cc5).
                     Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
-                            Modifier.combinedClickable(onClick = { info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
-                            playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions)
+                            Modifier.combinedClickable(onClick = { if (album == null) info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
+                            playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions,
+                            album = album)
                     }
                 }
                 if (versions != null) {
@@ -565,6 +571,91 @@ fun firstEmoji(text: String): String? {
     return null
 }
 
+/** Photos picked together (5749ebd0): leaders (the album's last message, which draws it) → its photos in order, and the
+ *  mids drawn inside a leader. Only neighbours from the same sender with the same album id belong together. */
+class AlbumRuns(val leaders: Map<String, List<JSONObject>>, val hidden: Set<String>)
+
+fun albumRuns(list: List<JSONObject>): AlbumRuns {
+    val leaders = mutableMapOf<String, List<JSONObject>>()
+    val hidden = mutableSetOf<String>()
+    var k = 0
+    while (k < list.size) {
+        val id = list[k].optJSONObject("album")?.optString("id")
+        var end = k
+        if (!id.isNullOrEmpty() && !list[k].optBoolean("zurueckgerufen")) {
+            while (end + 1 < list.size && list[end + 1].optJSONObject("album")?.optString("id") == id
+                && list[end + 1].optString("from") == list[k].optString("from") && !list[end + 1].optBoolean("zurueckgerufen")) end++
+        }
+        if (end > k) {
+            val run = list.subList(k, end + 1).sortedBy { it.optJSONObject("album")?.optInt("nr") ?: 0 }
+            leaders[list[end].optString("mid")] = run
+            for (j in k until end) hidden.add(list[j].optString("mid"))
+        }
+        k = end + 1
+    }
+    return AlbumRuns(leaders, hidden)
+}
+
+/** One photo of an album: the small preview at once, the photo itself once loaded (like a single photo bubble). */
+@Composable
+fun AlbumTile(info: JSONObject, load: ((JSONObject) -> ByteArray)?, modifier: Modifier, uploading: Float?, onCancel: () -> Unit, onOpen: () -> Unit) {
+    val id = info.optString("id")
+    val small = remember(id) {
+        info.optString("vorschau").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }
+            ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    val full by androidx.compose.runtime.produceState(FullImages.cache.get(id), id) {
+        if (value == null && load != null && info.optLong("groesse") <= 15L * 1024 * 1024) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { load(info) }.getOrNull()?.let { FullImages.decode(it) }
+            }?.also { FullImages.cache.put(id, it) }
+        }
+    }
+    Box(modifier.background(palette().fill).clickable(onClick = onOpen), contentAlignment = Alignment.Center) {
+        (full ?: small)?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+        if (uploading != null) UploadRing(uploading, Color.White, Modifier.size(36.dp).clip(CircleShape).background(Color(0x99000000)), onCancel)
+    }
+}
+
+/** Like Messages: 2 photos side by side, 3 as one large and two small, from 4 a stack to swipe through in the bubble
+ *  („2 / 7“ in the corner, the edges of the next ones peeking out behind it). */
+@Composable
+fun AlbumBubble(photos: List<JSONObject>, load: ((JSONObject) -> ByteArray)?, open: (JSONObject) -> Unit,
+                uploading: (String) -> Float?, onCancel: (String) -> Unit) {
+    val gap = 2.dp
+    val shape = RoundedCornerShape(18.dp)
+    @Composable
+    fun tile(m: JSONObject, modifier: Modifier) = AlbumTile(m.getJSONObject("anhang"), load, modifier, uploading(m.optString("mid")),
+        { onCancel(m.optString("mid")) }) { open(m.getJSONObject("anhang")) }
+    val label = "${photos.size} Fotos"
+    when (photos.size) {
+        2 -> Row(Modifier.size(220.dp, 140.dp).clip(shape).semantics { contentDescription = label }, horizontalArrangement = Arrangement.spacedBy(gap)) {
+            photos.forEach { tile(it, Modifier.weight(1f).fillMaxHeight()) }
+        }
+        3 -> Row(Modifier.size(220.dp, 220.dp).clip(shape).semantics { contentDescription = label }, horizontalArrangement = Arrangement.spacedBy(gap)) {
+            tile(photos[0], Modifier.weight(1.4f).fillMaxHeight())
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(gap)) {
+                tile(photos[1], Modifier.weight(1f).fillMaxWidth())
+                tile(photos[2], Modifier.weight(1f).fillMaxWidth())
+            }
+        }
+        else -> {
+            val pager = androidx.compose.foundation.pager.rememberPagerState { photos.size }
+            Box(Modifier.size(232.dp, 232.dp).semantics { contentDescription = "Stapel mit $label, Foto ${pager.currentPage + 1} – wischen zum Blättern" }) {
+                // the next photos' edges behind the top one, like a stack of prints
+                Box(Modifier.align(Alignment.TopEnd).size(220.dp).clip(shape).background(palette().separator))
+                Box(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp).size(220.dp).clip(shape).background(palette().fill))
+                androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.align(Alignment.BottomStart).size(220.dp).clip(shape), pageSpacing = 8.dp) { page ->
+                    tile(photos[page], Modifier.fillMaxSize())
+                }
+                BasicText("${pager.currentPage + 1} / ${photos.size}", style = style(12f, 600, Color.White),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 154.dp, bottom = 10.dp).clip(RoundedCornerShape(10.dp))
+                        .background(Color(0x99000000)).padding(horizontal = 8.dp, vertical = 3.dp))
+            }
+        }
+    }
+}
+
 /** Like Messages while a photo goes up: a ring that fills, an × in the middle – a tap stops it (cf647f61). */
 @Composable
 fun UploadRing(share: Float, color: Color, modifier: Modifier, onCancel: () -> Unit) {
@@ -586,11 +677,13 @@ fun UploadRing(share: Float, color: Color, modifier: Modifier, onCancel: () -> U
 @Composable
 fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
            open: (JSONObject) -> Unit = {}, load: ((JSONObject) -> ByteArray)? = null, maxLines: Int = Int.MAX_VALUE,
-           actions: AttachmentActions? = null) {
+           actions: AttachmentActions? = null, album: List<JSONObject>? = null) {
     val colors = palette()
     val info = m.optJSONObject("anhang")
     if (info != null) Column(modifier.then(interact), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         if (info.optBoolean("einmal")) OnceBubble(m, mine) { actions?.openOnce?.invoke(m.optString("mid")) }
+        else if (album != null && album.size >= 2) AlbumBubble(album, load, open,
+            uploading = { mid -> if (mine) actions?.uploading?.invoke(mid) else null }, onCancel = { mid -> actions?.cancelUpload?.invoke(mid) })
         else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {},
             uploading = if (mine) actions?.uploading?.invoke(m.optString("mid")) else null,
             onCancel = { actions?.cancelUpload?.invoke(m.optString("mid")) }) { open(info) }
@@ -765,7 +858,7 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
 
 /** A photo waiting above the input (2fcc3eef): what was picked, its bytes (marked up, if so) and how it leaves. */
 data class Staged(val uri: android.net.Uri, val bytes: ByteArray?, val once: Boolean = false, val secret: Boolean = false,
-                  val markedUp: Boolean = false)
+                  val markedUp: Boolean = false, val asFile: Boolean = false)
 
 /** What the conversation can do with attachments (card 9780f3a0) – the activity does the work (pickers, recorder, files). */
 class AttachmentActions(
@@ -989,8 +1082,10 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
     }
     LaunchedEffect(preset) { if (preset != null) setText(preset) }     // „Bearbeiten“: the message's text to correct
-    // Picked photos lie above the input (2fcc3eef, like Messages): × takes one out, a tap opens its options.
-    if (actions.staged.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
+    // Picked photos lie in the input capsule above the text (2fcc3eef, like Messages – Michelle: inside, not above it):
+    // × takes one out, a tap opens its options.
+    @Composable
+    fun StagedRow() = Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, top = 8.dp)) {
         actions.staged.forEachIndexed { index, item ->
             val thumb = remember(item.bytes) { item.bytes?.let { FullImages.decode(it, 240) } }
             Box(Modifier.padding(end = 8.dp).size(72.dp)) {
@@ -1030,9 +1125,12 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
         Box(Modifier.weight(1f).heightIn(min = 36.dp).clip(RoundedCornerShape(18.dp)).background(colors.background)
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
+            Column {
+            if (actions.staged.isNotEmpty()) StagedRow()
             BasicTextField(field, { field = it; if (it.text.isNotEmpty()) actions.typing() }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences, autoCorrectEnabled = true), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 40.dp, top = 8.dp, bottom = 8.dp).semantics { contentDescription = "Nachricht" },
                 decorationBox = { inner -> Box { if (text.isEmpty()) BasicText(if (actions.staged.isEmpty()) "LiChat" else "Text zum Foto", style = style(17f, 400, colors.tertiary)); inner() } })
+            }
             if (text.isNotBlank() || actions.staged.isNotEmpty()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
                 .clickable(role = Role.Button) { if (actions.staged.isNotEmpty()) actions.sendStaged(text.trim()) else onSend(text); setText("") }
                 .semantics { contentDescription = "Senden" },

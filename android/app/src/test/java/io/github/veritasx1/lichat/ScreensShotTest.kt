@@ -221,6 +221,29 @@ httpd.serve_forever()
         compose.onNodeWithText("Text zum Foto").assertExists()
     }
 
+    /** 5749ebd0: two photos side by side, three as one large and two small, five as a stack with „1 / 5“. */
+    @Test
+    fun albumCollageAndStack() {
+        fun photos(count: Int) = (1..count).map { nr ->
+            val picture = android.graphics.Bitmap.createBitmap(600, 450, android.graphics.Bitmap.Config.ARGB_8888)
+                .apply { eraseColor(listOf(0xFF4FA36B, 0xFFE2A33B, 0xFF3B7BE2, 0xFFD9534F, 0xFF8E6BD9)[nr - 1].toInt()) }
+            val raw = java.io.ByteArrayOutputStream().also { picture.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+            val preview = io.github.veritasx1.lichat.core.Pictures.photo(raw).second
+            org.json.JSONObject().put("mid", "a$count-$nr").put("from", "bernd").put("anhang", org.json.JSONObject().put("id", "p$count-$nr").put("art", "bild")
+                .put("vorschau", java.util.Base64.getEncoder().encodeToString(preview)))
+        }
+        shot("2m-album-collage-stapel") {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.background(io.github.veritasx1.lichat.ui.palette().background),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(androidx.compose.ui.unit.Dp(12f))) {
+                io.github.veritasx1.lichat.ui.AlbumBubble(photos(2), null, {}, { null }, {})
+                io.github.veritasx1.lichat.ui.AlbumBubble(photos(3), null, {}, { null }, {})
+                io.github.veritasx1.lichat.ui.AlbumBubble(photos(5), null, {}, { null }, {})
+            }
+        }
+        compose.onNodeWithText("1 / 5").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("3 Fotos")).assertExists()
+    }
+
     /** 18cfe3d2: a wrapped message's bubble is only as wide as its longest line – no blue space on the right; links tappable. */
     @Test
     fun wrappedBubbleIsTight() {

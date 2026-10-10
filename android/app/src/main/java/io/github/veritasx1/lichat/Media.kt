@@ -24,22 +24,25 @@ class Media(private val context: Context) {
     private val recordFile get() = File(context.cacheDir, "aufnahme.m4a")
 
     /** A picked photo, video or file → prepared and sent. Photos without EXIF and smaller; [asFile]: unchanged as a file. */
-    fun send(account: Account, cid: String, uri: Uri, asFile: Boolean, once: Boolean = false, secret: Boolean = false, caption: String = "") {
+    fun send(account: Account, cid: String, uri: Uri, asFile: Boolean, once: Boolean = false, secret: Boolean = false, caption: String = "",
+             album: org.json.JSONObject? = null, defer: Boolean = false): org.json.JSONObject {
         val resolver = context.contentResolver
         val mime = resolver.getType(uri) ?: "application/octet-stream"
         val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
         } ?: "Datei"
         val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw LiChatException("Datei nicht lesbar")
-        when {
+        return when {
             mime == "image/gif" || io.github.veritasx1.lichat.core.Gif.isGif(bytes) -> {
                 // A GIF stays a GIF – animated, looping (Michelle 999f37be): only comments, XMP and other extra blocks go.
                 val gif = io.github.veritasx1.lichat.core.Gif.withoutMetadata(bytes)
-                account.sendAttachment(cid, gif, name.substringBeforeLast('.') + ".gif", "image/gif", "bild", preview = Pictures.photo(gif).second, once = once, secret = secret, caption = caption)
+                account.sendAttachment(cid, gif, name.substringBeforeLast('.') + ".gif", "image/gif", "bild", preview = Pictures.photo(gif).second, once = once, secret = secret, caption = caption,
+                    album = album, defer = defer)
             }
             !asFile && mime.startsWith("image/") -> {
                 val (jpeg, preview) = Pictures.photo(bytes)
-                account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview, once = once, secret = secret, caption = caption)
+                account.sendAttachment(cid, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = preview, once = once, secret = secret, caption = caption,
+                    album = album, defer = defer)
             }
             !asFile && mime.startsWith("video/") -> {
                 // Without the container's metadata (Michelle: an MP4 carries the place ©xyz and the recording time).
@@ -56,7 +59,8 @@ class Media(private val context: Context) {
             asFile && mime.startsWith("image/") && mime != "image/gif" && mime != "image/svg+xml" -> {
                 // Full size, only without EXIF – and shown as a picture with its preview, like on the iPhone (Michelle).
                 val full = Pictures.withoutMetadata(bytes)
-                account.sendAttachment(cid, full, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = Pictures.photo(full).second)
+                account.sendAttachment(cid, full, name.substringBeforeLast('.') + ".jpg", "image/jpeg", "bild", preview = Pictures.photo(full).second,
+                    caption = caption, album = album, defer = defer)
             }
             asFile && mime.startsWith("video/") -> account.sendAttachment(cid,
                 clean(bytes, "mp4") ?: throw LiChatException("Video lässt sich nicht ohne Ortsangaben verschicken"),

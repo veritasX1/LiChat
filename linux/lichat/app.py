@@ -27,7 +27,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
-from .account import MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
+from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -137,6 +137,24 @@ def autostart(on):
                              f"Exec={sys.executable} {main} --hintergrund\nIcon=mail-message-new\nX-GNOME-Autostart-enabled=true\n")
     elif AUTOSTART.exists():
         AUTOSTART.unlink()
+
+
+def album_runs(messages):
+    """Photos picked together (5749ebd0): {leader mid: its photos in order} and the mids drawn inside a leader. Only
+    neighbours from the same sender with the same album id belong together; the last one draws the album."""
+    leaders, hidden, k = {}, set(), 0
+    while k < len(messages):
+        album = (messages[k].get("album") or {}).get("id")
+        end = k
+        if album and not messages[k].get("zurueckgerufen"):
+            while end + 1 < len(messages) and (messages[end + 1].get("album") or {}).get("id") == album \
+                    and messages[end + 1].get("from") == messages[k].get("from") and not messages[end + 1].get("zurueckgerufen"):
+                end += 1
+        if end > k:
+            leaders[messages[end].get("mid")] = sorted(messages[k:end + 1], key=lambda m: m["album"].get("nr", 0))
+            hidden.update(m.get("mid") for m in messages[k:end])
+        k = end + 1
+    return leaders, hidden
 
 
 def bubble_markup(text):
@@ -1000,9 +1018,12 @@ class Window(Adw.ApplicationWindow):
         first = self.account.first_unread(cid) if self.shown_unread_for != cid else None
         self.shown_unread_for = cid
         self.bubble_of = {}
+        leaders, hidden = album_runs([m for m in chat["messages"] if not m.get("geloescht")])
         for m in chat["messages"]:
             if m.get("geloescht"):
                 continue        # in „Zuletzt gelöscht“
+            if m.get("mid") in hidden:
+                continue        # drawn inside its album's last photo (5749ebd0)
             if m.get("system"):
                 self.bubbles.append(Gtk.Label(label=m["text"], css_classes=["lichat-stamp"], wrap=True))
                 previous = m      # the next bubble names its sender again, no extra time stamp
@@ -1027,7 +1048,9 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(Gtk.Label(label=f"↩ {who}: {said}", css_classes=["lichat-quote"], wrap=True,
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
-            if m.get("anhang"):
+            if m.get("anhang") and m.get("mid") in leaders:
+                piece = self.album_bubble(leaders[m["mid"]], mine)
+            elif m.get("anhang"):
                 piece = self.attachment_bubble(m["anhang"], mine, m)
                 if (m.get("text") or "").strip():
                     # 2fcc3eef: the caption under the picture, in the same message – like Messages
@@ -1701,6 +1724,50 @@ class Window(Adw.ApplicationWindow):
         box.append(button)
         return self.with_upload(box, message)
 
+    def album_bubble(self, photos, mine):
+        """Like Messages: 2 photos side by side, 3 as one large and two small, from 4 a stack to page through (5749ebd0)."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+
+        def tile(m, width, height):
+            info = m["anhang"]
+            try:
+                texture = self.full_images.get(info.get("id")) or Gdk.Texture.new_from_bytes(GLib.Bytes.new(unb64(info.get("vorschau", ""))))
+                picture = Gtk.Picture(paintable=texture, can_shrink=True, content_fit=Gtk.ContentFit.COVER)
+            except (GLib.Error, ValueError):
+                picture = Gtk.Label(label="Foto")
+            picture.set_size_request(width, height)
+            button = Gtk.Button(child=picture, css_classes=["lichat-attachment", "flat"], tooltip_text=info.get("name"))
+            button.connect("clicked", lambda *_: self.open_attachment(info))
+            return self.with_upload(self._boxed(button), m)
+
+        frame = Gtk.Box(spacing=2, css_classes=["lichat-photo"], overflow=Gtk.Overflow.HIDDEN)
+        if len(photos) == 2:
+            for m in photos:
+                frame.append(tile(m, 119, 150))
+        elif len(photos) == 3:
+            frame.append(tile(photos[0], 140, 240))
+            right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            right.append(tile(photos[1], 98, 119))
+            right.append(tile(photos[2], 98, 119))
+            frame.append(right)
+        else:
+            carousel = Adw.Carousel(spacing=8, allow_scroll_wheel=True)
+            for m in photos:
+                carousel.append(tile(m, 240, 240))
+            stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            stack.append(carousel)
+            stack.append(Adw.CarouselIndicatorDots(carousel=carousel))
+            stack.set_tooltip_text(f"Stapel mit {len(photos)} Fotos – wischen oder scrollen zum Blättern")
+            frame.append(stack)
+        box.append(frame)
+        return box
+
+    @staticmethod
+    def _boxed(widget):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(widget)
+        return box
+
     def animate_gif(self, picture, data, key):
         try:
             from gi.repository import GdkPixbuf
@@ -1862,14 +1929,76 @@ class Window(Adw.ApplicationWindow):
         if self.current is None and not self.composing:
             return
         dialog = Gtk.FileDialog(title="Anhang wählen")
-        dialog.open(self, None, self.on_attachment_chosen)
+        dialog.open_multiple(self, None, self.on_attachment_chosen)       # several at once (5749ebd0)
 
     def on_attachment_chosen(self, dialog, result):
+        import mimetypes
         try:
-            file = dialog.open_finish(result)
+            files = dialog.open_multiple_finish(result)
         except GLib.Error:
             return
-        self.send_attachment(Path(file.get_path()))
+        paths = [Path(files.get_item(i).get_path()) for i in range(files.get_n_items())]
+        photos = [p for p in paths if (mimetypes.guess_type(p.name)[0] or "").startswith("image/")
+                  and mimetypes.guess_type(p.name)[0] != "image/svg+xml"][:ALBUM_MAX]
+        for path in paths:
+            if path not in photos or len(photos) < 2:
+                self.send_attachment(path)
+        if len(photos) >= 2:
+            self.album_options(photos)
+
+    def album_options(self, paths):
+        """Several photos: one question for all of them, text to them – they leave as an album (5749ebd0)."""
+        dialog = Adw.AlertDialog(heading=f"{len(paths)} Fotos senden", body="Als Collage (2–3) bzw. Stapel (ab 4), wie in Nachrichten.")
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        thumbs = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=5, column_spacing=4, row_spacing=4)
+        for path in paths:
+            picture = Gtk.Picture(file=Gio.File.new_for_path(str(path)), can_shrink=True, content_fit=Gtk.ContentFit.COVER)
+            picture.set_size_request(56, 56)
+            thumbs.append(picture)
+        options.append(thumbs)
+        caption = Gtk.Entry(placeholder_text="Text zu den Fotos", text=self.input.get_text())
+        options.append(caption)
+        dialog.set_extra_child(options)
+        dialog.add_response("abbrechen", "Abbrechen")
+        dialog.add_response("senden", "Senden")
+        dialog.set_response_appearance("senden", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("senden")
+
+        def answered(_d, answer):
+            if answer == "senden":
+                self.input.set_text("")
+                self.send_album(paths, caption.get_text().strip())
+        dialog.connect("response", answered)
+        dialog.present(self)
+        self.album_dialog = (dialog, caption)       # for the GUI test
+        return dialog
+
+    def send_album(self, paths, caption=""):
+        account, cid = self.account, self.current
+        if cid is None:
+            return
+
+        def job():
+            part = account.new_album(len(paths))
+            laid = [account.send_attachment(cid, p.read_bytes(), p.name, "image/jpeg", "bild", album=part(n + 1), defer=True,
+                                            caption=caption if n == len(paths) - 1 else "", changed=self.upload_moved)
+                    for n, p in enumerate(paths)]
+            failed = None
+            for message in laid:            # all bubbles are there – now up, one after the other
+                try:
+                    account.send_queued(cid, message, changed=self.upload_moved)
+                except LiChatError as error:
+                    failed = failed or error
+            if failed:
+                raise failed
+            return cid
+
+        def done(_cid, error):
+            self.show_notice(error)
+            self.fill_list()
+            self.show_conversation()
+
+        self.worker.do(job, done)
 
     def send_attachment(self, path, once=None, secret=False, caption=""):
         """The kind from the file's type: photo, video, audio (as a voice message) or any other file. A photo first asks

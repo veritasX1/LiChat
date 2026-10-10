@@ -68,6 +68,7 @@ const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+const val ALBUM_MAX = 10            // photos picked together at most (5749ebd0, like Messages)
 const val OUTBOX = "ausgang-"       // an attachment's local id until it is up (cf647f61)
 const val RESEND_S = 24 * 3600L     // „Nicht gesendet“ goes out by itself when the connection is back – for a day (72c8a716)
 private const val LATE_S = 60L       // slack for clocks a little apart (only the sender's own times are compared)
@@ -1016,7 +1017,10 @@ class Account(val folder: File, private val key: ByteArray) {
             return upload(cid, message, changed)
         }
         val content = message.optJSONObject("anhang")?.let { a ->
-            JSONObject(a.toString()).put("t", "anhang").also { c -> message.optString("text").takeIf { it.isNotEmpty() }?.let { c.put("text", it) } }
+            JSONObject(a.toString()).put("t", "anhang").also { c ->
+                message.optString("text").takeIf { it.isNotEmpty() }?.let { c.put("text", it) }
+                message.optJSONObject("album")?.let { c.put("album", it) }
+            }
         } ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
         message.put("status", "wartet")
@@ -1171,7 +1175,7 @@ class Account(val folder: File, private val key: ByteArray) {
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
                        preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, caption: String = "",
-                       changed: () -> Unit = onChange): JSONObject {
+                       album: JSONObject? = null, defer: Boolean = false, changed: () -> Unit = onChange): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
         if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1196,9 +1200,20 @@ class Account(val folder: File, private val key: ByteArray) {
         val at = System.currentTimeMillis() / 1000
         // The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
         val message = JSONObject().put("from", username).put("text", caption.trim()).put("at", at).put("anhang", info).put("mid", mid).put("status", "wartet")
+        // Several photos picked together stay together (5749ebd0): collage for 2–3, a stack from 4 – one-time and secret ones alone.
+        if (album != null && !once && !secret) message.put("album", album)
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
         changed()
-        return upload(cid, message, changed)
+        return if (defer) message else upload(cid, message, changed)
+    }
+
+    /** An attachment laid down with defer = true goes up now (an album: all bubbles first, then one after the other). */
+    fun sendQueued(cid: String, message: JSONObject, changed: () -> Unit = onChange): JSONObject = upload(cid, message, changed)
+
+    /** A fresh album: {id, nr, anzahl} for photo [nr] (1…) of [count]. */
+    fun newAlbum(count: Int): (Int) -> JSONObject {
+        val id = newMid()
+        return { nr -> JSONObject().put("id", id).put("nr", nr).put("anzahl", count) }
     }
 
     /** Told when an upload moves on (the app redraws its bubbles) – set once by whoever shows them. */
@@ -1257,6 +1272,7 @@ class Account(val folder: File, private val key: ByteArray) {
         }
         val content = JSONObject(info.toString()).put("t", "anhang").put("at", message.optLong("at")).put("mid", mid)
         message.optString("text").takeIf { it.isNotEmpty() }?.let { content.put("text", it) }
+        message.optJSONObject("album")?.let { content.put("album", it) }
         return deliver(cid, message, content)
     }
 
@@ -1732,6 +1748,11 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (info.optBoolean("einmal")) info.remove("vorschau")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", data.optString("text")).put("at", sent).put("anhang", info)
+                        data.optJSONObject("album")?.let { a ->
+                            val nr = a.optInt("nr"); val count = a.optInt("anzahl")
+                            if (Regex("[0-9a-f]{16}").matches(a.optString("id")) && count in 2..ALBUM_MAX && nr in 1..count && !info.optBoolean("einmal") && !info.optBoolean("geheim"))
+                                message.put("album", JSONObject().put("id", a.optString("id")).put("nr", nr).put("anzahl", count))
+                        }
                         typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)

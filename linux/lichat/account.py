@@ -82,6 +82,7 @@ PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
 ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 OUTBOX = "ausgang-"        # an attachment's local id until it is up (cf647f61)
+ALBUM_MAX = 10             # photos picked together at most (5749ebd0, like Messages)
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
 ONCE_DAYS = 14             # an unopened one-time picture lapses (the server deletes it too)
@@ -1175,6 +1176,8 @@ class Account:
             else {"t": "text", "text": message["text"], "at": message["at"], "mid": mid}
         if message.get("anhang") and message.get("text"):
             payload["text"] = message["text"]
+        if message.get("anhang") and message.get("album"):
+            payload["album"] = message["album"]
         message["status"] = "wartet"
         return self._deliver(cid, message, payload)
 
@@ -1493,7 +1496,7 @@ class Account:
             return target.read_bytes()
 
     def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None,
-                        caption=""):
+                        caption="", album=None, defer=False):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
         [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
@@ -1545,12 +1548,24 @@ class Account:
         at = int(time.time())
         # The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
         message = {"from": self.username, "text": str(caption or "").strip(), "at": at, "anhang": info, "mid": mid, "status": "wartet"}
+        if album and not once and not secret:
+            message["album"] = dict(album)      # photos picked together stay together (5749ebd0)
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
         if changed:
             changed()
+        return message if defer else self._upload(cid, message, changed)
+
+    def send_queued(self, cid, message, changed=None):
+        """An attachment laid down with defer=True goes up now (an album: all bubbles first, then one after the other)."""
         return self._upload(cid, message, changed)
+
+    @staticmethod
+    def new_album(count):
+        """A fresh album: a function nr (1…) → {id, nr, anzahl}."""
+        album = secrets.token_hex(8)
+        return lambda nr: {"id": album, "nr": nr, "anzahl": count}
 
     def cancel_upload(self, mid):
         if mid in self.uploads:
@@ -1611,6 +1626,8 @@ class Account:
         payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]}
         if message.get("text"):
             payload["text"] = message["text"]
+        if message.get("album"):
+            payload["album"] = message["album"]
         return self._deliver(cid, message, payload)
 
     def _keep_sealed(self, attachment, sealed):
@@ -2029,6 +2046,11 @@ class Account:
                 return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
             info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
             message = {"from": sender, "text": str(data.get("text") or ""), "at": int(data.get("at") or time.time()), "anhang": info}
+            album = data.get("album")
+            if isinstance(album, dict) and re.fullmatch(r"[0-9a-f]{16}", str(album.get("id", ""))) and not info.get("einmal") \
+                    and not info.get("geheim") and isinstance(album.get("anzahl"), int) and isinstance(album.get("nr"), int) \
+                    and 2 <= album["anzahl"] <= ALBUM_MAX and 1 <= album["nr"] <= album["anzahl"]:
+                message["album"] = {"id": album["id"], "nr": album["nr"], "anzahl": album["anzahl"]}
             self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
