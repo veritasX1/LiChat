@@ -32,10 +32,16 @@ class LiChatException(message: String, val suggestions: List<String> = emptyList
 /** No way to the server: one plain sentence per kind – the raw text (public IP, port, the phone's home address) only as
  *  [LiChatException.detail] for the log, never on the screen (Michelle 8e7a493b). */
 fun unreachable(e: java.io.IOException) = LiChatException(when (e) {
-    is java.net.UnknownHostException -> "Server nicht gefunden. Besteht eine Internetverbindung?"
-    is javax.net.ssl.SSLException -> "Keine sichere Verbindung zum Server möglich."
-    else -> "Keine Verbindung zum Server. LiChat versucht es gleich wieder."
+    is java.net.UnknownHostException -> NO_HOST
+    is javax.net.ssl.SSLException -> NO_TLS
+    else -> NO_WAY
 }, detail = e.toString())
+
+const val NO_HOST = "Server nicht gefunden. Besteht eine Internetverbindung?"
+const val NO_TLS = "Keine sichere Verbindung zum Server möglich."
+const val NO_WAY = "Keine Verbindung zum Server. LiChat versucht es gleich wieder."
+/** The sentences that are over once the connection is back – the chat's red line goes with them (Michelle, Nachtest bdac9a1). */
+val UNREACHABLE = setOf(NO_HOST, NO_TLS, NO_WAY)
 
 private const val WELCOME: Byte = 'W'.code.toByte()
 private const val MLS: Byte = 'M'.code.toByte()

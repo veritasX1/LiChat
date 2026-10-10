@@ -32,6 +32,7 @@ import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
 import io.github.veritasx1.lichat.core.LiChatException
 import io.github.veritasx1.lichat.core.Pictures
+import io.github.veritasx1.lichat.core.UNREACHABLE
 import io.github.veritasx1.lichat.ui.AttachmentActions
 import io.github.veritasx1.lichat.ui.AttachmentSheet
 import io.github.veritasx1.lichat.ui.ChatList
@@ -196,6 +197,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     val version by Hub.changes.collectAsState()
     val serverProblem by Hub.problem.collectAsState()
     var problem by remember { mutableStateOf<String?>(null) }
+    val connected by Hub.connected.collectAsState()
+    // Back online: a „no connection“ line is out of date – what failed is sent again by the service (8e7a493b, 72c8a716).
+    LaunchedEffect(connected) { if (connected && problem in UNREACHABLE) problem = null }
     var busy by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf<Page>(Page.List) }
     val seen = remember { mutableStateMapOf<String, Int>() }
