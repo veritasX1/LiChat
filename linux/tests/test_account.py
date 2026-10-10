@@ -717,6 +717,51 @@ class Ticks(Base):
         self.assertEqual(anna.tick(cid, mine)[0], "gesendet")
         self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Kommt das an?"])
 
+    def test_resend_failed_when_the_connection_is_back(self):
+        """Like Android 72c8a716: what failed goes out by itself, oldest first – a text and an attachment, nothing older
+        than a day."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        real, token = anna.server.call, anna.server.token
+        anna.server.call = lambda *a, **k: (_ for _ in ()).throw(LiChatError("Server nicht erreichbar"))
+        for text in ("Uralt", "Erstens"):
+            with self.assertRaises(LiChatError):
+                anna.send(cid, text)
+        anna.chats[cid]["messages"][-2]["at"] -= account_module.RESEND_S + 60
+        anna.server.call, anna.server.token = real, "falsch"
+        with self.assertRaises(LiChatError):
+            anna.send_attachment(cid, b"Kohle", "Liste.txt", "text/plain", "datei", caption="Zweitens")
+        anna.server.token = token
+        self.assertEqual(anna.resend_failed(), 2)
+        self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Erstens", "Datei: Liste.txt: Zweitens"])
+        self.assertEqual([anna.tick(cid, m)[0] for m in anna.chats[cid]["messages"][-3:]], ["fehler", "gesendet", "gesendet"])
+        self.assertEqual(anna.resend_failed(), 0)
+
+    def test_text_goes_while_a_photo_goes_up(self):
+        """Olaf 10.10.: a picture going up holds up nothing – a text sent meanwhile is there at once and arrives first."""
+        import threading
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        real, going, go_on = anna.server.raw, threading.Event(), threading.Event()
+
+        def slow(*a, **k):
+            going.set()
+            go_on.wait(10)
+            return real(*a, **k)
+        anna.server.raw = slow
+        upload = threading.Thread(target=anna.send_attachment, args=(cid, os.urandom(50_000), "Plan.pdf", "application/pdf", "datei"))
+        upload.start()
+        self.assertTrue(going.wait(10))
+        shown = []
+        anna.send(cid, "Schon unterwegs", changed=lambda: shown.append(anna.chats[cid]["messages"][-1]["text"]))
+        self.assertEqual(shown, ["Schon unterwegs"])
+        self.assertEqual([n["text"] for n in bernd.fetch() if "text" in n], ["Schon unterwegs"])
+        go_on.set()
+        upload.join(10)
+        self.assertEqual([n for n in bernd.fetch() if n.get("anhang")][0]["anhang"]["name"], "Plan.pdf")
+
 
 class RepliesAndReactions(Base):
     """Olaf 09.10.: swipe to answer, long press for an emoji – end to end."""

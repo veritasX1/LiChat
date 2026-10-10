@@ -47,12 +47,22 @@ import io.github.veritasx1.lichat.ui.Palette
 import io.github.veritasx1.lichat.ui.SettingsScreen
 import io.github.veritasx1.lichat.ui.SetupScreen
 import java.util.concurrent.Executors
+import org.json.JSONObject
 
 /** Everything the screens send to the server runs here, one after the other (the service's loop only receives). */
 private val worker = Executors.newSingleThreadExecutor()
 private val main = Handler(Looper.getMainLooper())
 
 fun <T> work(job: () -> T, done: (T?, String?) -> Unit) = worker.execute {
+    val result = runCatching(job)
+    val error = result.exceptionOrNull()?.let { (it as? LiChatException)?.message ?: "Fehler: ${it.message}" }
+    main.post { done(result.getOrNull(), error) }
+}
+
+/** Attachments go up here, one after the other – beside the texts: a photo going up never holds up a message (Olaf 10.10.). */
+private val uploader = Executors.newSingleThreadExecutor()
+
+fun <T> uploadWork(job: () -> T, done: (T?, String?) -> Unit) = uploader.execute {
     val result = runCatching(job)
     val error = result.exceptionOrNull()?.let { (it as? LiChatException)?.message ?: "Fehler: ${it.message}" }
     main.post { done(result.getOrNull(), error) }
@@ -265,7 +275,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         val acc = account ?: return
         val cid = chatId() ?: return
         if (uri == null) return
-        work({ media.send(acc, cid, uri, asFile) }) { _, error -> problem = error; Hub.changed() }
+        uploadWork({ media.send(acc, cid, uri, asFile) }) { _, error -> problem = error; Hub.changed() }
     }
     // A photo lies above the input first (2fcc3eef, like Messages): text to it, options by a tap; videos go at once.
     val staged = remember { androidx.compose.runtime.mutableStateListOf<io.github.veritasx1.lichat.ui.Staged>() }
@@ -293,7 +303,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         val cid = chatId() ?: return
         val items = staged.toList()
         staged.clear()
-        work({
+        uploadWork({
             // Two or more ordinary photos form an album (5749ebd0): all bubbles at once, then up one after the other.
             val plain = items.filter { !it.once && !it.secret }
             val album = if (plain.size >= 2) acc.newAlbum(plain.size) else null
@@ -393,7 +403,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             val voice = media.stopRecording(send)
             val acc = account
             val cid = chatId()
-            if (voice != null && acc != null && cid != null) work({
+            if (voice != null && acc != null && cid != null) uploadWork({
                 acc.sendAttachment(cid, voice.first, "Sprachnachricht.m4a", "audio/mp4", "sprache", voice.second, wave = voice.third)
             }) { _, error -> problem = error; Hub.changed() }
         },
@@ -404,7 +414,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 if (info.optString("art") == "sprache" && playing == info.optString("id")) {
                     if (media.isPlaying) { media.pause(); paused = true } else { media.resume(); paused = false }
                 }
-                else work({ acc.openAttachment(info) }) { bytes, error ->
+                else waitWork({ acc.openAttachment(info) }) { bytes, error ->     // a download holds up nothing either
                     problem = error
                     if (bytes != null) when (info.optString("art")) {
                         "bild" -> photo = bytes
@@ -426,7 +436,11 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         retry = { mid ->
             val acc = account
             val cid = chatId()
-            if (acc != null && cid != null) work({ acc.retry(cid, mid) }) { _, error -> problem = error; Hub.changed() }
+            if (acc != null && cid != null) {
+                val job = { acc.retry(cid, mid) }
+                val done = { _: JSONObject?, error: String? -> problem = error; Hub.changed() }
+                if (acc.findMessage(cid, mid)?.has("anhang") == true) uploadWork(job, done) else work(job, done)
+            }
         },
         typing = {
             val acc = account

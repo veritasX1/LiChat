@@ -147,6 +147,8 @@ def main():
     shot(window, "02b-gewaehlt.png")   # the chosen row keeps the grey circle with „B“ (Michelle 73bbcdfc)
     window.input.set_text("Ja, gern! Ich bringe Kartoffelsalat mit.")
     window.send()
+    # Olaf 10.10.: straight on writing – the field is empty and open at once, nothing waits for the server
+    assert window.input.get_text() == "" and window.input.get_sensitive()
     until(lambda: len(anna.chats[cid]["messages"]) == 2)
     assert [n["text"] for n in bernd.fetch() if "text" in n] == ["Ja, gern! Ich bringe Kartoffelsalat mit."]
     bernd.send(cid, "Super, bis dann 🙂")

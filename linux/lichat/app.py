@@ -110,23 +110,36 @@ class Listener:
     """The standing connection: one waiting fetch after the other. After an error it tries again, waiting longer each
     time (2 s … 60 s) – no network, server restarting."""
 
-    def __init__(self, account, on_news, on_error):
-        self.account, self.on_news, self.on_error = account, on_news, on_error
+    def __init__(self, account, on_news, on_error, on_resent=None):
+        self.account, self.on_news, self.on_error, self.on_resent = account, on_news, on_error, on_resent
         self.running = True
         threading.Thread(target=self.run, daemon=True).start()
 
     def run(self):
-        pause = 2
+        pause, connected = 2, False
         while self.running:
             try:
                 news = self.account.fetch(wait=WAIT_SECONDS)
             except (LiChatError, ValueError, OSError) as error:
+                connected = False
                 GLib.idle_add(self.on_error, str(error))
                 time.sleep(pause)
                 pause = min(pause * 2, 60)
                 continue
             pause = 2
+            if not connected:
+                connected = True
+                # What failed while the server was out of reach goes now – beside the fetch, never holding it up (Android 72c8a716).
+                threading.Thread(target=self.resend, daemon=True).start()
             GLib.idle_add(self.on_news, news)
+
+    def resend(self):
+        try:
+            sent = self.account.resend_failed()
+        except (LiChatError, ValueError, OSError):
+            sent = 0
+        if sent and self.on_resent:
+            GLib.idle_add(self.on_resent)
 
 
 def autostart(on):
@@ -248,7 +261,8 @@ def typing_label(names):
 
 
 class Worker:
-    """One thread for everything that talks to the server or changes the account."""
+    """One thread for a kind of work that talks to the server or changes the account – texts and attachments each have
+    their own (a photo going up must never hold up a text, Olaf 10.10.)."""
 
     def __init__(self):
         self.jobs = queue.Queue()
@@ -288,6 +302,7 @@ class Window(Adw.ApplicationWindow):
         self.key_store = key_store
         self.separate = separate      # LICHAT_ORDNER: a second LiChat – no autostart entry of its own
         self.worker = Worker()
+        self.uploader = Worker()          # attachments: up one after the other, beside the texts
         self.account = account
         self.current = None        # the chosen conversation (hex id)
         self.composing = False     # „Neue Nachricht“: the An: line instead of a transcript
@@ -841,7 +856,7 @@ class Window(Adw.ApplicationWindow):
             self.add_shortcuts()
         self.fill_list()
         self.show_conversation()
-        self.listener = Listener(self.account, self.fetched, self.show_notice)
+        self.listener = Listener(self.account, self.fetched, self.show_notice, self.resent)
         if not self.settings["erklaert"]:
             GLib.idle_add(self.explain_background)
 
@@ -1599,20 +1614,30 @@ class Window(Adw.ApplicationWindow):
             self.end_reply()
 
             def job():
-                account.send(cid, text, reply_to=reply)
+                account.send(cid, text, reply_to=reply, changed=self.upload_moved)
                 return cid
 
-        self.input.set_sensitive(False)
+        if not self.composing:
+            # Straight on writing (Olaf 10.10.): the field is empty at once, the bubble comes with „wartet“ – nothing
+            # locks, not even a photo going up beside it.
+            self.input.set_text("")
+            self.input.grab_focus()
+        else:
+            self.input.set_sensitive(False)     # a new chat: its first message decides where the next ones go
+
+        composing = self.composing
 
         def done(cid, error):
+            self.show_notice(error)
+            if not composing:
+                # The field was emptied at sending – what is typed there now is the next message, it stays. A failure
+                # keeps the bubble with „Nicht gesendet“ under it: a click sends it again, the connection coming back too.
+                self.fill_list()
+                self.show_conversation()
+                return
             self.input.set_sensitive(True)
             self.input.grab_focus()
-            self.show_notice(error)
             if error:
-                if not self.composing:
-                    # The message is kept with „Nicht gesendet“ under it – a click there sends it again.
-                    self.input.set_text("")
-                    self.show_conversation()
                 return
             self.input.set_text("")
             self.composing = False
@@ -1621,6 +1646,11 @@ class Window(Adw.ApplicationWindow):
             self.show_conversation()
 
         self.worker.do(job, done)
+
+    def resent(self):
+        self.fill_list()
+        self.show_conversation()
+        return False
 
     def fetched(self, news):
         self.show_notice("")
@@ -1809,7 +1839,9 @@ class Window(Adw.ApplicationWindow):
             self.show_notice(error)
             self.show_conversation()
 
-        self.worker.do(lambda: account.retry(cid, mid, changed=self.upload_moved), done)
+        message = next((m for m in account.chats[cid]["messages"] if m.get("mid") == mid), {})
+        busy = self.uploader if message.get("anhang") else self.worker
+        busy.do(lambda: account.retry(cid, mid, changed=self.upload_moved), done)
 
     def upload_moved(self):
         """From the worker thread while an attachment goes up: redraw the conversation once, not for every piece."""
@@ -2169,7 +2201,7 @@ class Window(Adw.ApplicationWindow):
                 self.last_opened = path
                 Gtk.FileLauncher.new(Gio.File.new_for_path(str(path))).launch(self, None, None)
 
-        self.worker.do(job, done)
+        Worker.wait(job, done)        # a download on its own – it holds up neither texts nor uploads
 
     def choose_attachment(self):
         if self.current is None and not self.composing:
@@ -2244,7 +2276,7 @@ class Window(Adw.ApplicationWindow):
             self.fill_list()
             self.show_conversation()
 
-        self.worker.do(job, done)
+        self.uploader.do(job, done)
 
     def send_attachment(self, path, once=None, secret=False, caption=""):
         """The kind from the file's type: photo, video, audio (as a voice message) or any other file. A photo first asks
@@ -2271,7 +2303,7 @@ class Window(Adw.ApplicationWindow):
             self.fill_list()
             self.show_conversation()
 
-        self.worker.do(job, done)
+        self.uploader.do(job, done)
 
     def photo_options(self, path):
         dialog = Adw.AlertDialog(heading="Foto senden", body=path.name)
