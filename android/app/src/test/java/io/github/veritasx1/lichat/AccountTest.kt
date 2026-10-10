@@ -520,6 +520,30 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Datei: notiz.txt: Einkaufsliste für Samstag"), anna.fetch().filter { it.attachment != null }.map { it.text })
     }
 
+    /** Card 1a682a79: a voice message's real wave goes along (50 bars 0…31), a forged one is dropped, heard is remembered. */
+    @Test
+    fun voiceWaveAndHeard() {
+        val levels = (0 until 230).map { if (it in 80..120) 30000 else 900 }
+        val bars = io.github.veritasx1.lichat.Media.wave(levels)
+        assertEquals(50, bars.size)
+        assertTrue(bars.all { it in 1..31 })
+        assertEquals(31, bars.max())
+        assertTrue(bars.first() < 10)
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.sendAttachment(cid, byteArrayOf(1, 2, 3), "Sprachnachricht.m4a", "audio/mp4", "sprache", 4.2, wave = bars)
+        val got = bernd.fetch().single { it.attachment != null }.attachment!!
+        assertEquals(bars, got.getJSONArray("welle").let { w -> (0 until w.length()).map { w.getInt(it) } })
+        bernd.markListened(cid, got.getString("id"))
+        assertTrue(bernd.chat(cid).getJSONArray("messages").let { a -> a.getJSONObject(a.length() - 1) }.getBoolean("angehoert"))
+        // a photo cannot carry a wave, and a voice message only numbers 0…31
+        anna.sendAttachment(cid, byteArrayOf(4), "x.m4a", "audio/mp4", "sprache", 1.0, wave = List(300) { 99 })
+        val clipped = bernd.fetch().single { it.attachment != null }.attachment!!.getJSONArray("welle")
+        assertEquals(io.github.veritasx1.lichat.core.WAVE_MAX, clipped.length())
+        assertTrue((0 until clipped.length()).all { clipped.getInt(it) == 31 })
+    }
+
     /** Olaf 10.10.: invite by QR code – the code brings server and invitation, the new person only chooses a name and lands
      *  in the conversation with whoever invited them. Both link forms are read. */
     @Test

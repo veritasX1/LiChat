@@ -347,6 +347,21 @@ class Groups(Base):
         erna.send(erna.chat_with("anna"), "Da bin ich!")
         self.assertIn("Da bin ich!", [n.get("text") for n in anna.fetch()])
 
+    def test_voice_wave_and_heard(self):
+        """1a682a79: a voice message's wave arrives as it was sent; forged values are dropped; heard is remembered."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send_attachment(cid, b"\x00" * 10, "Sprachnachricht.bin", "application/octet-stream", "datei")
+        info = dict(anna.chats[cid]["messages"][-1]["anhang"], art="sprache")
+        anna._deliver(cid, anna.chats[cid]["messages"][-1], {"t": "anhang", "at": 1, "mid": "a" * 16, **info, "welle": [3, 31, 12]})
+        anna._deliver(cid, anna.chats[cid]["messages"][-1], {"t": "anhang", "at": 2, "mid": "b" * 16, **info, "welle": [3, 99]})
+        got = [m for m in bernd.fetch() if m.get("anhang")]
+        self.assertEqual([m["anhang"].get("welle") for m in got], [None, [3, 31, 12], None])
+        bernd.mark_listened(cid, info["id"])
+        self.assertTrue(all(m.get("angehoert") for m in bernd.chats[cid]["messages"] if m.get("anhang")))
+        self.assertFalse(any(m.get("angehoert") for m in anna.chats[cid]["messages"]), "nur bei mir, niemandem gesagt")
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

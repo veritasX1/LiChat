@@ -101,3 +101,4 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-voice { padding: 4px 12px 4px 4px; }
 .lichat-voice-button { min-width: 28px; min-height: 28px; padding: 0; font-size: 15px; color: inherit; }
 .lichat-voice-time { font-size: 13px; font-feature-settings: "tnum"; }
+.lichat-unheard { font-size: 9px; color: @accent_color; margin-left: -2px; }   /* never heard (1a682a79) */

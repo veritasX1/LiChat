@@ -68,6 +68,7 @@ const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+const val WAVE_MAX = 100            // bars in a voice message's wave at most (1a682a79)
 const val ALBUM_MAX = 10            // photos picked together at most (5749ebd0, like Messages)
 const val OUTBOX = "ausgang-"       // an attachment's local id until it is up (cf647f61)
 const val RESEND_S = 24 * 3600L     // „Nicht gesendet“ goes out by itself when the connection is back – for a day (72c8a716)
@@ -892,6 +893,15 @@ class Account(val folder: File, private val key: ByteArray) {
         return name
     }
 
+    /** A voice message heard (1a682a79): Signal's dot beside its time goes. Only here, not told to anyone. */
+    fun markListened(cid: String, attachment: String) = synchronized(lock) {
+        val list = chat(cid).getJSONArray("messages")
+        for (k in 0 until list.length()) {
+            val m = list.getJSONObject(k)
+            if (m.optJSONObject("anhang")?.optString("id") == attachment && !m.optBoolean("angehoert")) { m.put("angehoert", true); save() }
+        }
+    }
+
     /** Who invited this account – set right after register, for opening the conversation with them (not stored). */
     @Volatile var invitedBy: String? = null
 
@@ -1271,7 +1281,7 @@ class Account(val folder: File, private val key: ByteArray) {
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
                        preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, caption: String = "",
-                       album: JSONObject? = null, defer: Boolean = false, changed: () -> Unit = onChange): JSONObject {
+                       album: JSONObject? = null, defer: Boolean = false, wave: List<Int>? = null, changed: () -> Unit = onChange): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
         if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1290,6 +1300,8 @@ class Account(val folder: File, private val key: ByteArray) {
         val info = JSONObject().put("id", local).put("schluessel", b64(key)).put("sha256", sha256(sealed)).put("name", name.take(200))
             .put("mime", mime.take(100)).put("groesse", data.size).put("art", kind)
         durationS?.let { info.put("dauer", Math.round(it * 10) / 10.0) }
+        // A voice message's real wave (1a682a79, like Signal): ~50 bars 0…31 measured while recording.
+        if (kind == "sprache" && !wave.isNullOrEmpty()) info.put("welle", JSONArray(wave.take(WAVE_MAX).map { it.coerceIn(0, 31) }))
         if (once) info.put("einmal", true)            // no preview, nothing kept – the sender cannot open it either
         else preview?.let { info.put("vorschau", b64(it)) }
         if (secret) info.put("geheim", true)
@@ -1835,6 +1847,9 @@ class Account(val folder: File, private val key: ByteArray) {
                     "anhang" -> {
                         val info = JSONObject()
                         for (k in listOf("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau")) if (data.has(k)) info.put(k, data.get(k))
+                        // the wave only as it should be: a voice message, at most WAVE_MAX numbers 0…31
+                        data.optJSONArray("welle")?.takeIf { w -> data.optString("art") == "sprache" && w.length() in 1..WAVE_MAX &&
+                            (0 until w.length()).all { w.opt(it) is Int && w.getInt(it) in 0..31 } }?.let { info.put("welle", it) }
                         val good = Regex("[0-9a-f]{32}").matches(info.optString("id")) &&
                             runCatching { unb64(info.optString("schluessel")).size == 32 }.getOrDefault(false) &&
                             Regex("[0-9a-f]{64}").matches(info.optString("sha256")) && info.optString("art") in KINDS &&
