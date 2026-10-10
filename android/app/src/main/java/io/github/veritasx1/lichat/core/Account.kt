@@ -85,7 +85,7 @@ fun String.unhex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteA
 
 /** What arrived for the user. [received]: when the server took it (Michelle Z5: server_ms). */
 data class News(val chat: String?, val kind: Kind, val from: String = "", val text: String = "", val at: Long = 0, val received: Double = 0.0,
-                val attachment: JSONObject? = null, val mention: Boolean = false) {
+                val attachment: JSONObject? = null, val mention: Boolean = false, val silent: Boolean = false) {
     enum class Kind { Text, Joined, Picture, Removed, System, Problem, Receipt, Reaction, Typing, Edited, Synced, Settings }
 }
 
@@ -1111,14 +1111,20 @@ class Account(val folder: File, private val key: ByteArray) {
 
     fun groupPicture(cid: String): ByteArray? = (chats.optJSONObject(cid)?.opt("bild") as? String)?.takeIf { it.isNotEmpty() }?.let { unb64(it) }
 
-    /** [replyTo]: the mid of the message this answers (Olaf 09.10.: swipe to answer) – sender and a short quote travel along. */
-    fun send(cid: String, text: String, replyTo: String? = null): JSONObject {
+    /** [replyTo]: the mid of the message this answers (Olaf 09.10.: swipe to answer) – sender and a short quote travel along.
+     *  [silent] (f021, like Telegram/iOS „Lautlos senden“): the others get it without sound or vibration.
+     *  [later] (f020, „Später senden“): kept here as „geplant“ and sent by [sendDue] at that time (unix seconds). */
+    fun send(cid: String, text: String, replyTo: String? = null, silent: Boolean = false, later: Long? = null): JSONObject {
         val clean = text.trim()
         if (clean.isEmpty()) throw LiChatException("Leere Nachricht")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
         val at = System.currentTimeMillis() / 1000
-        val message = JSONObject().put("from", username).put("text", clean).put("at", at).put("mid", newMid()).put("status", "wartet")
+        if (later != null && later <= at) throw LiChatException("Der Zeitpunkt ist schon vorbei")
+        val message = JSONObject().put("from", username).put("text", clean).put("at", later ?: at).put("mid", newMid())
+            .put("status", if (later != null) "geplant" else "wartet")
+        if (silent) message.put("lautlos", true)
         val content = JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid"))
+        if (silent) content.put("lautlos", true)
         replyTo?.let { mid -> findMessage(cid, mid) }?.let { quoted ->
             val answer = JSONObject().put("mid", quoted.getString("mid")).put("from", quoted.optString("from"))
                 .put("text", describe(quoted).take(120))
@@ -1127,7 +1133,35 @@ class Account(val folder: File, private val key: ByteArray) {
         }
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
         onChange()          // the bubble is there at once, before it goes out (Olaf 10.10.)
+        if (later != null) return message
         return deliver(cid, message, content)
+    }
+
+    /** f020: what was planned and is due now goes out, oldest first – with the time it really leaves. */
+    fun sendDue(nowS: Long = System.currentTimeMillis() / 1000, changed: () -> Unit = onChange): Int {
+        val due = synchronized(lock) {
+            visibleChats().filter { chat(it).optString("removed").isEmpty() }.flatMap { cid ->
+                val list = chat(cid).getJSONArray("messages")
+                (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("status") == "geplant" && !it.has("geloescht") && it.optLong("at") <= nowS }.map { cid to it }
+            }.sortedBy { it.second.optLong("at") }.onEach { (_, m) -> m.put("status", "fehler").put("at", nowS) }.also { if (it.isNotEmpty()) save() }
+        }
+        var sent = 0
+        for ((cid, message) in due) {
+            try { retry(cid, message.getString("mid"), changed); sent++ } catch (_: LiChatException) { }   // stays „Nicht gesendet“, resent later
+        }
+        return sent
+    }
+
+    /** f020: the planned message now instead of later. */
+    fun sendPlannedNow(cid: String, mid: String): JSONObject {
+        synchronized(lock) { findMessage(cid, mid)?.takeIf { it.optString("status") == "geplant" }?.put("status", "fehler")?.put("at", System.currentTimeMillis() / 1000); save() }
+        return retry(cid, mid)
+    }
+
+    /** The next planned time anywhere, for a wake-up – or null. */
+    fun nextPlanned(): Long? = synchronized(lock) {
+        visibleChats().flatMap { cid -> val list = chat(cid).getJSONArray("messages")
+            (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("status") == "geplant" && !it.has("geloescht") }.map { it.optLong("at") } }.minOrNull()
     }
 
     fun findMessage(cid: String, mid: String): JSONObject? {
@@ -1237,6 +1271,8 @@ class Account(val folder: File, private val key: ByteArray) {
             }
         } ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
+        if (message.optBoolean("lautlos")) content.put("lautlos", true)
+        message.optJSONObject("antwort")?.let { content.put("antwort", it) }
         message.put("status", "wartet")
         return deliver(cid, message, content)
     }
@@ -1332,7 +1368,7 @@ class Account(val folder: File, private val key: ByteArray) {
     /** (state, time) of one of my messages: wartet | fehler | gesendet | zugestellt | gelesen – in a group once everyone has. */
     fun tick(cid: String, message: JSONObject): Pair<String, Long> {
         val state = message.optString("status", "gesendet")
-        if (state == "wartet" || state == "fehler") return state to message.optLong("at")
+        if (state == "wartet" || state == "fehler" || state == "geplant") return state to message.optLong("at")
         val others = others(cid)
         val delivered = message.optJSONObject("zugestellt") ?: JSONObject()
         val read = message.optJSONObject("gelesen") ?: JSONObject()
@@ -1993,7 +2029,9 @@ class Account(val folder: File, private val key: ByteArray) {
                         // „@ich“ / „@alle“ in a group: a notification even when the chat is muted (iOS)
                         val group = chat.getJSONObject("roster").length() > 2 || chat.optString("title").isNotEmpty()
                         val mention = group && mentionsMe(text)
-                        return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at, mention = mention))
+                        if (data.optBoolean("lautlos")) message.put("lautlos", true)
+                        return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at, mention = mention,
+                            silent = data.optBoolean("lautlos")))
                     }
                 }
                 return emptyList()

@@ -788,6 +788,33 @@ print([m["album"]["nr"] for m in a.chats["$cid"]["messages"] if m.get("album")])
         assertEquals(1, bernd.fetch().count { it.attachment != null })
     }
 
+    /** f021: „lautlos“ arrives as such; f020: planned stays here until due, then goes – a deleted one never, „jetzt“ at once. */
+    @Test
+    fun silentAndPlanned() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.send(cid, "Psst", silent = true)
+        val got = bernd.fetch().filter { it.kind == News.Kind.Text }
+        assertEquals(listOf("Psst" to true), got.map { it.text to it.silent })
+        val now = System.currentTimeMillis() / 1000
+        anna.send(cid, "Guten Morgen!", later = now + 3600)
+        val gone = anna.send(cid, "Doch nicht", later = now + 3600)
+        val soon = anna.send(cid, "Gleich", later = now + 7200)
+        anna.deleteMessage(cid, gone.getString("mid"))
+        assertEquals(now + 3600, anna.nextPlanned())
+        assertEquals("geplant", anna.tick(cid, anna.findMessage(cid, soon.getString("mid"))!!).first)
+        assertEquals(0, anna.sendDue(now + 60))
+        assertTrue(bernd.fetch().none { it.kind == News.Kind.Text })
+        assertEquals(1, anna.sendDue(now + 3601))
+        assertEquals(listOf("Guten Morgen!"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        anna.sendPlannedNow(cid, soon.getString("mid"))
+        assertEquals(listOf("Gleich"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        assertEquals(0, anna.sendDue(now + 99_999))
+        assertEquals(null, anna.nextPlanned())
+        try { anna.send(cid, "Zu spät", later = now - 10); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+    }
+
     /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
     @Test
     fun unreachablePlainSentence() {

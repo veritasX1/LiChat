@@ -1106,17 +1106,23 @@ class Account:
     def _payload(data):
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send(self, cid, text, reply_to=None, changed=None):
+    def send(self, cid, text, reply_to=None, changed=None, silent=False, later=None):
         """[reply_to]: the mid of the message this answers – its sender and a short quote travel along. [changed]: called
-        once the bubble is there, before it goes out (it shows at once, even while the server is slow)."""
+        once the bubble is there, before it goes out (it shows at once, even while the server is slow). [silent] (f021):
+        the others get it without sound. [later] (f020): kept here as „geplant“, send_due sends it then (unix seconds)."""
         text = text.strip()
         if not text:
             raise LiChatError("Leere Nachricht")
         if self.chats[cid].get("removed"):
             raise LiChatError(f"{self.chats[cid]['removed']} hat dich aus dem Gespräch entfernt")
         at = int(time.time())
-        message = {"from": self.username, "text": text, "at": at, "mid": secrets.token_hex(8), "status": "wartet"}
+        if later is not None and later <= at:
+            raise LiChatError("Der Zeitpunkt ist schon vorbei")
+        message = {"from": self.username, "text": text, "at": later or at, "mid": secrets.token_hex(8),
+                   "status": "geplant" if later is not None else "wartet"}
         payload = {"t": "text", "text": text, "at": at, "mid": message["mid"]}
+        if silent:
+            message["lautlos"] = payload["lautlos"] = True
         if reply_to:
             quoted = next((m for m in self.chats[cid]["messages"] if m.get("mid") == reply_to), None)
             if quoted:
@@ -1127,7 +1133,37 @@ class Account:
             self.save()
         if changed:
             changed()
+        if later is not None:
+            return message
         return self._deliver(cid, message, payload)
+
+    def send_due(self, now=None, changed=None):
+        """f020: what was planned and is due now goes out, oldest first – with the time it really leaves."""
+        now = int(time.time()) if now is None else now
+        with self.lock:
+            due = sorted(((cid, m) for cid, chat in self.chats.items() if not chat.get("removed")
+                          for m in chat["messages"] if m.get("status") == "geplant" and not m.get("geloescht") and m.get("at", 0) <= now),
+                         key=lambda pair: pair[1]["at"])
+            for _cid, m in due:
+                m["status"], m["at"] = "fehler", now        # if it fails now it is „Nicht gesendet“ and resent later
+            if due:
+                self.save()
+        sent = 0
+        for cid, message in due:
+            try:
+                self.retry(cid, message["mid"], changed)
+                sent += 1
+            except LiChatError:
+                pass
+        return sent
+
+    def send_planned_now(self, cid, mid):
+        with self.lock:
+            message = next((m for m in self.chats[cid]["messages"] if m.get("mid") == mid and m.get("status") == "geplant"), None)
+            if message is not None:
+                message["status"], message["at"] = "fehler", int(time.time())
+                self.save()
+        return self.retry(cid, mid)
 
     def react(self, cid, mid, emoji):
         """My reaction on a message (one per person, like iOS); "" takes it back."""
@@ -1255,6 +1291,10 @@ class Account:
             payload["text"] = message["text"]
         if message.get("anhang") and message.get("album"):
             payload["album"] = message["album"]
+        if message.get("lautlos"):
+            payload["lautlos"] = True
+        if message.get("antwort"):
+            payload["antwort"] = message["antwort"]
         message["status"] = "wartet"
         return self._deliver(cid, message, payload)
 
@@ -1537,7 +1577,7 @@ class Account:
         """(state, time) of one of my messages: wartet | fehler | gesendet | zugestellt | gelesen. In a group „zugestellt“ /
         „gelesen“ once everyone has it; „gelesen“ only while my own read receipts are on (mutual)."""
         state = message.get("status", "gesendet")
-        if state in ("wartet", "fehler"):
+        if state in ("wartet", "fehler", "geplant"):
             return state, message["at"]
         others = [u for u in self.chats[cid]["roster"] if u != self.username]
         delivered, read = message.get("zugestellt", {}), message.get("gelesen", {})
@@ -2192,6 +2232,8 @@ class Account:
             self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
+            if data.get("lautlos") is True:
+                message["lautlos"] = True       # f021: no sound for this one
             news = {"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}
             if (len(chat.get("roster", {})) > 2 or chat.get("title")) and self.mentions_me(cid, message["text"]):
                 news["mention"] = True      # „@ich“ or „@alle“: a notification even when the chat is muted (iOS)

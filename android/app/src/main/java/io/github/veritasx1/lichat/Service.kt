@@ -87,6 +87,7 @@ object Settings {
 
 object Notifications {
     const val MESSAGES = "nachrichten"
+    const val QUIET = "nachrichten-lautlos"     // f021: sent „lautlos“ – shown, without sound or vibration
     const val CONNECTION = "verbindung"
     const val SERVICE_ID = 1
 
@@ -94,6 +95,11 @@ object Notifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(MESSAGES, "Nachrichten", NotificationManager.IMPORTANCE_HIGH).apply {
             description = "Neue Nachrichten in deinen Gesprächen"
+        })
+        manager.createNotificationChannel(NotificationChannel(QUIET, "Lautlos gesendete Nachrichten", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "Nachrichten, die jemand ausdrücklich lautlos geschickt hat – ohne Ton und Vibration"
+            setSound(null, null)
+            enableVibration(false)
         })
         manager.createNotificationChannel(NotificationChannel(CONNECTION, "Verbindung", NotificationManager.IMPORTANCE_MIN).apply {
             description = "Zeigt, dass LiChat verbunden ist. Darf ausgeblendet werden."
@@ -125,7 +131,7 @@ object Notifications {
         val shown = io.github.veritasx1.lichat.core.previewText(news.text)      // no signs, a spoiler stays covered (f009)
         val text = if (preview) (if (news.mention) "hat dich erwähnt: $shown" else shown) else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
         val list = synchronized(lines) { lines.getOrPut(chat) { mutableListOf() }.also { it.add(Triple(if (preview) who else "", text, System.currentTimeMillis())); while (it.size > 6) it.removeAt(0) }.toList() }
-        val builder = Notification.Builder(context, MESSAGES)
+        val builder = Notification.Builder(context, if (news.silent && !news.mention) QUIET else MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lichat)
             .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
@@ -182,8 +188,17 @@ class LiChatService : Service() {
             running = true
             watchNetwork()
             Thread(::listen, "LiChat-Verbindung").start()
+            Thread(::planned, "LiChat-Geplant").start()
         }
         return START_STICKY
+    }
+
+    /** f020: every 15 s whatever was planned and is due goes out („Später senden“) – beside the fetch, never holding it up. */
+    private fun planned() {
+        while (running) {
+            Hub.account?.let { account -> if (runCatching { account.sendDue() }.getOrDefault(0) > 0) Hub.changed() }
+            try { Thread.sleep(15_000) } catch (_: InterruptedException) { return }
+        }
     }
 
     /** A new network (Wi-Fi ↔ mobile): end the waiting fetch at once – the next one goes over the new way. */

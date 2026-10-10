@@ -297,6 +297,19 @@ def list_typing(label):
     return row
 
 
+def planned_when(at):
+    """f020: when a planned message goes – „heute 20:00“, „morgen 09:00“, „Mo., 13.10. 09:00“."""
+    then, today = time.localtime(at), time.localtime()
+    days = (time.mktime(time.strptime(time.strftime("%Y-%m-%d", then), "%Y-%m-%d"))
+            - time.mktime(time.strptime(time.strftime("%Y-%m-%d", today), "%Y-%m-%d"))) // 86400
+    clock = time.strftime("%H:%M", then)
+    if days == 0:
+        return f"heute {clock}"
+    if days == 1:
+        return f"morgen {clock}"
+    return f"{('Mo.', 'Di.', 'Mi.', 'Do.', 'Fr.', 'Sa.', 'So.')[then.tm_wday]}, {time.strftime('%d.%m.', then)} {clock}"
+
+
 def typing_label(names):
     """„Anna schreibt …“, „Anna und Bernd schreiben …“, „Anna, Bernd und Erna schreiben …“"""
     if not names:
@@ -347,6 +360,7 @@ class Composer(Gtk.Overlay):
             formats.append(label, f"format.{name}")
         self.view.insert_action_group("format", actions)
         menu.append_submenu("Format", formats)
+        self.extra = menu                 # the window adds „Lautlos senden“ / „Später senden“ (f020/f021)
         self.view.set_extra_menu(menu)
 
     def _changed(self, _buffer):
@@ -1009,6 +1023,19 @@ class Window(Adw.ApplicationWindow):
         self.fill_list()
         self.show_conversation()
         self.listener = Listener(self.account, self.fetched, self.show_notice, self.resent)
+        # f020/f021: right click in the input – „Lautlos senden“, „Später senden …“
+        sending = Gio.SimpleActionGroup()
+        for name, action in (("lautlos", lambda *_: self.send(silent=True)), ("spaeter", lambda *_: self.ask_later())):
+            item = Gio.SimpleAction.new(name, None)
+            item.connect("activate", action)
+            sending.add_action(item)
+        self.input.view.insert_action_group("senden", sending)
+        options = Gio.Menu()
+        options.append("Lautlos senden", "senden.lautlos")
+        options.append("Später senden …", "senden.spaeter")
+        self.input.extra.append_section(None, options)
+        if not getattr(self, "due_timer", 0):
+            self.due_timer = GLib.timeout_add_seconds(15, self.send_due)
         if not self.settings["erklaert"]:
             GLib.idle_add(self.explain_background)
 
@@ -1774,7 +1801,8 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------------------------------ server work
 
-    def send(self):
+    def send(self, silent=False, later=None):
+        """[silent] (f021): without sound for the others; [later] (f020): planned, sent at that time (unix seconds)."""
         text = self.input.get_text().strip()
         if not text:
             return
@@ -1802,7 +1830,7 @@ class Window(Adw.ApplicationWindow):
             self.end_reply()
 
             def job():
-                account.send(cid, text, reply_to=reply, changed=self.upload_moved)
+                account.send(cid, text, reply_to=reply, changed=self.upload_moved, silent=silent, later=later)
                 return cid
 
         if not self.composing:
@@ -1866,6 +1894,8 @@ class Window(Adw.ApplicationWindow):
         else:
             note.set_body("Neue Erwähnung" if item.get("mention") else "Neue Nachricht")
         note.set_default_action_and_target("app.oeffnen", GLib.Variant.new_string(item["chat"]))
+        if item.get("lautlos") and not item.get("mention"):
+            note.set_priority(Gio.NotificationPriority.LOW)        # f021: sent „lautlos“ – no sound
         self.last_notification = note
         self.get_application().send_notification(f"lichat-{item['chat']}", note)
 
@@ -1970,6 +2000,54 @@ class Window(Adw.ApplicationWindow):
         account = self.account
         self.worker.do(lambda: account.unsend(cid, mid), lambda _r, error: (self.show_notice(error), self.show_conversation(), self.fill_list()))
 
+    def send_due(self):
+        """f020: every 15 s whatever was planned and is due goes out."""
+        account = self.account
+        if account is not None:
+            self.worker.do(account.send_due, lambda sent, _e: sent and (self.fill_list(), self.show_conversation()))
+        return True
+
+    def later_choices(self, now=None):
+        """The quick times – in an hour, this evening at 20:00 (while it is still ahead), tomorrow 09:00 – like Android."""
+        now = time.time() if now is None else now
+        day = time.localtime(now)
+
+        def at(days, hour):
+            return int(time.mktime((day.tm_year, day.tm_mon, day.tm_mday + days, hour, 0, 0, 0, 0, -1)))
+        hour = int(now) + 3600
+        return [("In einer Stunde", hour)] + ([("Heute 20:00", at(0, 20))] if at(0, 20) > hour else []) + [("Morgen 09:00", at(1, 9))]
+
+    def ask_later(self):
+        """„Später senden …“: a quick time or one typed in („24.12. 18:00“)."""
+        if not self.input.get_text().strip() or self.composing or self.current is None:
+            return
+        dialog = Adw.AlertDialog(heading="Später senden", body="Wann soll die Nachricht rausgehen? Dein Rechner muss dann an sein.")
+        typed = Gtk.Entry(placeholder_text="oder eigene Zeit, z. B. 24.12. 18:00")
+        dialog.set_extra_child(typed)
+        choices = self.later_choices()
+        dialog.add_response("abbrechen", "Abbrechen")
+        for k, (label, _at) in enumerate(choices):
+            dialog.add_response(f"zeit{k}", label)
+        dialog.add_response("eigene", "Eigene Zeit")
+
+        def chosen(_dialog, answer):
+            if answer.startswith("zeit"):
+                self.send(later=choices[int(answer[4:])][1])
+            elif answer == "eigene":
+                found = re.fullmatch(r"\s*(\d{1,2})\.(\d{1,2})\.(\d{4})?\s+(\d{1,2})[:.](\d{2})\s*", typed.get_text())
+                if not found:
+                    self.show_notice("Zeit so eingeben: 24.12. 18:00")
+                    return
+                d, mo, y, h, mi = found.groups()
+                when = int(time.mktime((int(y or time.localtime().tm_year), int(mo), int(d), int(h), int(mi), 0, 0, 0, -1)))
+                if when <= time.time():
+                    self.show_notice("Der Zeitpunkt ist schon vorbei")
+                    return
+                self.send(later=when)
+        dialog.connect("response", chosen)
+        self.later_dialog = (dialog, typed, chosen)         # for the GUI test
+        dialog.present(self)
+
     def spoiler_shown(self, message):
         return message.get("mid") in getattr(self, "spoilers", set())
 
@@ -2051,6 +2129,13 @@ class Window(Adw.ApplicationWindow):
         """Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with
         Jaques). Not sent: a red line, a click sends it again."""
         state, at = self.account.tick(cid, message)
+        if state == "geplant":
+            # f020: planned – when it goes, and a click sends it now
+            now = Gtk.Button(label=f"Geplant: {planned_when(message['at'])} – jetzt senden", css_classes=["flat", "lichat-planned"],
+                             halign=Gtk.Align.END)
+            now.connect("clicked", lambda *_: self.worker.do(lambda: self.account.send_planned_now(cid, message["mid"]),
+                                                              lambda _r, error: (self.show_notice(error), self.show_conversation())))
+            return now
         if state == "fehler":
             retry = Gtk.Button(label="Nicht gesendet – klicken zum Wiederholen", css_classes=["flat", "lichat-failed"], halign=Gtk.Align.END)
             retry.connect("clicked", lambda *_: self.retry(cid, message["mid"]))
