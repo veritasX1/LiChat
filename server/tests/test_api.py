@@ -428,6 +428,21 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.app.store.purge(), 1)
         self.assertEqual(self.call("GET", "/v1/messages", token=bernd)[1]["messages"], [])
 
+    def test_server_tidies_up_by_itself(self):
+        """1.0: the 30 days hold without anyone running „purge“ – a request after an hour starts the tidy-up."""
+        _, anna = self.account("anna")
+        bernd_dev, bernd = self.account("bernd")
+        self.call("POST", "/v1/messages", {"to": [bernd_dev], "blob": b64(b"x")}, token=anna)
+        self.clock.now += KEEP_UNFETCHED + 60
+        self.call("GET", "/v1/health")
+        for _ in range(100):
+            if self.app.purging.acquire(blocking=False):
+                self.app.purging.release()
+                break
+            time.sleep(0.02)
+        count = self.app.store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_unknown_devices_are_reported(self):
         _, anna = self.account("anna")
         status, data = self.call("POST", "/v1/messages", {"to": ["0123456789abcdef"], "blob": b64(b"x")}, token=anna)
