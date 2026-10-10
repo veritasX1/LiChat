@@ -32,7 +32,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango  # 
 from .formatting import formatted, preview_text  # noqa: E402
 from .recorder import Recorder  # noqa: E402
 
-from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
+from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, emoji_only, find_links, short, unb64  # noqa: E402
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -1299,6 +1299,11 @@ class Window(Adw.ApplicationWindow):
                     caption.set_markup(bubble_markup(m["text"], self.spoiler_shown(m)))
                     caption.connect("activate-link", lambda label, uri, msg=m: self.bubble_link(label, uri, msg))
                     piece.append(caption)
+            elif 1 <= emoji_only(m["text"]) <= 3:
+                # f015, like Messages: one to three emoji alone – big, without a bubble
+                piece = Gtk.Label(label=m["text"].strip(), selectable=True, margin_top=2,
+                                  css_classes=["lichat-big-emoji", f"lichat-big-emoji-{emoji_only(m['text'])}"],
+                                  halign=Gtk.Align.END if mine else Gtk.Align.START)
             else:
                 piece = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],

@@ -10,11 +10,12 @@ fun previewText(text: String): String {
     val (plain, spans) = formatted(text)
     val hidden = spans.filter { it.kind == "spoiler" }.sortedByDescending { it.start }
     return hidden.fold(plain) { shown, s -> shown.substring(0, s.start) + "•••" + shown.substring(s.end) }
+        .trim().split(Regex("\\s+")).joinToString(" ")      // one line – quotes and lists too (Michelle)
 }
 
 data class FormatSpan(val start: Int, val end: Int, val kind: String, val target: String? = null)
 
-private val PAIRS = listOf("||" to "spoiler", "__" to "unter", "*" to "fett", "_" to "kursiv", "~" to "durch")
+private val PAIRS = listOf("||" to "spoiler", "__" to "unter", "**" to "fett", "*" to "fett", "_" to "kursiv", "~" to "durch")
 private val TITLED = Regex("""\[([^\[\]\n]+)]\((https?://[^\s()]+|mailto:[^\s()]+)\)""")
 private val BLOCK = Regex("""```\n?([\s\S]+?)\n?```""")
 private val INLINE = Regex("""`([^`\n]+)`""")

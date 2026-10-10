@@ -593,6 +593,14 @@ def main():
     shown = [w.get_text() for w in walk(window.list) if isinstance(w, Gtk.Label)]
     assert any("wer kommt? ••• Plan: hier" in t for t in shown), shown         # the list: no signs, the spoiler covered
 
+    # f015: one to three emoji alone – big, without a bubble
+    bernd.send(cid, "🎉🍻")
+    until(lambda: anna.chats[cid]["messages"][-1].get("text") == "🎉🍻")
+    settle(0.4)
+    big = window.bubble_of[anna.chats[cid]["messages"][-1]["mid"]]
+    big = big if isinstance(big, Gtk.Label) else [w for w in walk(big) if isinstance(w, Gtk.Label)][0]
+    assert big.has_css_class("lichat-big-emoji") and not big.has_css_class("lichat-bubble")
+
     # formatting while writing: Strg+B around the selection, „Spoiler“ from the menu with the cursor between the signs
     window.input.set_text("Kommt alle")
     window.input.buffer.select_range(window.input.buffer.get_start_iter(), window.input.buffer.get_iter_at_offset(5))

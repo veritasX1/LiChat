@@ -33,4 +33,12 @@ class FormatTest {
             assertEquals(case.getString("ein"), want, spans)
         }
     }
+
+    /** f015: the same as Ubuntu's test_emoji_only. */
+    @Test
+    fun emojiOnly() {
+        val cases = mapOf("😀" to 1, "😀 👍🏽" to 2, "👩‍👩‍👧‍👦🇫🇷1️⃣" to 3, "❤️" to 1, "😀😀😀😀" to 4, "hi 😀" to 0, "*😀*" to 0, "" to 0, "2" to 0)
+        for ((text, count) in cases) assertEquals(text, count, io.github.veritasx1.lichat.core.emojiOnly(text))
+        assertEquals("Zitat • a • b", io.github.veritasx1.lichat.core.previewText("> Zitat\n- a\n- b"))
+    }
 }
