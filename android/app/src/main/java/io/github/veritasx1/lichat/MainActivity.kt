@@ -393,11 +393,34 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         // the invitation page's „In LiChat öffnen“ (lichat://einladung?…) lands here with server and code
         (context as? android.app.Activity)?.intent?.data?.toString()?.let { Account.parseInviteUri(it) }?.let { scannedInvite = it }
     }
+    // f0-01/607207cd: „Kamera“ in the ⊕ menu – the system camera takes one photo into LiChat's cache; it lies above the
+    // input like a picked one (its place and camera data go when it is prepared for sending), the file goes at once.
+    val shotFile = remember { java.io.File(java.io.File(context.cacheDir, "kamera"), "foto.jpg") }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+        val bytes = if (taken) runCatching { shotFile.readBytes() }.getOrNull() else null
+        shotFile.delete()
+        if (bytes != null && bytes.isNotEmpty() && staged.size < io.github.veritasx1.lichat.core.ALBUM_MAX)
+            staged.add(io.github.veritasx1.lichat.ui.Staged(Uri.EMPTY, bytes, name = "Foto.jpg", mime = "image/jpeg"))
+    }
+    fun openCamera() {
+        shotFile.parentFile?.mkdirs()
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.dateien", shotFile)
+        runCatching { takePhoto.launch(uri) }.onFailure { problem = "Keine Kamera-App gefunden" }
+    }
+    var cameraForPhoto by remember { mutableStateOf(false) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) scanning = true else problem = "LiChat darf die Kamera nicht benutzen – den Code stattdessen eintippen."
+        if (granted) { if (cameraForPhoto) openCamera() else scanning = true }
+        else problem = if (cameraForPhoto) "LiChat darf die Kamera nicht benutzen – in den Android-Einstellungen erlauben."
+            else "LiChat darf die Kamera nicht benutzen – den Code stattdessen eintippen."
+    }
+    fun startCamera() {
+        cameraForPhoto = true
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) openCamera() else camera.launch(Manifest.permission.CAMERA)
     }
     fun startScan(purpose: String) {
         scanFor = purpose
+        cameraForPhoto = false
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED) scanning = true else camera.launch(Manifest.permission.CAMERA)
     }
@@ -664,7 +687,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         } }
         if (sheet) AttachmentSheet(
             onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
-            onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false })
+            onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false },
+            onCamera = { sheet = false; startCamera() },
+            onAudio = { sheet = false; actions.micStart?.invoke() })
         photo?.let { bytes -> BackHandler { photo = null }; PhotoViewer(bytes) { photo = null } }
         stagedOpen?.let { index -> staged.getOrNull(index)?.let { item ->
             if (markingUp && item.bytes != null) io.github.veritasx1.lichat.ui.MarkupEditor(item.bytes, onCancel = { markingUp = false }) { marked ->

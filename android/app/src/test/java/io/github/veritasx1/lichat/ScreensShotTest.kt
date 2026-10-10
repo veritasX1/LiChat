@@ -8,6 +8,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
@@ -537,10 +538,24 @@ httpd.serve_forever()
         compose.onNodeWithText("Antwort an", substring = true).assertExists()
     }
 
+    /** f0-01/30a02f81: the ⊕ menu like iOS 17 – round coloured symbols over the faded chat, a tap beside it closes it. */
     @Test
-    fun attachmentSheet() = shot("2d-anhang-blatt") {
-        ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
-        io.github.veritasx1.lichat.ui.AttachmentSheet({}, {}, {})
+    fun attachmentSheet() {
+        var open by androidx.compose.runtime.mutableStateOf(true)
+        var chosen = ""
+        shot("2d-anhang-blatt") {
+            ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}))
+            if (open) io.github.veritasx1.lichat.ui.AttachmentSheet({ chosen = "Fotos" }, { chosen = "Dateien" }, { open = false },
+                onCamera = { chosen = "Kamera" }, onAudio = { chosen = "Audio" })
+        }
+        for (label in listOf("Kamera", "Fotos", "Audio", "Dateien")) {
+            compose.onNodeWithText(label).performClick()
+            assertEquals(label, chosen)
+        }
+        compose.onNodeWithText("Abbrechen").assertDoesNotExist()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Anhang-Menü schließen")).performTouchInput { click(Offset(width - 20f, 200f)) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Kamera").assertDoesNotExist()
     }
 
     /** Card a7d9d987: long press shows the tapbacks and Antworten/Kopieren. */

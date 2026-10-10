@@ -1471,20 +1471,29 @@ fun PhotoViewer(bytes: ByteArray, onClose: () -> Unit) {
 
 /** The ⊕ choices, as an action sheet from the bottom with „Abbrechen“ (iOS 18). */
 @Composable
-fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Unit) {
+fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Unit, onCamera: (() -> Unit)? = null,
+                    onAudio: (() -> Unit)? = null) {
+    // f0-01/30a02f81, like Messages since iOS 17: the chat fades behind, above the input a list of round coloured symbols
+    // with their names, left-aligned – no „Abbrechen“, a tap beside it or „zurück“ closes it.
     val colors = palette()
-    Box(Modifier.fillMaxSize().background(Color(0x66000000)).clickable(onClick = onCancel), contentAlignment = Alignment.BottomCenter) {
-        Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(10.dp)) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
-                BasicText("Fotos und Videos", style = style(19f, 400, colors.blue).copy(textAlign = TextAlign.Center),
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onPhotos).padding(vertical = 17.dp))
-                Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
-                BasicText("Datei", style = style(19f, 400, colors.blue).copy(textAlign = TextAlign.Center),
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onFile).padding(vertical = 17.dp))
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    Box(Modifier.fillMaxSize().background(if (colors.dark) Color(0xCC000000) else Color(0xD9FFFFFF))
+        .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = onCancel)
+        .semantics { contentDescription = "Anhang-Menü schließen" }, contentAlignment = Alignment.BottomStart) {
+        Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(start = 20.dp, bottom = 76.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            @Composable
+            fun entry(label: String, glyph: Glyph, tint: Color, onClick: () -> Unit) {
+                Row(Modifier.clip(RoundedCornerShape(26.dp)).clickable(role = Role.Button, onClick = onClick).padding(end = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(44.dp).clip(CircleShape).background(tint), contentAlignment = Alignment.Center) { GlyphIcon(glyph, Color.White, 24.dp) }
+                    BasicText(label, style = style(19f, 400, colors.label), modifier = Modifier.padding(start = 14.dp))
+                }
             }
-            Spacer(Modifier.height(8.dp))
-            BasicText("Abbrechen", style = style(19f, 600, colors.blue).copy(textAlign = TextAlign.Center),
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(onClick = onCancel).padding(vertical = 17.dp))
+            onCamera?.let { entry("Kamera", Glyph.Camera, Color(0xFF8E8E93), it) }
+            entry("Fotos", Glyph.Photo, Color(0xFF0A84FF), onPhotos)
+            onAudio?.let { entry("Audio", Glyph.Mic, Color(0xFFFF9500), it) }
+            entry("Dateien", Glyph.Document, Color(0xFF5856D6), onFile)
         }
     }
 }
