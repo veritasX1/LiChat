@@ -17,8 +17,11 @@ oder einem anderen Rechner mit Debian, Ubuntu oder Raspberry Pi OS ein. Rechne m
 
 ```
 sudo apt update
-sudo apt install -y git docker.io docker-compose-v2 nginx certbot python3-certbot-nginx
+sudo apt install -y git docker.io docker-compose-v2 nginx certbot python3-certbot-nginx sqlite3
 ```
+
+Auf Raspberry Pi OS und Debian 12 heißt das Compose-Paket anders. Dort installierst du Docker am einfachsten nach der
+Anleitung auf docs.docker.com (Paket `docker-compose-plugin`) und lässt `docker.io docker-compose-v2` oben weg.
 
 ## 2 · LiChat holen und einstellen
 

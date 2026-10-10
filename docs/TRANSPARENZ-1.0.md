@@ -79,7 +79,7 @@ Keine Berechtigung für Kontakte, Standort, Speicher oder Fotos. Fotos wählst d
 | Kontrolle beim Menschen | eigener Server möglich, Lesebestätigungen und Tipp-Anzeige ab Werk aus, Mitteilungsvorschau ab Werk aus, App-Sperre wählbar. ✔ |
 | Netz nur, wenn nötig | eine einzige Verbindung zum eigenen Server, keine Vorschauen aus dem Netz. ✔ |
 | Keine KI ab Werk | LiChat enthält keine KI. ✔ |
-| Kostenlos für immer | keine Käufe, keine Abos, keine Werbung. Quelltext unter AGPL-3.0. ✔ |
+| Kostenlos für immer | keine Käufe, keine Abos, keine Werbung. Quelltext unter GPL-3.0. ✔ |
 
 ## Was wir noch verbessern wollen
 
