@@ -9,11 +9,14 @@ import androidx.compose.ui.semantics.customActions
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
@@ -390,7 +393,18 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         LaunchedEffect(typing, clock, version) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
         LaunchedEffect(typing.isNotEmpty()) { if (typing.isNotEmpty() && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
         val albums = remember(list, version) { albumRuns(list) }
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), state = listState, reverseLayout = true) {
+        // f0-07, like Messages: a swipe to the left anywhere in the conversation pulls the bubbles aside and shows every
+        // message's time at the right; letting go brings them back. (A swipe to the right on a bubble still answers it.)
+        val peek = remember { androidx.compose.animation.core.Animatable(0f) }
+        val peekMax = with(androidx.compose.ui.platform.LocalDensity.current) { PEEK_DP.dp.toPx() }
+        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(onDragEnd = { scope.launch { peek.animateTo(0f) } }, onDragCancel = { scope.launch { peek.animateTo(0f) } }) { change, amount ->
+                    change.consume()
+                    scope.launch { peek.snapTo((peek.value - amount).coerceIn(0f, peekMax)) }
+                }
+            },
+            state = listState, reverseLayout = true) {
             if (typing.isNotEmpty() && chat.optString("removed").isEmpty()) item(key = "tippt") {
                 val who = typing.joinToString(", ") { account.display(it) }
                 Column(Modifier.fillMaxWidth().padding(vertical = 2.dp).semantics(mergeDescendants = true) { contentDescription = "$who tippt" }) {
@@ -445,8 +459,19 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 val gestures = Modifier
                     .offset { androidx.compose.ui.unit.IntOffset(drag.toInt(), 0) }
                     .pointerInput(mid) {
-                        detectHorizontalDragGestures(onDragEnd = { if (drag > threshold && mid.isNotEmpty()) replyTo = m; drag = 0f },
-                            onDragCancel = { drag = 0f }) { _, amount -> drag = (drag + amount).coerceIn(0f, threshold * 1.4f) }
+                        // only a swipe to the right is the bubble's (answer) – one to the left goes on to the times (f0-07)
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val started = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over ->
+                                if (over > 0) { change.consume(); drag = over.coerceIn(0f, threshold * 1.4f) }
+                            } ?: return@awaitEachGesture
+                            val ended = horizontalDrag(started.id) { change ->
+                                drag = (drag + change.positionChange().x).coerceIn(0f, threshold * 1.4f)
+                                change.consume()
+                            }
+                            if (ended && drag > threshold && mid.isNotEmpty()) replyTo = m
+                            drag = 0f
+                        }
                     }
                     .semantics {
                         if (mid.isNotEmpty()) customActions = listOf(
@@ -462,7 +487,13 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp))
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+                Box(Modifier.fillMaxWidth()) {
+                if (peek.value > 0f) BasicText(SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(m.optLong("at") * 1000)),
+                    style = style(11f, 400, colors.secondary),
+                    modifier = Modifier.align(Alignment.CenterEnd).offset { androidx.compose.ui.unit.IntOffset((peekMax - peek.value).toInt(), 0) }
+                        .alpha(peek.value / peekMax))
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).offset { androidx.compose.ui.unit.IntOffset(-peek.value.toInt(), 0) },
+                    horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom) {
                     // In a group: the sender's picture beside the bubble, like Messages (card d45b319a).
                     if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(account.display(m.optString("from")), account.picture(m.optString("from")), 28.dp) }
@@ -473,6 +504,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions,
                             album = album)
                     }
+                }
                 }
                 if (versions != null) {
                     BasicText(if (versionsOf == mid) "Frühere Versionen ausblenden" else "Bearbeitet", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
@@ -1341,6 +1373,9 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
     }
 }
+
+/** How far a swipe to the left pulls the bubbles aside for the times (f0-07). */
+const val PEEK_DP = 64
 
 /** Holding the microphone this long and letting go keeps the recording to hear first (f0-12); shorter is a tap. */
 const val HOLD_MS = 400L
