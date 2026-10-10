@@ -266,6 +266,14 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                             })
                             return@Column
                         }
+                        // f003: something begun there – „Entwurf:“ in red and what it says, like WhatsApp and Telegram
+                        if (account.hasDraft(cid)) {
+                            BasicText(androidx.compose.ui.text.buildAnnotatedString {
+                                pushStyle(androidx.compose.ui.text.SpanStyle(color = colors.red)); append("Entwurf:"); pop()
+                                append(" " + account.draft(cid).trim().ifEmpty { if (account.draftReply(cid) != null) "Antwort" else "Foto" })
+                            }, style = style(15f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            return@Column
+                        }
                         val preview = when {
                             last == null -> "Noch keine Nachrichten"
                             last.optBoolean("system") -> last.optString("text")
@@ -329,7 +337,9 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {}) {
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
-    var replyTo by remember(cid) { mutableStateOf<JSONObject?>(null) }
+    // f004: an answer begun here waits with the draft and is there again when the conversation opens
+    var replyTo by remember(cid) { mutableStateOf(account.draftReply(cid)?.let { account.findMessage(cid, it) }?.takeIf { !it.optBoolean("zurueckgerufen") }) }
+    LaunchedEffect(cid, replyTo) { runCatching { account.setDraftReply(cid, replyTo?.optString("mid")) } }
     // Leaving the chat covers every secret picture again (f9e3f055)
     androidx.compose.runtime.DisposableEffect(cid) { onDispose { SecretShown.ids.clear() } }
     var menuFor by remember(cid) { mutableStateOf<JSONObject?>(null) }

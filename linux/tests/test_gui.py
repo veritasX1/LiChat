@@ -541,6 +541,23 @@ def main():
     assert window.reply_to is last and window.reply_line.get_visible()
     window.end_reply()
 
+    # f003/f004: an answer begun stays with its conversation; the list shows „Entwurf:“ for it.
+    last = [m for m in anna.chats[cid]["messages"] if m.get("mid") and not m.get("system") and not m.get("zurueckgerufen")][-1]
+    window.start_reply(last)
+    window.input.set_text("Klar, bis")
+    window.open_chat(group)
+    settle(0.6)
+    assert window.reply_to is None and not window.reply_line.get_visible()
+    shown = [w.get_text() for w in walk(window.list) if isinstance(w, Gtk.Label)]
+    assert "Entwurf: Klar, bis" in shown, shown
+    window.open_chat(cid)
+    settle(0.3)
+    assert window.reply_to is not None and window.reply_to["mid"] == last["mid"] and window.input.get_text() == "Klar, bis"
+    window.end_reply()
+    window.input.set_text("")
+    settle(0.6)
+    assert anna.draft_reply(cid) is None and not anna.has_draft(cid)
+
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)
     settle(0.3)
