@@ -1812,11 +1812,13 @@ class Account:
             return "Nachricht widerrufen"
         info = message.get("anhang")
         if not info:
-            return message.get("text", "")
+            from .formatting import preview_text
+            return preview_text(message.get("text", ""))
         if info.get("einmal"):
             return "Foto · Einmal-Ansicht"
         label = {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
-        caption = (message.get("text") or "").strip()
+        from .formatting import preview_text
+        caption = preview_text((message.get("text") or "").strip())
         return f"{label}: {caption}" if caption else label        # with its caption (2fcc3eef)
 
     def members(self, cid):

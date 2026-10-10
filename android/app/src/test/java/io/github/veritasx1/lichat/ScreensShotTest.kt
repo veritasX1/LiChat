@@ -9,6 +9,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
@@ -546,6 +547,48 @@ httpd.serve_forever()
         bubble.performTouchInput { swipe(Offset(centerX - 100, centerY), Offset(centerX + 150, centerY), 300) }
         compose.waitForIdle()
         compose.onNodeWithText("Antwort an", substring = true).assertExists()
+    }
+
+    /** f005–f011: a formatted message – signs gone, the spoiler covered until tapped, a titled link asks first. */
+    @Test
+    fun formattedMessage() {
+        bernd.send(cid, "*Grillen* am _Samstag_ ~Freitag~ – wer? ||Barney|| [Plan](https://example.org/plan)")
+        anna.fetch()
+        shot("2g-formatiert") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        val shown = "Grillen am Samstag Freitag – wer? Barney Plan"
+        compose.onNodeWithText(shown).assertExists()
+        val text = compose.onNodeWithText(shown).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].first()
+        val spoiler = text.getLinkAnnotations(0, text.length).first { (it.item as? androidx.compose.ui.text.LinkAnnotation.Clickable)?.tag == "spoiler" }
+        assertEquals("Barney", text.substring(spoiler.start, spoiler.end))
+        assertTrue("verdeckt", text.spanStyles.any { it.start == spoiler.start && it.item.color == androidx.compose.ui.graphics.Color.Transparent })
+        (spoiler.item as androidx.compose.ui.text.LinkAnnotation.Clickable).linkInteractionListener!!.onClick(spoiler.item)
+        compose.waitForIdle()
+        val after = compose.onNodeWithText(shown).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].first()
+        assertTrue("aufgedeckt", after.spanStyles.none { it.item.color == androidx.compose.ui.graphics.Color.Transparent })
+        val link = after.getLinkAnnotations(0, after.length).first { (it.item as? androidx.compose.ui.text.LinkAnnotation.Clickable)?.tag == "https://example.org/plan" }
+        (link.item as androidx.compose.ui.text.LinkAnnotation.Clickable).linkInteractionListener!!.onClick(link.item)
+        compose.waitForIdle()
+        compose.onNodeWithText("Link öffnen?").assertExists()
+        compose.onNodeWithText("https://example.org/plan").assertExists()
+        compose.onNodeWithText("Abbrechen").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Link öffnen?").assertDoesNotExist()
+        assertEquals("wer? ••• Plan", io.github.veritasx1.lichat.core.describe(anna.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }).substringAfter("Freitag – "))
+    }
+
+    /** f005–f011: text selected – a row of formats; „Fett“ puts it between stars. */
+    @Test
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    fun formatSelection() {
+        var sent = ""
+        shot("2h-formatieren") { androidx.compose.foundation.layout.Column { io.github.veritasx1.lichat.ui.InputBar({ sent = it }, draft = "Kommt alle") } }
+        compose.onNodeWithText("Fett").assertDoesNotExist()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Nachricht")).performTextInputSelection(androidx.compose.ui.text.TextRange(0, 5))
+        compose.waitForIdle()
+        compose.onNodeWithText("Fett").performClick()
+        compose.waitForIdle()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performClick()
+        assertEquals("*Kommt* alle", sent)
     }
 
     /** f0-01/30a02f81: the ⊕ menu like iOS 17 – round coloured symbols over the faded chat, a tap beside it closes it. */
