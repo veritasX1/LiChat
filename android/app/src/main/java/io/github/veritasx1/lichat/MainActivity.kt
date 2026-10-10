@@ -27,6 +27,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import io.github.veritasx1.lichat.core.Account
 import io.github.veritasx1.lichat.core.KeyVault
@@ -597,6 +600,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             return@CompositionLocalProvider
         }
         LaunchedEffect(Unit) { if (!Settings.explained(context)) explaining = true }
+        // behind the ⊕ menu the chat is drawn soft like iOS (Michelle 38b5c1e) – Android 12+, older ones only fade it
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().then(if (sheet) androidx.compose.ui.Modifier.blur(16.dp) else androidx.compose.ui.Modifier)) {
         Navigation(page, onBack = { page = it }) { p -> when (p) {
             Page.List -> ChatList(acc, version, seen, serverProblem, unrestricted,
                 onOpen = { page = Page.Chat(it) }, onNew = { problem = null; page = Page.New }, onSettings = { page = Page.Settings },
@@ -685,6 +690,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 LaunchedEffect(Unit) { work({ acc.myDevices() }) { list, _ -> devices = list ?: emptyList() } }
             }
         } }
+        }
         if (sheet) AttachmentSheet(
             onPhotos = { sheet = false; pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
             onFile = { sheet = false; pickFile.launch(arrayOf("*/*")) }, onCancel = { sheet = false },
