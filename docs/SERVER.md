@@ -80,7 +80,7 @@ Status, keine IP-Adressen.
 Registrieren kann sich nur, wer eine Einladung hat. Für jede Person eine erzeugen:
 
 ```
-sudo docker exec lichat-server python3 -m lichat_server.admin invite "für Anna"
+sudo docker exec lichat-server python3 -m lichat_server.admin invite "für Bernd"
 ```
 
 Ausgegeben werden der Code und ein Link wie `https://chat.example.org/e/…`. Die Seite hinter dem Link zeigt einen
