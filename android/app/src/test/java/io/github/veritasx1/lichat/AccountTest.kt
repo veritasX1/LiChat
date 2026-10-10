@@ -535,8 +535,14 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         anna.sendAttachment(cid, byteArrayOf(1, 2, 3), "Sprachnachricht.m4a", "audio/mp4", "sprache", 4.2, wave = bars)
         val got = bernd.fetch().single { it.attachment != null }.attachment!!
         assertEquals(bars, got.getJSONArray("welle").let { w -> (0 until w.length()).map { w.getInt(it) } })
-        bernd.markListened(cid, got.getString("id"))
+        bernd.markListened(cid, got.getString("id"), 9.9)
         assertTrue(bernd.chat(cid).getJSONArray("messages").let { a -> a.getJSONObject(a.length() - 1) }.getBoolean("angehoert"))
+        assertEquals("die mitgeschickte Länge bleibt", 4.2, bernd.chat(cid).getJSONArray("messages").let { a -> a.getJSONObject(a.length() - 1) }.getJSONObject("anhang").getDouble("dauer"), 0.0)
+        // without a length (Michelle: CLI file stayed „0:00“): known once played
+        anna.sendAttachment(cid, byteArrayOf(5), "ohne.m4a", "audio/mp4", "sprache")
+        val plain = bernd.fetch().single { it.attachment != null }.attachment!!
+        bernd.markListened(cid, plain.getString("id"), 12.34)
+        assertEquals(12.3, bernd.chat(cid).getJSONArray("messages").let { a -> a.getJSONObject(a.length() - 1) }.getJSONObject("anhang").getDouble("dauer"), 0.0)
         // a photo cannot carry a wave, and a voice message only numbers 0…31
         anna.sendAttachment(cid, byteArrayOf(4), "x.m4a", "audio/mp4", "sprache", 1.0, wave = List(300) { 99 })
         val clipped = bernd.fetch().single { it.attachment != null }.attachment!!.getJSONArray("welle")

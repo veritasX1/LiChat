@@ -894,11 +894,16 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     /** A voice message heard (1a682a79): Signal's dot beside its time goes. Only here, not told to anyone. */
-    fun markListened(cid: String, attachment: String) = synchronized(lock) {
+    fun markListened(cid: String, attachment: String, seconds: Double? = null) = synchronized(lock) {
         val list = chat(cid).getJSONArray("messages")
         for (k in 0 until list.length()) {
             val m = list.getJSONObject(k)
-            if (m.optJSONObject("anhang")?.optString("id") == attachment && !m.optBoolean("angehoert")) { m.put("angehoert", true); save() }
+            val info = m.optJSONObject("anhang") ?: continue
+            if (info.optString("id") != attachment) continue
+            m.put("angehoert", true)
+            // one without its length (e.g. sent as a file from the CLI) knows it once played (Michelle: stayed „0:00“)
+            if (!info.has("dauer") && seconds != null && seconds > 0) info.put("dauer", Math.round(seconds * 10) / 10.0)
+            save()
         }
     }
 
