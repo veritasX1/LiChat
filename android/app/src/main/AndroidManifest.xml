@@ -40,6 +40,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- „In LiChat öffnen“ on an invitation page (Olaf 10.10.): server and code come along, only the name is typed -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lichat" android:host="einladung" />
+            </intent-filter>
         </activity>
         <service
             android:name=".LiChatService"

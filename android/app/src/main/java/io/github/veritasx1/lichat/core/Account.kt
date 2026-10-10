@@ -314,7 +314,21 @@ class Account(val folder: File, private val key: ByteArray) {
             account.save()
             account.server.call("POST", "/v1/key-packages", JSONObject().put("key_packages", JSONArray(packages.map { b64(it) })))
             account.server.call("PUT", "/v1/key-packages/last-resort", JSONObject().put("key_package", b64(reserve)))
+            account.invitedBy = answer.optString("von").takeIf { Regex("[a-z0-9._-]{2,32}").matches(it) }
             return account
+        }
+
+        /** (server, code) from an invitation's QR code or link (Olaf 10.10.: „der qr code übergibt alle daten zum server“):
+         *  lichat://einladung?server=…&code=…, or the page https://host/e/CODE that any phone camera opens. */
+        fun parseInviteUri(text: String): Pair<String, String>? {
+            val clean = text.trim()
+            Regex("^(https?://[^/\\s]+)/e/([A-Za-z0-9-]{4,40})/?$").find(clean)?.let { return it.groupValues[1] to it.groupValues[2].uppercase() }
+            val uri = runCatching { URI(clean) }.getOrNull() ?: return null
+            if (uri.scheme != "lichat" || uri.host != "einladung") return null
+            val query = (uri.rawQuery ?: "").split("&").mapNotNull { part -> part.split("=", limit = 2).takeIf { it.size == 2 } }
+                .associate { (k, v) -> k to java.net.URLDecoder.decode(v, "UTF-8") }
+            val code = query["code"]?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+            return (query["server"] ?: "") to code
         }
 
         // -------------------------------------------------------------------------------------- linking (card da5cbfcb)
@@ -878,6 +892,13 @@ class Account(val folder: File, private val key: ByteArray) {
         return name
     }
 
+    /** Who invited this account – set right after register, for opening the conversation with them (not stored). */
+    @Volatile var invitedBy: String? = null
+
+    /** An invitation for someone new (7 days, at most 5 open): (code, link). The link's page has its own QR code and opens
+     *  LiChat; scanned in LiChat it fills in server and code – the new person only types their name. */
+    fun newInvite(): Pair<String, String> = server.call("POST", "/v1/einladungen", JSONObject()).let { it.getString("code") to it.getString("link") }
+
     /** A PIN for someone to add me (10 minutes, once). */
     fun newPin(): String = server.call("POST", "/v1/pins", JSONObject()).getString("pin")
 
@@ -1278,8 +1299,9 @@ class Account(val folder: File, private val key: ByteArray) {
         // Several photos picked together stay together (5749ebd0): collage for 2–3, a stack from 4 – one-time and secret ones alone.
         if (album != null && !once && !secret) message.put("album", album)
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
+        if (defer) return message          // an album shows up whole once its first photo goes up – not growing bubble by bubble
         changed()
-        return if (defer) message else upload(cid, message, changed)
+        return upload(cid, message, changed)
     }
 
     /** An attachment laid down with defer = true goes up now (an album: all bubbles first, then one after the other). */

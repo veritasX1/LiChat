@@ -335,6 +335,18 @@ class Groups(Base):
         self.assertEqual(anna.chat_with("bernd"), cid)
         self.assertEqual(anna.known_people(), ["bernd"])
 
+    def test_invite_by_qr_code(self):
+        """Olaf 10.10.: someone already here invites; the link carries server and code; the new person learns who invited."""
+        anna = self.person("anna")
+        code, link = anna.new_invite()
+        parsed = Account.parse_link(link)
+        self.assertEqual((parsed["art"], parsed["code"]), ("einladung", code))
+        erna = Account.register(self.root / "geraete" / "erna", self.url, parsed["code"], "tante.erna")
+        self.assertEqual(erna.invited_by, "anna")
+        erna.add_contact("anna")
+        erna.send(erna.chat_with("anna"), "Da bin ich!")
+        self.assertIn("Da bin ich!", [n.get("text") for n in anna.fetch()])
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

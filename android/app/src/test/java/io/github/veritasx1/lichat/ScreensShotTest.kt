@@ -524,6 +524,23 @@ httpd.serve_forever()
         compose.onNodeWithText("Bernd Brandt").assertExists()
     }
 
+    /** Olaf 10.10.: invite by QR code – the sheet to show, and the setup screen after scanning (only the name is left). */
+    @Test
+    fun inviteSheet() {
+        shot("0b-einladen") { io.github.veritasx1.lichat.ui.InviteSheet("K7QX-ABCD-EFGH-JKMN" to "https://lichat.lisoftware.de/e/K7QX-ABCD-EFGH-JKMN", {}, {}) }
+        compose.onNodeWithText("K7QX-ABCD-EFGH-JKMN").assertExists()
+    }
+
+    @Test
+    fun setupAfterScanningAnInvitation() {
+        shot("0c-anmelden-nach-scan") {
+            io.github.veritasx1.lichat.ui.SetupScreen(false, null, scannedInvite = "https://lichat.lisoftware.de" to "K7QX-ABCD-EFGH-JKMN") { _, _, _, _, _ -> }
+        }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Einladung erkannt, Server https://lichat.lisoftware.de")).assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Einladung")).assertDoesNotExist()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Vorname")).assertExists()
+    }
+
     /** 89aae55d: my contact code to show – QR, user name, and a PIN on request. */
     @Test
     fun myContactCode() {

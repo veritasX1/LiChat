@@ -105,6 +105,20 @@ class Store:
             self.db.execute("INSERT INTO invites VALUES (?, ?, ?)", (code, self.clock() + days * 86400, note))
         return code
 
+    def open_invites(self, note):
+        """How many invitations with this note are still valid (a person's own invitations: "von:<name>")."""
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM invites WHERE note = ? AND expires > ?", (note, self.clock())).fetchone()[0]
+
+    def inviter(self, invite):
+        """Who made this invitation (a user's own invitation by QR code, Olaf 10.10.) – None for the admin's."""
+        with self.lock:
+            for code in (str(invite).strip(), invite_key(str(invite))):
+                row = self.db.execute("SELECT note FROM invites WHERE code = ? AND expires > ?", (code, self.clock())).fetchone()
+                if row:
+                    return row[0][4:] if (row[0] or "").startswith("von:") else None
+        return None
+
     # Accounts and devices -----------------------------------------------------------------------
 
     def register(self, invite, username, identity):

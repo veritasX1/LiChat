@@ -389,6 +389,7 @@ class Account:
         self._owe_picture = set()   # chats that learn my picture once their roster is known
         self.uploads = {}           # mid → share sent (0…1) while an attachment goes up (cf647f61)
         self._cancelling = set()
+        self.invited_by = None      # who invited this account – set right after register (Olaf 10.10.)
         self._typing = {}           # chat → {sender: when their „tippt“ came} – only in memory, never saved (884f7c8a)
         self._typed = {}            # chat → when I last said „tippt“ there
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
@@ -452,6 +453,8 @@ class Account:
         account.save()
         account.server.call("POST", "/v1/key-packages", {"key_packages": [b64(p) for p in packages]})
         account.server.call("PUT", "/v1/key-packages/last-resort", {"key_package": b64(reserve)})
+        inviter = str(answer.get("von") or "")
+        account.invited_by = inviter if re.fullmatch(r"[a-z0-9._-]{2,32}", inviter) else None   # Olaf 10.10.: invite by QR code
         return account
 
     # ------------------------------------------------------------------------------------------ linking (card da5cbfcb)
@@ -965,6 +968,12 @@ class Account:
     def redeem_pin(self, pin):
         username = self.server.call("POST", "/v1/pins/einloesen", {"pin": pin})["username"]
         return username, self.add_contact(username)
+
+    def new_invite(self):
+        """An invitation for someone new (7 days, at most 5 open): (code, link). Its QR code brings server and code along –
+        the new person only types their name and lands in the conversation with me (Olaf 10.10.)."""
+        made = self.server.call("POST", "/v1/einladungen", {})
+        return made["code"], made["link"]
 
     def chat_with(self, user):
         """The conversation with just this person: the one there is, else a new one (a code scanned → straight into it)."""
@@ -1566,9 +1575,11 @@ class Account:
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
+        if defer:
+            return message          # an album shows up whole once its first photo goes up – not growing bubble by bubble
         if changed:
             changed()
-        return message if defer else self._upload(cid, message, changed)
+        return self._upload(cid, message, changed)
 
     def send_queued(self, cid, message, changed=None):
         """An attachment laid down with defer=True goes up now (an album: all bubbles first, then one after the other)."""
