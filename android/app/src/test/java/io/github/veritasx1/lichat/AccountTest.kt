@@ -550,6 +550,22 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue((0 until clipped.length()).all { clipped.getInt(it) == 31 })
     }
 
+    /** Michelle 1a682a79 (b): playing my own voice message leaves the dot of theirs alone. */
+    @Test
+    fun playingMineKeepsTheirsUnheard() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.sendAttachment(cid, byteArrayOf(1), "a.m4a", "audio/mp4", "sprache", 11.0)
+        bernd.fetch()
+        bernd.sendAttachment(cid, byteArrayOf(2), "b.m4a", "audio/mp4", "sprache")
+        anna.fetch()
+        val all = anna.chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }.filter { it.has("anhang") }
+        val mine = all.first { it.optString("from") == "anna" }; val theirs = all.first { it.optString("from") == "bernd" }
+        anna.markListened(cid, mine.getJSONObject("anhang").getString("id"), 11.0)
+        assertFalse(theirs.optBoolean("angehoert"))
+    }
+
     /** Olaf 10.10.: invite by QR code – the code brings server and invitation, the new person only chooses a name and lands
      *  in the conversation with whoever invited them. Both link forms are read. */
     @Test
