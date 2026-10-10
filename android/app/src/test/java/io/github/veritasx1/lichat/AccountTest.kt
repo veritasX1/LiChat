@@ -1,9 +1,11 @@
 package io.github.veritasx1.lichat
 
 import io.github.veritasx1.lichat.core.Account
+import io.github.veritasx1.lichat.core.Server
 import io.github.veritasx1.lichat.core.KeyVault
 import io.github.veritasx1.lichat.core.LiChatException
 import io.github.veritasx1.lichat.core.News
+import io.github.veritasx1.lichat.core.RESEND_S
 import io.github.veritasx1.lichat.core.TYPING_EVERY_MS
 import org.junit.After
 import org.json.JSONObject
@@ -492,6 +494,34 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals("gesendet", anna.tick(cid, mine()).first)
         assertEquals(listOf("Kommt das an?"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
         assertFalse(server.walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("quittung") })
+    }
+
+    /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
+    @Test
+    fun unreachablePlainSentence() {
+        val error = try { Server("http://127.0.0.1:9").call("GET", "/v1/health"); null } catch (e: LiChatException) { e }
+        assertEquals("Keine Verbindung zum Server. LiChat versucht es gleich wieder.", error?.message)
+        assertTrue(error?.detail.orEmpty().contains("Exception"))
+    }
+
+    /** Card 72c8a716: what failed during an outage goes out by itself when the connection is back, in order – not older than a day. */
+    @Test
+    fun resendAfterOutage() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        val token = anna.server.token
+        anna.server.token = "falsch"
+        for (text in listOf("Alt", "Eins", "Zwei")) try { anna.send(cid, text); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        val list = anna.chat(cid).getJSONArray("messages")
+        val all = (0 until list.length()).map { list.getJSONObject(it) }
+        all.first { it.optString("text") == "Alt" }.put("at", System.currentTimeMillis() / 1000 - RESEND_S - 60)
+        assertEquals("Server weg: nichts geht", 0, anna.resendFailed())
+        anna.server.token = token
+        assertEquals(2, anna.resendFailed())
+        assertEquals(listOf("Eins", "Zwei"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        assertEquals(listOf("fehler", "gesendet", "gesendet"), all.map { anna.tick(cid, it).first }.takeLast(3))
+        assertEquals("schon gesendet: nichts doppelt", 0, anna.resendFailed())
     }
 
     /** Card d45b319a: add, rename, picture, leave, mute – end to end, a grey line for everyone; Ubuntu renames too. */

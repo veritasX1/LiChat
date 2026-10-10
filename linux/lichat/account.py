@@ -54,6 +54,8 @@ import hashlib
 import io
 import re
 import secrets
+import socket
+import ssl
 import fcntl
 import json
 import os
@@ -97,11 +99,25 @@ TIMEOUT = 20
 
 class LiChatError(Exception):
     """Something the user is told plainly (server refused, unknown chat, wrong key package …). [suggestions]: free user
-    names when the wanted one is taken (ebc3d629)."""
+    names when the wanted one is taken (ebc3d629); [detail]: the raw cause, for the log only (8e7a493b)."""
 
-    def __init__(self, message="", suggestions=None):
+    def __init__(self, message="", suggestions=None, detail=None):
         super().__init__(message)
         self.suggestions = list(suggestions or [])
+        self.detail = detail
+
+
+def unreachable(error):
+    """No way to the server: one plain sentence per kind – the raw text (public IP, port, own address) never on the
+    screen, only as detail (Michelle 8e7a493b)."""
+    reason = getattr(error, "reason", error)
+    if isinstance(reason, socket.gaierror):
+        text = "Server nicht gefunden. Besteht eine Internetverbindung?"
+    elif isinstance(reason, ssl.SSLError):
+        text = "Keine sichere Verbindung zum Server möglich."
+    else:
+        text = "Keine Verbindung zum Server. LiChat versucht es gleich wieder."
+    return LiChatError(text, detail=repr(reason))
 
 
 def b64(data):
@@ -281,7 +297,7 @@ class Server:
                 message = ""
             raise LiChatError(f"Server: {message or error.reason} ({error.code})") from None
         except (urllib.error.URLError, OSError) as error:
-            raise LiChatError(f"Server nicht erreichbar: {getattr(error, 'reason', error)}") from None
+            raise unreachable(error) from None
 
     def call(self, method, path, body=None, timeout=TIMEOUT):
         data = json.dumps(body).encode() if body is not None else None
@@ -300,7 +316,7 @@ class Server:
             names = [n for n in answer.get("vorschlaege") or [] if isinstance(n, str)][:3]
             raise LiChatError(f"Server: {answer.get('error') or error.reason} ({error.code})", names) from None
         except (urllib.error.URLError, OSError) as error:
-            raise LiChatError(f"Server nicht erreichbar: {getattr(error, 'reason', error)}") from None
+            raise unreachable(error) from None
 
 
 class ProfileLock:
