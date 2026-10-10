@@ -297,6 +297,35 @@ class Groups(Base):
         self.assertEqual([n["text"] for n in got], ["Datei: Liste.txt: Für Samstag"])
         self.assertEqual(bernd.chats[cid]["messages"][-1]["text"], "Für Samstag")
 
+    def test_album_stays_together(self):
+        """5749ebd0: photos picked together arrive as one album (order kept, caption on the last); one-time pictures never
+        join one; a forged album field is dropped."""
+        from PIL import Image
+        from lichat.app import album_runs
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+
+        def photo(colour):
+            out = io.BytesIO()
+            Image.new("RGB", (400, 300), colour).save(out, "JPEG")
+            return out.getvalue()
+        part = anna.new_album(3)
+        laid = [anna.send_attachment(cid, photo(c), f"{n}.jpg", "image/jpeg", "bild", album=part(n + 1), defer=True,
+                                     caption="Herbst" if n == 2 else "") for n, c in enumerate(("red", "green", "blue"))]
+        self.assertEqual([m["status"] for m in laid], ["wartet"] * 3)
+        for m in laid:
+            anna.send_queued(cid, m)
+        anna.send_attachment(cid, photo("white"), "einmal.jpg", "image/jpeg", "bild", once=True, album=part(1))
+        bernd.fetch()
+        theirs = [m for m in bernd.chats[cid]["messages"] if m.get("anhang")]
+        self.assertEqual([m.get("album", {}).get("nr") for m in theirs], [1, 2, 3, None])
+        leaders, hidden = album_runs(bernd.chats[cid]["messages"])
+        self.assertEqual(list(leaders), [theirs[2]["mid"]])
+        self.assertEqual([m["album"]["nr"] for m in leaders[theirs[2]["mid"]]], [1, 2, 3])
+        self.assertEqual(len(hidden), 2)
+        self.assertEqual(theirs[2]["text"], "Herbst")
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

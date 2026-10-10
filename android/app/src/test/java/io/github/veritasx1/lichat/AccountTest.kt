@@ -520,6 +520,43 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Datei: notiz.txt: Einkaufsliste für Samstag"), anna.fetch().filter { it.attachment != null }.map { it.text })
     }
 
+    /** Card 5749ebd0: four photos picked together arrive as one album on a phone and in the CLI, in order, the caption
+     *  on the last; the transcript draws them in one row (the last one). */
+    @Test
+    fun albumStaysTogether() {
+        val anna = person("anna"); val bernd = person("bernd")
+        assertTrue(cli("erna", "register", url, invites.removeFirst(), "erna").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd", "erna"))
+        bernd.fetch(); cli("erna", "abholen")
+        val part = anna.newAlbum(4)
+        val laid = (1..4).map { nr ->
+            val bitmap = android.graphics.Bitmap.createBitmap(400, 300, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF000000.toInt() + nr * 0x303030) }
+            val raw = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+            val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
+            anna.sendAttachment(cid, jpeg, "$nr.jpg", "image/jpeg", "bild", preview = preview, caption = if (nr == 4) "Herbst" else "", album = part(nr), defer = true)
+        }
+        assertTrue(laid.all { it.optString("status") == "wartet" })
+        laid.forEach { anna.sendQueued(cid, it) }
+        bernd.fetch()
+        val theirs = bernd.chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }.filter { it.has("anhang") }
+        assertEquals(listOf(1, 2, 3, 4), theirs.map { it.getJSONObject("album").getInt("nr") })
+        val runs = io.github.veritasx1.lichat.ui.albumRuns(bernd.chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } })
+        assertEquals(setOf(theirs.last().optString("mid")), runs.leaders.keys)
+        assertEquals(3, runs.hidden.size)
+        assertEquals("Herbst", theirs.last().getString("text"))
+        val script = """
+import sys
+sys.path.insert(0, "${File(repo, "linux").absolutePath}")
+from lichat.account import Account, default_folder
+a = Account(default_folder("erna"))
+a.fetch()
+print([m["album"]["nr"] for m in a.chats["$cid"]["messages"] if m.get("album")])
+"""
+        val process = ProcessBuilder("python3", "-c", script).redirectErrorStream(true)
+            .apply { environment()["XDG_DATA_HOME"] = File(root, "cli").absolutePath }.start()
+        assertTrue(process.inputStream.bufferedReader().readText().contains("[1, 2, 3, 4]"))
+    }
+
     /** Card cf647f61: the bubble is there before the upload; a failed upload stays „Nicht gesendet“ and goes up again on a
      *  retry (once at the other end); the ring fills to 100 %; a cancelled upload takes bubble and outbox bytes with it. */
     @Test

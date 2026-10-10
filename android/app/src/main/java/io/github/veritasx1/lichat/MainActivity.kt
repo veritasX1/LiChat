@@ -270,10 +270,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     val staged = remember { androidx.compose.runtime.mutableStateListOf<io.github.veritasx1.lichat.ui.Staged>() }
     var stagedOpen by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(chatId()) { staged.clear(); stagedOpen = null }     // they belong to the conversation they were picked in
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null && context.contentResolver.getType(uri)?.startsWith("image/") == true)
-            staged.add(io.github.veritasx1.lichat.ui.Staged(uri, runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()))
-        else sendFile(uri, false)
+    // Up to 10 at once (5749ebd0, like Messages): photos lie above the input, videos go at once.
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(io.github.veritasx1.lichat.core.ALBUM_MAX)) { uris ->
+        for (uri in uris) {
+            if (context.contentResolver.getType(uri)?.startsWith("image/") == true) {
+                if (staged.size < io.github.veritasx1.lichat.core.ALBUM_MAX)
+                    staged.add(io.github.veritasx1.lichat.ui.Staged(uri, runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()))
+            } else sendFile(uri, false)
+        }
     }
     fun sendStaged(caption: String) {
         val acc = account ?: return
@@ -281,14 +285,27 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         val items = staged.toList()
         staged.clear()
         work({
-            items.forEachIndexed { index, item ->
+            // Two or more ordinary photos form an album (5749ebd0): all bubbles at once, then up one after the other.
+            val plain = items.filter { !it.once && !it.secret }
+            val album = if (plain.size >= 2) acc.newAlbum(plain.size) else null
+            var problemText: String? = null
+            val laid = items.mapIndexedNotNull { index, item -> try {
                 val text = if (index == items.lastIndex) caption else ""     // the text belongs to the last photo
+                val part = album?.takeIf { !item.once && !item.secret }?.invoke(plain.indexOf(item) + 1)
                 if (item.markedUp && item.bytes != null) {
                     // the marked-up picture: a new JPEG, then the same way as every photo (upright, 2048 px, preview)
                     val (jpeg, preview) = Pictures.photo(item.bytes)
-                    acc.sendAttachment(cid, jpeg, "Foto.jpg", "image/jpeg", "bild", preview = preview, once = item.once, secret = item.secret, caption = text)
-                } else media.send(acc, cid, item.uri, false, item.once, item.secret, text)
+                    acc.sendAttachment(cid, jpeg, "Foto.jpg", "image/jpeg", "bild", preview = preview, once = item.once, secret = item.secret,
+                        caption = text, album = part, defer = true)
+                } else media.send(acc, cid, item.uri, item.asFile, item.once, item.secret, text, album = part, defer = true)
+            } catch (e: Exception) {
+                // one photo not readable: the others still go (laid down ones never hang on „wartet“)
+                problemText = problemText ?: (e as? LiChatException)?.message ?: "Ein Foto ließ sich nicht vorbereiten"; null
+            } }
+            for (message in laid) {
+                try { acc.sendQueued(cid, message) } catch (e: LiChatException) { problemText = problemText ?: e.message }
             }
+            problemText?.let { throw LiChatException(it) }
         }) { _, error -> problem = error; Hub.changed() }
     }
     // A one-time picture open now: chat, mid, bytes (only in memory) and whether it is also secret.
@@ -296,7 +313,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var onceSecret by remember { mutableStateOf(false) }
     var onceOpening by remember { mutableStateOf<String?>(null) }
     var markingUp by remember { mutableStateOf(false) }       // 4fb76dfd: the editor over the send sheet
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendFile(it, true) }
+    // A picture chosen as a file waits in the input too (Michelle 2fcc3eef: it went at once, without preview or text) –
+    // it still leaves at full size; everything else goes at once.
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val type = uri?.let { context.contentResolver.getType(it) }.orEmpty()
+        if (uri != null && type.startsWith("image/") && type != "image/svg+xml" && staged.size < io.github.veritasx1.lichat.core.ALBUM_MAX)
+            staged.add(io.github.veritasx1.lichat.ui.Staged(uri, runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull(), asFile = true))
+        else sendFile(uri, true)
+    }
     fun startRecording() {
         if (media.startRecording()) {
             recording = 0
