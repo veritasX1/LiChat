@@ -34,6 +34,17 @@ class FormatTest {
         }
     }
 
+    /** f028: the same results as Ubuntu's test_sums – docs/rechnen-faelle.json. */
+    @Test
+    fun sums() {
+        val file = listOf(File("../../docs/rechnen-faelle.json"), File("../docs/rechnen-faelle.json")).first { it.exists() }
+        val cases = JSONObject(file.readText()).getJSONArray("faelle")
+        for (n in 0 until cases.length()) {
+            val case = cases.getJSONObject(n)
+            assertEquals(case.getString("ein"), if (case.isNull("aus")) null else case.getString("aus"), io.github.veritasx1.lichat.core.calcSuggestion(case.getString("ein")))
+        }
+    }
+
     /** f015: the same as Ubuntu's test_emoji_only. */
     @Test
     fun emojiOnly() {

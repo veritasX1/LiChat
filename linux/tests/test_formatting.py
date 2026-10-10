@@ -27,6 +27,12 @@ class SameAsAndroid(unittest.TestCase):
         for text, count in cases.items():
             self.assertEqual(emoji_only(text), count, text)
 
+    def test_sums(self):
+        """f028: the same results as Android's CalcTest – docs/rechnen-faelle.json."""
+        from lichat.calc import suggestion
+        for case in json.loads((ROOT / "docs" / "rechnen-faelle.json").read_text())["faelle"]:
+            self.assertEqual(suggestion(case["ein"]), case["aus"], case["ein"])
+
     def test_preview_hides_spoiler(self):
         self.assertEqual(preview_text("Täter: ||Barney|| *sicher*"), "Täter: ••• sicher")
 

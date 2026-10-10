@@ -1,0 +1,22 @@
+{
+  "zweck": "Rechnen im Textfeld (Karte bcb40e06, f028): Android core/Calc.kt und Ubuntu lichat/calc.py muessen fuer jede Eingabe dasselbe Ergebnis vorschlagen (null = kein Vorschlag).",
+  "faelle": [
+    {"ein": "12*3=", "aus": "36"},
+    {"ein": "Wir sind 4 Leute, 87,60/4 =", "aus": "21,9"},
+    {"ein": "(2+3)×4=", "aus": "20"},
+    {"ein": "10÷4=", "aus": "2,5"},
+    {"ein": "2^10=", "aus": "1024"},
+    {"ein": "1/3=", "aus": "0,3333333333"},
+    {"ein": "200*15%=", "aus": "30"},
+    {"ein": "7-10=", "aus": "-3"},
+    {"ein": "0,1+0,2=", "aus": "0,3"},
+    {"ein": "1.5*2=", "aus": "3"},
+    {"ein": "Treffen um 12=", "aus": null},
+    {"ein": "5/0=", "aus": null},
+    {"ein": "2*(3=", "aus": null},
+    {"ein": "Telefon 0171-1234567=", "aus": null},
+    {"ein": "2+2", "aus": null},
+    {"ein": "1e5*2=", "aus": null},
+    {"ein": "9^999=", "aus": null}
+  ]
+}

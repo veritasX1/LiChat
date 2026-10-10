@@ -78,6 +78,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -525,7 +526,9 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
                         Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() }
                             .bubbleEffect(m.optString("effekt"), mid).textEffect(m.optString("effekt")),
-                            Modifier.combinedClickable(onClick = { if (album == null) info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
+                            // a tap on a text bubble uncovers its spoiler or invisible ink (like iOS; a screen reader's double tap too)
+                            Modifier.combinedClickable(onClick = { if (album == null) info?.let { actions.open(it) } ?: run { if (mid.isNotEmpty()) SpoilerShown.ids.add(mid) } },
+                                onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
                             playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions,
                             album = album)
                     }
@@ -870,15 +873,30 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
             val widest = (0 until layout.lineCount).maxOfOrNull { layout.getLineRight(it) - layout.getLineLeft(it) } ?: 0f
             with(density) { kotlin.math.ceil(widest).toInt().coerceAtMost(inner).toDp() }
         }
+        // Michelle: a covered spoiler must not be read aloud – until uncovered the screen reader hears what it is
+        val hidden = !revealed && (m.optString("effekt") == "tinte" || io.github.veritasx1.lichat.core.formatted(m.optString("text")).second.any { it.kind == "spoiler" })
         BasicText(text, style = textStyle, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
             modifier = modifier.clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
-                .then(interact).padding(horizontal = 12.dp, vertical = 7.dp).width(tight + 1.dp))
+                .then(interact).padding(horizontal = 12.dp, vertical = 7.dp).width(tight + 1.dp)
+                .then(if (hidden) Modifier.clearAndSetSemantics {
+                    contentDescription = coveredForReader(m.optString("text"), m.optString("effekt") == "tinte")
+                } else Modifier))
     }
 }
 
 /** Spoilers uncovered (by tap) in this session – like invisible ink they are covered again after the app was closed. */
 object SpoilerShown {
     val ids = androidx.compose.runtime.mutableStateListOf<String>()
+}
+
+const val INK_WORDS = "unsichtbare Tinte, zum Aufdecken doppeltippen"
+
+/** What a screen reader hears of a message with a covered spoiler: the rest of the text, the spoiler as [INK_WORDS]. */
+fun coveredForReader(raw: String, whole: Boolean): String {
+    if (whole) return INK_WORDS
+    val (plain, spans) = io.github.veritasx1.lichat.core.formatted(raw)
+    return spans.filter { it.kind == "spoiler" }.sortedByDescending { it.start }
+        .fold(plain) { shown, s -> shown.substring(0, s.start) + "($INK_WORDS)" + shown.substring(s.end) }
 }
 
 /** A message's text with its formatting (f005–f011, core/Format.kt), links and „@name“. */
@@ -1445,6 +1463,13 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
                     field = androidx.compose.ui.text.input.TextFieldValue(wrapped, androidx.compose.ui.text.TextRange(b + 2 * sign.length))
                 }.padding(horizontal = 12.dp, vertical = 6.dp))
         }
+    }
+    // f028, like Math Notes: „87,60/4 =“ at the end – the result offered above the input, a tap puts it in
+    val sum = remember(text) { if (suggestions.isEmpty()) io.github.veritasx1.lichat.core.calcSuggestion(text) else null }
+    if (sum != null) Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp)) {
+        BasicText("= $sum", style = style(15f, 600, colors.blue), modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(colors.fill)
+            .clickable(role = Role.Button) { setText(text.trimEnd() + " " + sum) }.padding(horizontal = 12.dp, vertical = 6.dp)
+            .semantics { contentDescription = "Ergebnis $sum einsetzen" })
     }
     LaunchedEffect(preset) { if (preset != null) setText(preset) }     // „Bearbeiten“: the message's text to correct
     // Picked photos lie in the input capsule above the text (2fcc3eef, like Messages – Michelle: inside, not above it):
