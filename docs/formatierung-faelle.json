@@ -1,23 +1,200 @@
 {
   "zweck": "Textformatierung (Karte bcb40e06, f005-f011): Android core/Format.kt und Ubuntu lichat/formatting.py muessen fuer jeden Fall dasselbe liefern. spans: [start, ende, art, ziel].",
   "faelle": [
-    {"ein": "ganz normal", "text": "ganz normal", "spans": []},
-    {"ein": "*fett* und _kursiv_", "text": "fett und kursiv", "spans": [[0, 4, "fett", null], [9, 15, "kursiv", null]]},
-    {"ein": "__unter__ ~durch~", "text": "unter durch", "spans": [[0, 5, "unter", null], [6, 11, "durch", null]]},
-    {"ein": "*_beides_*", "text": "beides", "spans": [[0, 6, "fett", null], [0, 6, "kursiv", null]]},
-    {"ein": "`*nicht fett*`", "text": "*nicht fett*", "spans": [[0, 12, "code", null]]},
-    {"ein": "```\nzeile 1\n*x*\n```", "text": "zeile 1\n*x*", "spans": [[0, 11, "code", null]]},
-    {"ein": "Wer war es? ||Barney||!", "text": "Wer war es? Barney!", "spans": [[12, 18, "spoiler", null]]},
-    {"ein": "datei_name_neu und 2*3*4", "text": "datei_name_neu und 2*3*4", "spans": []},
-    {"ein": "* kein Fett *", "text": "• kein Fett *", "spans": []},
-    {"ein": "Liste:\n- Kohle\n- Senf", "text": "Liste:\n• Kohle\n• Senf", "spans": []},
-    {"ein": "> Zitat hier\nAntwort", "text": "Zitat hier\nAntwort", "spans": [[0, 10, "zitat", null]]},
-    {"ein": "Siehe [die Seite](https://lisoftware.de/a_b) jetzt", "text": "Siehe die Seite jetzt", "spans": [[6, 15, "link", "https://lisoftware.de/a_b"]]},
-    {"ein": "https://x.de/_a_ bleibt", "text": "https://x.de/_a_ bleibt", "spans": []},
-    {"ein": "*offen ohne Ende", "text": "*offen ohne Ende", "spans": []},
-    {"ein": "*zwei\nZeilen*", "text": "*zwei\nZeilen*", "spans": []},
-    {"ein": "**", "text": "**", "spans": []},
-    {"ein": "Er sagte *wow*!", "text": "Er sagte wow!", "spans": [[9, 12, "fett", null]]},
-    {"ein": "Emoji 😀 *fett* 👍", "text": "Emoji 😀 fett 👍", "spans": [[8, 12, "fett", null]]}
+    {
+      "ein": "ganz normal",
+      "text": "ganz normal",
+      "spans": []
+    },
+    {
+      "ein": "*fett* und _kursiv_",
+      "text": "fett und kursiv",
+      "spans": [
+        [
+          0,
+          4,
+          "fett",
+          null
+        ],
+        [
+          9,
+          15,
+          "kursiv",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "__unter__ ~durch~",
+      "text": "unter durch",
+      "spans": [
+        [
+          0,
+          5,
+          "unter",
+          null
+        ],
+        [
+          6,
+          11,
+          "durch",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "*_beides_*",
+      "text": "beides",
+      "spans": [
+        [
+          0,
+          6,
+          "fett",
+          null
+        ],
+        [
+          0,
+          6,
+          "kursiv",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "`*nicht fett*`",
+      "text": "*nicht fett*",
+      "spans": [
+        [
+          0,
+          12,
+          "code",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "```\nzeile 1\n*x*\n```",
+      "text": "zeile 1\n*x*",
+      "spans": [
+        [
+          0,
+          11,
+          "code",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "Wer war es? ||Barney||!",
+      "text": "Wer war es? Barney!",
+      "spans": [
+        [
+          12,
+          18,
+          "spoiler",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "datei_name_neu und 2*3*4",
+      "text": "datei_name_neu und 2*3*4",
+      "spans": []
+    },
+    {
+      "ein": "* kein Fett *",
+      "text": "• kein Fett *",
+      "spans": []
+    },
+    {
+      "ein": "Liste:\n- Kohle\n- Senf",
+      "text": "Liste:\n• Kohle\n• Senf",
+      "spans": []
+    },
+    {
+      "ein": "> Zitat hier\nAntwort",
+      "text": "Zitat hier\nAntwort",
+      "spans": [
+        [
+          0,
+          10,
+          "zitat",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "Siehe [die Seite](https://lisoftware.de/a_b) jetzt",
+      "text": "Siehe die Seite jetzt",
+      "spans": [
+        [
+          6,
+          15,
+          "link",
+          "https://lisoftware.de/a_b"
+        ]
+      ]
+    },
+    {
+      "ein": "https://x.de/_a_ bleibt",
+      "text": "https://x.de/_a_ bleibt",
+      "spans": []
+    },
+    {
+      "ein": "*offen ohne Ende",
+      "text": "*offen ohne Ende",
+      "spans": []
+    },
+    {
+      "ein": "*zwei\nZeilen*",
+      "text": "*zwei\nZeilen*",
+      "spans": []
+    },
+    {
+      "ein": "**",
+      "text": "**",
+      "spans": []
+    },
+    {
+      "ein": "Er sagte *wow*!",
+      "text": "Er sagte wow!",
+      "spans": [
+        [
+          9,
+          12,
+          "fett",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "Emoji 😀 *fett* 👍",
+      "text": "Emoji 😀 fett 👍",
+      "spans": [
+        [
+          8,
+          12,
+          "fett",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "**doppelt fett** auch",
+      "text": "doppelt fett auch",
+      "spans": [
+        [
+          0,
+          12,
+          "fett",
+          null
+        ]
+      ]
+    },
+    {
+      "ein": "a~b und 3*4*5",
+      "text": "a~b und 3*4*5",
+      "spans": []
+    }
   ]
 }

@@ -121,3 +121,8 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-plus-blue { background-color: #0a84ff; }
 .lichat-plus-orange { background-color: #ff9500; }
 .lichat-plus-indigo { background-color: #5856d6; }
+
+/* ---------- one to three emoji alone, big without a bubble (f015) ---------- */
+.lichat-big-emoji { font-size: 44px; padding: 0 4px; }
+.lichat-big-emoji-2 { font-size: 38px; }
+.lichat-big-emoji-3 { font-size: 32px; }

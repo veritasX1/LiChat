@@ -20,6 +20,13 @@ class SameAsAndroid(unittest.TestCase):
                 self.assertEqual(plain, case["text"])
                 self.assertEqual([tuple(s) for s in spans], sorted(tuple(s) for s in case["spans"]))
 
+    def test_emoji_only(self):
+        """f015: only emoji (1–3 shown big) – sequences count once, any letter makes it ordinary text."""
+        from lichat.account import emoji_only
+        cases = {"😀": 1, "😀 👍🏽": 2, "👩‍👩‍👧‍👦🇫🇷1️⃣": 3, "❤️": 1, "😀😀😀😀": 4, "hi 😀": 0, "*😀*": 0, "": 0, "2": 0}
+        for text, count in cases.items():
+            self.assertEqual(emoji_only(text), count, text)
+
     def test_preview_hides_spoiler(self):
         self.assertEqual(preview_text("Täter: ||Barney|| *sicher*"), "Täter: ••• sicher")
 

@@ -822,6 +822,12 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
             Bubble(JSONObject().put("text", m.optString("text")), mine, maxLines = maxLines)
         }
     }
+    else if (io.github.veritasx1.lichat.core.emojiOnly(m.optString("text")) in 1..3) {
+        // f015, like Messages: one to three emoji alone – big, without a bubble
+        val size = when (io.github.veritasx1.lichat.core.emojiOnly(m.optString("text"))) { 1 -> 52f; 2 -> 44f; else -> 38f }
+        BasicText(m.optString("text").trim(), style = style(size, 400, colors.label), maxLines = maxLines,
+            modifier = modifier.then(interact).padding(horizontal = 4.dp).semantics { contentDescription = m.optString("text").trim() })
+    }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
         // f005–f011: *fett*, _kursiv_, ||Spoiler|| … shown formatted; a spoiler stays covered until tapped (invisible ink),

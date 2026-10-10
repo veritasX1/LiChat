@@ -254,6 +254,37 @@ def single_emoji(text):
     return True
 
 
+def emoji_only(text):
+    """f015: how many emoji the text is – only emoji (spaces between allowed), else 0. 1–3 are shown big without a bubble
+    like Messages. The twin of Kotlin's emojiOnly."""
+    cps = [ord(c) for c in text]
+    joins = lambda cp: cp in (0xFE0F, 0xFE0E, 0x20E3) or 0x1F3FB <= cp <= 0x1F3FF or 0xE0020 <= cp <= 0xE007F  # noqa: E731
+    regional = lambda cp: 0x1F1E6 <= cp <= 0x1F1FF  # noqa: E731
+    count, i = 0, 0
+    while i < len(cps):
+        cp = cps[i]
+        if chr(cp).isspace():
+            i += 1
+            continue
+        keycap = (0x30 <= cp <= 0x39 or cp in (0x23, 0x2A)) and i + 1 < len(cps) and cps[i + 1] in (0xFE0F, 0x20E3)
+        if not keycap and not _pictographic(cp):
+            return 0
+        i += 1
+        if regional(cp):
+            if i >= len(cps) or not regional(cps[i]):
+                return 0
+            i += 1
+        while i < len(cps):
+            if joins(cps[i]):
+                i += 1
+            elif cps[i] == 0x200D and i + 1 < len(cps) and _pictographic(cps[i + 1]):
+                i += 2
+            else:
+                break
+        count += 1
+    return count
+
+
 def default_folder(profile):
     base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     return base / "lichat-cli" / profile

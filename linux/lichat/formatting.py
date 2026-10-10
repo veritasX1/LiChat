@@ -8,7 +8,7 @@ durch, code, spoiler, link (target = the address), zitat."""
 
 import re
 
-PAIRS = (("||", "spoiler"), ("__", "unter"), ("*", "fett"), ("_", "kursiv"), ("~", "durch"))
+PAIRS = (("||", "spoiler"), ("__", "unter"), ("**", "fett"), ("*", "fett"), ("_", "kursiv"), ("~", "durch"))
 TITLED = re.compile(r"\[([^\[\]\n]+)\]\((https?://[^\s()]+|mailto:[^\s()]+)\)")
 
 
@@ -17,7 +17,7 @@ def preview_text(text):
     plain, spans = formatted(text)
     for start, end, _kind, _target in sorted((s for s in spans if s[2] == "spoiler"), reverse=True):
         plain = plain[:start] + "•••" + plain[end:]
-    return plain
+    return " ".join(plain.split())          # one line – quotes and lists too (Michelle)
 
 
 def _free(c):

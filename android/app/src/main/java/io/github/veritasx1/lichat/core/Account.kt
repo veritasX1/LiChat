@@ -101,6 +101,34 @@ fun suggestUsername(first: String, last: String = ""): String {
 private fun pictographic(cp: Int) = cp >= 0x1F000 || cp in setOf(0x00A9, 0x00AE, 0x3030, 0x303D, 0x3297, 0x3299, 0x2139) ||
     (cp in 0x2000..0x2BFF && !Character.isLetterOrDigit(cp) && !Character.isWhitespace(cp) && !Character.isSpaceChar(cp))
 
+/** f015: how many emoji the text is – only emoji (spaces between allowed), else 0. 1–3 are shown big without a bubble
+ *  like Messages. The twin of Python's emoji_only. */
+fun emojiOnly(text: String): Int {
+    val cps = text.codePoints().toArray()
+    fun joins(cp: Int) = cp == 0xFE0F || cp == 0xFE0E || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F
+    fun regional(cp: Int) = cp in 0x1F1E6..0x1F1FF
+    var count = 0
+    var i = 0
+    while (i < cps.size) {
+        val cp = cps[i]
+        if (Character.isWhitespace(cp)) { i++; continue }
+        val keycap = (cp in 0x30..0x39 || cp == 0x23 || cp == 0x2A) && i + 1 < cps.size && (cps[i + 1] == 0xFE0F || cps[i + 1] == 0x20E3)
+        if (!keycap && !pictographic(cp)) return 0
+        i++
+        if (regional(cp)) {
+            if (i >= cps.size || !regional(cps[i])) return 0
+            i++
+        }
+        while (i < cps.size) {
+            if (joins(cps[i])) i++
+            else if (cps[i] == 0x200D && i + 1 < cps.size && pictographic(cps[i + 1])) i += 2
+            else break
+        }
+        count++
+    }
+    return count
+}
+
 /** Exactly one emoji – also as a sequence (👍🏽, 👩‍👩‍👧‍👦, 🇫🇷, 1️⃣, ❤️) – and nothing else (Michelle 09.10.: a reaction must not
  *  be „Gelesen“ or „OK“, else anyone could fake a status under a bubble). The twin of Python's single_emoji. */
 fun isSingleEmoji(text: String): Boolean {
