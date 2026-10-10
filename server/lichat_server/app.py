@@ -26,6 +26,8 @@ them once fetched. Endpoints (all JSON, blobs base64):
     GET    /v1/devices              my own devices with the time they signed in (no names on the server)
     DELETE /v1/devices/<id>         sign out another of my own devices (signed in)
     POST   /v1/pins                 a contact PIN for me (10 min, once)        -> {pin, gueltig}   (card 89aae55d)
+    POST   /v1/einladungen          an invitation by me for someone new (7 days, at most 5 open) -> {code, link, gueltig}
+                                    (Olaf 10.10.: invite by QR code; /v1/register then answers {…, von: me})
     POST   /v1/pins/einloesen       {pin} -> {username}  (wrong PINs: 10 per 15 min and device)
     GET    /e/<code>                an invitation as a page: „In LiChat öffnen“, QR code, the code to type (card 4fe6d0ee)
     GET    /v1/health
@@ -175,6 +177,7 @@ class App:
             ("GET", r"/v1/health", lambda env, body, me: {"ok": True}, False),
             ("PUT", r"/v1/anhaenge", self.put_attachment, True),
             ("POST", r"/v1/pins", self.new_pin, True),
+            ("POST", r"/v1/einladungen", self.new_invite, True),
             ("POST", r"/v1/pins/einloesen", self.redeem_pin, True),
             ("GET", r"/e/(?P<code>[A-Za-z0-9-]{4,40})", self.invite_page, False),
             ("GET", r"/v1/anhaenge/(?P<attachment>[0-9a-f]{32})", self.get_attachment, True),
@@ -272,6 +275,7 @@ class App:
         if not USERNAME.fullmatch(username):
             raise HttpError(400, "Benutzername: 2–32 Zeichen a–z, 0–9, . _ -")
         identity = self.check_identity(body.get("identity"))
+        inviter = self.store.inviter(str(body.get("invite", "")))
         try:
             device, token = self.store.register(str(body.get("invite", "")), username, identity)
         except KeyError:
@@ -280,7 +284,10 @@ class App:
             # ebc3d629: free alternatives – only reached with a valid invitation and under the register limit (10/h)
             raise HttpError(409, "Benutzername vergeben", {"vorschlaege": self.store.free_names(
                 name_candidates(username, str(body.get("vorname", "")), str(body.get("nachname", ""))))})
-        return {"device": device, "token": token}
+        answer = {"device": device, "token": token}
+        if inviter:
+            answer["von"] = inviter          # the new person lands in the conversation with whoever invited them
+        return answer
 
     def user(self, environ, body, me, name):
         devices = self.store.devices(name)
@@ -406,6 +413,15 @@ class App:
         if not self.store.seen_once(attachment, me[1]):
             raise HttpError(404, "Kein Einmal-Bild")
         return {}
+
+    def new_invite(self, environ, body, me):
+        """Someone already here invites someone new (Olaf 10.10.): the QR code carries server and code, the new person
+        only types their name. At most 5 open per person, valid for 7 days – the register limit stays as it is."""
+        note = f"von:{me[1]}"
+        if self.store.open_invites(note) >= 5:
+            raise HttpError(429, "Höchstens 5 offene Einladungen – eine davon muss erst genutzt werden oder ablaufen")
+        code = self.store.create_invite(note, days=7)
+        return {"code": code, "link": f"{self.public}/e/{code}", "gueltig": 7 * 86400}
 
     def new_pin(self, environ, body, me):
         return {"pin": self.store.create_pin(me[1]), "gueltig": 600}

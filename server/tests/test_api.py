@@ -205,6 +205,24 @@ class ApiTest(unittest.TestCase):
         statuses = [self.call("POST", "/v1/pins/einloesen", {"pin": "AAAA-AAAA"}, token=bernd)[0] for _ in range(12)]
         self.assertIn(429, statuses, "Fehlversuche gebremst")
 
+    def test_people_invite_by_qr_code(self):
+        """Olaf 10.10.: someone already here makes an invitation (QR code: server + code); the new person only chooses a
+        name and learns who invited them. At most 5 open per person, valid 7 days; strangers cannot make any."""
+        anna = self.account("anna")[1]
+        self.assertEqual(self.call("POST", "/v1/einladungen", {})[0], 401)
+        status, made = self.call("POST", "/v1/einladungen", {}, token=anna)
+        self.assertEqual(status, 200)
+        self.assertTrue(made["link"].endswith("/e/" + made["code"]))
+        status, data = self.call("POST", "/v1/register", {"invite": made["code"], "username": "tante.erna", "identity": b64(b"e" * 32)})
+        self.assertEqual((status, data.get("von")), (200, "anna"))
+        for _ in range(5):
+            self.assertEqual(self.call("POST", "/v1/einladungen", {}, token=anna)[0], 200)
+        self.assertEqual(self.call("POST", "/v1/einladungen", {}, token=anna)[0], 429, "höchstens 5 offen")
+        self.clock.now += 8 * 86400
+        self.assertEqual(self.call("POST", "/v1/einladungen", {}, token=anna)[0], 200, "abgelaufene zählen nicht")
+        admin = self.app.store.create_invite()
+        self.assertNotIn("von", self.call("POST", "/v1/register", {"invite": admin, "username": "olaf", "identity": b64(b"o" * 32)})[1])
+
     def test_invite_page_has_link_qr_and_code(self):
         code = self.app.store.create_invite()
         environ = {"REQUEST_METHOD": "GET", "PATH_INFO": f"/e/{code.lower()}", "CONTENT_LENGTH": "0", "wsgi.input": io.BytesIO(b""),

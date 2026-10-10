@@ -520,6 +520,25 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Datei: notiz.txt: Einkaufsliste für Samstag"), anna.fetch().filter { it.attachment != null }.map { it.text })
     }
 
+    /** Olaf 10.10.: invite by QR code – the code brings server and invitation, the new person only chooses a name and lands
+     *  in the conversation with whoever invited them. Both link forms are read. */
+    @Test
+    fun inviteByQrCode() {
+        val anna = person("anna")
+        val (code, link) = anna.newInvite()
+        // the link names the server's public address (here its default) – the test server itself is local
+        assertEquals(code, Account.parseInviteUri(link)?.second)
+        assertEquals("https://exampleserver.lisoftware.de" to "ABCD-EFGH", Account.parseInviteUri("lichat://einladung?server=https%3A%2F%2Fexampleserver.lisoftware.de&code=abcd-efgh"))
+        assertNull(Account.parseInviteUri("lichat://kontakt?name=anna"))
+        val invite = Account.parseInviteUri(link)!!.second
+        val erna = File(root, "erna").let { Account.register(it, url, invite, "tante.erna", KeyVault.Plain.create(it)) }
+        assertEquals("anna", erna.invitedBy)
+        erna.addContact("anna")
+        val cid = erna.chatWith("anna")
+        erna.send(cid, "Hallo, ich bin jetzt auch hier!")
+        assertTrue(anna.fetch().any { it.text == "Hallo, ich bin jetzt auch hier!" })
+    }
+
     /** Card 89aae55d (Olaf 10.10.): a scanned QR code leads straight into the conversation – phone and Ubuntu compute the same
      *  fingerprint, so codes work both ways; a wrong fingerprint is refused; a PIN works too; known people are offered. */
     @Test

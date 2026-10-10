@@ -640,7 +640,10 @@ fun AlbumBubble(photos: List<JSONObject>, load: ((JSONObject) -> ByteArray)?, op
             }
         }
         else -> {
-            val pager = androidx.compose.foundation.pager.rememberPagerState { photos.size }
+            // The count as it is now – while an album is laid down it grows from 2 to n; a count frozen at the start made the
+            // stack jump (Michelle 5749ebd0: 1/5 → 4/5 by itself during the upload).
+            val count by androidx.compose.runtime.rememberUpdatedState(photos.size)
+            val pager = androidx.compose.foundation.pager.rememberPagerState(0) { count }
             Box(Modifier.size(232.dp, 232.dp).semantics { contentDescription = "Stapel mit $label, Foto ${pager.currentPage + 1} – wischen zum Blättern" }) {
                 // the next photos' edges behind the top one, like a stack of prints
                 Box(Modifier.align(Alignment.TopEnd).size(220.dp).clip(shape).background(palette().separator))
@@ -852,6 +855,33 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                 lifted.place(left, top)
                 menu.place(side(menu.width), top + lifted.height + gap)
             }
+        }
+    }
+}
+
+/** An invitation for someone new (Olaf 10.10.): its QR code (the invitation page – any phone camera opens it, LiChat
+ *  takes server and code from it), the code to type instead, and the link to share. */
+@Composable
+fun InviteSheet(invite: Pair<String, String>?, onShare: (String) -> Unit, onClose: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            BasicText("Jemanden einladen", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onClose) }
+        }
+        Spacer(Modifier.height(24.dp))
+        Box(Modifier.size(260.dp).clip(RoundedCornerShape(20.dp)).background(Color.White), contentAlignment = Alignment.Center) {
+            if (invite != null) QrCode(invite.second, Modifier.size(236.dp).semantics { contentDescription = "QR-Code der Einladung" })
+            else BasicText("…", style = style(17f, 400, colors.secondary))
+        }
+        invite?.let { (code, link) ->
+            BasicText(code, style = style(22f, 600, colors.label).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(1f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                modifier = Modifier.padding(top = 16.dp))
+            BasicText("Die andere Person installiert LiChat und tippt auf „Einladung scannen“ – Server und Einladung sind dann schon " +
+                "eingetragen, sie gibt nur noch ihren Namen ein und landet direkt im Gespräch mit dir. Die Einladung gilt 7 Tage, einmal.",
+                style = style(13f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
+            BasicText("Link teilen", style = style(17f, 400, colors.blue), modifier = Modifier.clickable(role = Role.Button) { onShare(link) }.padding(12.dp))
         }
     }
 }
@@ -1307,7 +1337,8 @@ fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Un
 
 @Composable
 fun NewMessage(problem: String?, onCancel: () -> Unit, people: List<Pair<String, String>> = emptyList(), onScan: () -> Unit = {},
-               onMyCode: () -> Unit = {}, onPin: (String) -> Unit = {}, onPick: (String) -> Unit = {}, onSend: (List<String>, String) -> Unit) {
+               onMyCode: () -> Unit = {}, onPin: (String) -> Unit = {}, onPick: (String) -> Unit = {}, onInvite: () -> Unit = {},
+               onSend: (List<String>, String) -> Unit) {
     val colors = palette()
     var to by remember { mutableStateOf("") }
     var pinOpen by remember { mutableStateOf(false) }
@@ -1339,6 +1370,7 @@ fun NewMessage(problem: String?, onCancel: () -> Unit, people: List<Pair<String,
                 Action("QR-Code scannen", Glyph.Camera, onScan)
                 Action("Meinen QR-Code zeigen", Glyph.QrCode, onMyCode)
                 Action("PIN eingeben", Glyph.Keypad) { pinOpen = !pinOpen }
+                Action("Jemanden einladen", Glyph.Envelope, onInvite)
                 if (pinOpen) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     BasicTextField(pin, { pin = it.filter(Char::isLetterOrDigit).take(12) }, singleLine = true, textStyle = style(17f, 400, colors.label),
                         cursorBrush = SolidColor(colors.blue), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(colors.fill)
@@ -1723,7 +1755,7 @@ fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
 
 @Composable
 fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLink: (String) -> Unit = {}, onLinkCancel: () -> Unit = {},
-                suggestions: List<String> = emptyList(),
+                suggestions: List<String> = emptyList(), scannedInvite: Pair<String, String>? = null, onScanInvite: () -> Unit = {},
                 onSignIn: (String, String, String, String, String) -> Unit) {
     val colors = palette()
     // Our own server as a default (Tante Erna types nothing) – any other one can be entered.
@@ -1764,6 +1796,11 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
         return
     }
     var invite by remember { mutableStateOf("") }
+    // Olaf 10.10.: an invitation's QR code brings server and code along – the new person only types their name.
+    var fromCode by remember { mutableStateOf(false) }
+    LaunchedEffect(scannedInvite) {
+        scannedInvite?.let { (address, code) -> if (address.isNotBlank()) server = address; invite = code; fromCode = true }
+    }
     // Name as people write it (Olaf 09.10.: capitals, spaces); the user name is made from it and can be changed.
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
@@ -1775,17 +1812,32 @@ fun SetupScreen(busy: Boolean, problem: String?, linkCode: String? = null, onLin
         AppIcon(88.dp)
         BasicText("Bei LiChat anmelden", style = style(28f, 700, colors.label), modifier = Modifier.padding(top = 16.dp))
         BasicText("Mit der Einladung deines Servers. Alles, was du schreibst, ist Ende-zu-Ende verschlüsselt.", style = style(15f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp, vertical = 10.dp))
+        if (fromCode) Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            GlyphIcon(Glyph.Check, colors.green, 18.dp)
+            Column(Modifier.weight(1f).padding(start = 8.dp).semantics(mergeDescendants = true) { contentDescription = "Einladung erkannt, Server ${server}" }) {
+                BasicText("Einladung erkannt", style = style(15f, 600, colors.label))
+                BasicText(server.removePrefix("https://").removePrefix("http://"), style = style(13f, 400, colors.secondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton("Ändern", colors.blue) { fromCode = false }
+        } else Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp))
+            .border(1.dp, colors.blue, RoundedCornerShape(14.dp)).clickable(role = Role.Button, onClick = onScanInvite), contentAlignment = Alignment.Center) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GlyphIcon(Glyph.Camera, colors.blue, 20.dp)
+                BasicText("Einladung scannen", style = style(17f, 600, colors.blue), modifier = Modifier.padding(start = 8.dp))
+            }
+        }
         Section(null) {
-            listOf(Triple("Server", server) { v: String -> server = v }, Triple("Einladung", invite) { v: String -> invite = v },
+            val rows = listOf(Triple("Server", server) { v: String -> server = v }, Triple("Einladung", invite) { v: String -> invite = v },
                 Triple("Vorname", first) { v: String -> first = v }, Triple("Nachname", last) { v: String -> last = v },
-                Triple("Benutzername", name) { v: String -> name = io.github.veritasx1.lichat.core.suggestUsername(v); nameTouched = true }).forEachIndexed { i, (label, value, set) ->
+                Triple("Benutzername", name) { v: String -> name = io.github.veritasx1.lichat.core.suggestUsername(v); nameTouched = true })
+            (if (fromCode) rows.drop(2) else rows).let { shown -> shown.forEachIndexed { i, (label, value, set) ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     BasicText(label, style = style(17f, 400, colors.label), modifier = Modifier.width(120.dp))
                     BasicTextField(value, set, singleLine = true, keyboardOptions = when (label) { "Vorname", "Nachname" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words, autoCorrectEnabled = true); "Server" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri); "Einladung" -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Characters, autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii); else -> androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false) }, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                         modifier = Modifier.weight(1f).semantics { contentDescription = label })
                 }
-                if (i < 4) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
-            }
+                if (i < shown.lastIndex) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+            } }
         }
         BasicText("Der Benutzername ist deine Kennung zum Finden (klein, ohne Leerzeichen). Deinen Namen sehen nur deine Gesprächspartner.",
             style = style(13f, 400, colors.secondary), modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 6.dp))

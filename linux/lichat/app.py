@@ -18,6 +18,7 @@ import re
 import queue
 import sys
 import threading
+import urllib.parse
 import time
 from pathlib import Path
 
@@ -361,7 +362,17 @@ class Window(Adw.ApplicationWindow):
                              wrap=True, justify=Gtk.Justification.CENTER, css_classes=["lichat-subtitle"], margin_bottom=8))
         # Our own server as a default (Tante Erna types nothing) – any other one can be entered.
         self.f_server = Gtk.Entry(text="https://exampleserver.lisoftware.de", placeholder_text="Server (https://…)", css_classes=["lichat-field"])
-        self.f_invite = Gtk.Entry(placeholder_text="Einladung", css_classes=["lichat-field"])
+        self.f_invite = Gtk.Entry(placeholder_text="Einladung (Code oder Einladungs-Link)", css_classes=["lichat-field"])
+
+        def invite_pasted(*_):
+            # Olaf 10.10.: a pasted invitation link brings the server along – only the name is left to type
+            link = Account.parse_link(self.f_invite.get_text())
+            if link and link["art"] == "einladung":
+                if link["server"]:
+                    self.f_server.set_text(urllib.parse.unquote(link["server"]))
+                self.f_invite.set_text(link["code"])
+                self.f_first.grab_focus()
+        self.f_invite.connect("changed", invite_pasted)
         # Name as people write it (Olaf: capitals, spaces) – the user name is made from it, and can still be changed.
         words = Gtk.InputHints.UPPERCASE_WORDS
         plain = Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.LOWERCASE
@@ -568,6 +579,10 @@ class Window(Adw.ApplicationWindow):
                 raise
             if first or last:
                 account.set_name(first, last)
+            if account.invited_by:
+                # invited by someone: they are a contact at once and their conversation is open – „direkt loslegen“
+                account.add_contact(account.invited_by)
+                self.after_setup = account.chat_with(account.invited_by)
             return account
 
         def done(account, error):
@@ -589,6 +604,10 @@ class Window(Adw.ApplicationWindow):
             if self.settings["hintergrund"] and not self.separate:
                 autostart(True)
             self.show_main()
+            if getattr(self, "after_setup", None):
+                self.current = self.after_setup
+                self.fill_list()
+                self.show_conversation()
 
         self.worker.do(job, done)
 
@@ -1052,10 +1071,9 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(Gtk.Label(label=f"↩ {who}: {said}", css_classes=["lichat-quote"], wrap=True,
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
-            if m.get("anhang") and m.get("mid") in leaders:
-                piece = self.album_bubble(leaders[m["mid"]], mine)
-            elif m.get("anhang"):
-                piece = self.attachment_bubble(m["anhang"], mine, m)
+            if m.get("anhang"):
+                # an album (5749ebd0) or one attachment – the caption under it either way (Michelle: missing under albums)
+                piece = self.album_bubble(leaders[m["mid"]], mine) if m.get("mid") in leaders else self.attachment_bubble(m["anhang"], mine, m)
                 if (m.get("text") or "").strip():
                     # 2fcc3eef: the caption under the picture, in the same message – like Messages
                     caption = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True, max_width_chars=48,
@@ -1332,6 +1350,9 @@ class Window(Adw.ApplicationWindow):
         mine = Gtk.Button(label="Meinen QR-Code zeigen", css_classes=["flat"])
         mine.connect("clicked", lambda *_: (button.popdown(), self.show_my_code()))
         box.append(mine)
+        invite = Gtk.Button(label="Jemanden einladen", css_classes=["flat"])
+        invite.connect("clicked", lambda *_: (button.popdown(), self.show_invite()))
+        box.append(invite)
         entry = Gtk.Entry(placeholder_text="Kontakt-Link oder PIN einfügen", width_chars=32)
         box.append(entry)
 
@@ -1372,6 +1393,51 @@ class Window(Adw.ApplicationWindow):
                 self.fill_list()
                 self.show_conversation()
         self.worker.do(lambda: account.chat_with(find_user()), done)
+
+    def show_invite(self):
+        """An invitation for someone new (Olaf 10.10.): its QR code – any phone camera opens the invitation page, LiChat
+        takes server and code from it – the code, and the link to copy."""
+        from .qrcodegen import QrCode
+        account = self.account
+        dialog = Adw.AlertDialog(heading="Jemanden einladen",
+                                 body="Die andere Person installiert LiChat und scannt den Code – sie gibt nur noch ihren Namen ein "
+                                      "und landet direkt im Gespräch mit dir. 7 Tage gültig, einmal.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        area = Gtk.DrawingArea(content_width=220, content_height=220, halign=Gtk.Align.CENTER, css_classes=["lichat-qr"])
+        code_label = Gtk.Label(label="…", css_classes=["title-2"], selectable=True)
+        link_label = Gtk.Label(label="", selectable=True, wrap=True, wrap_mode=Pango.WrapMode.CHAR, max_width_chars=40, css_classes=["dim-label"])
+        box.append(area)
+        box.append(code_label)
+        box.append(link_label)
+        dialog.set_extra_child(box)
+        dialog.add_response("fertig", "Fertig")
+
+        def made(result, error):
+            if error:
+                code_label.set_label(error)
+                return
+            code, link = result
+            qr = QrCode.encode_text(link, QrCode.Ecc.MEDIUM)
+
+            def draw(_area, cr, width, height):
+                size = qr.get_size() + 8
+                scale = min(width, height) / size
+                cr.set_source_rgb(1, 1, 1)
+                cr.paint()
+                cr.set_source_rgb(0, 0, 0)
+                for y in range(qr.get_size()):
+                    for x in range(qr.get_size()):
+                        if qr.get_module(x, y):
+                            cr.rectangle((x + 4) * scale, (y + 4) * scale, scale + 0.5, scale + 0.5)
+                cr.fill()
+            area.set_draw_func(draw)
+            area.queue_draw()
+            area.update_property([Gtk.AccessibleProperty.LABEL], ["QR-Code der Einladung"])
+            code_label.set_label(code)
+            link_label.set_label(link)
+        self.worker.do(account.new_invite, made)
+        dialog.present(self)
+        self.invite_dialog = (dialog, code_label, link_label)       # for the GUI test
 
     def show_my_code(self):
         """My contact code: the QR code a phone scans to reach me, my user name, and a PIN on request (89aae55d)."""
@@ -2043,7 +2109,7 @@ class Window(Adw.ApplicationWindow):
 
     def album_options(self, paths):
         """Several photos: one question for all of them, text to them – they leave as an album (5749ebd0)."""
-        dialog = Adw.AlertDialog(heading=f"{len(paths)} Fotos senden", body="Als Collage (2–3) bzw. Stapel (ab 4), wie in Nachrichten.")
+        dialog = Adw.AlertDialog(heading=f"{len(paths)} Fotos senden")
         options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         thumbs = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=5, column_spacing=4, row_spacing=4)
         for path in paths:

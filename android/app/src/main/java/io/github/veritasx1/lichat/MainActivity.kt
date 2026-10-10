@@ -333,6 +333,14 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var scanning by remember { mutableStateOf(false) }
     var scanFor by remember { mutableStateOf("koppeln") }                 // what the scanner looks for: koppeln | kontakt
     var myCode by remember { mutableStateOf<Pair<String?, String?>?>(null) }   // my contact QR (link, PIN) while shown (89aae55d)
+    // Olaf 10.10.: invite by QR code – my invitation while shown (code, link); a scanned/opened one on the setup screen.
+    var inviting by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var invitingOpen by remember { mutableStateOf(false) }
+    var scannedInvite by remember { mutableStateOf<Pair<String, String>?>(null) }
+    LaunchedEffect(Unit) {
+        // the invitation page's „In LiChat öffnen“ (lichat://einladung?…) lands here with server and code
+        (context as? android.app.Activity)?.intent?.data?.toString()?.let { Account.parseInviteUri(it) }?.let { scannedInvite = it }
+    }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) scanning = true else problem = "LiChat darf die Kamera nicht benutzen – den Code stattdessen eintippen."
     }
@@ -419,7 +427,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     CompositionLocalProvider(LocalPalette provides remember(dark) { Palette(dark) }) {
         val acc = account
         if (acc == null) {
-            SetupScreen(busy, problem, linkCode, suggestions = nameSuggestions,
+            SetupScreen(busy, problem, linkCode, suggestions = nameSuggestions, scannedInvite = scannedInvite,
+                onScanInvite = { problem = null; startScan("einladung") },
                 onLink = { server ->
                     // A second device (card da5cbfcb): show a code, wait for the other device to accept it, then sign in.
                     problem = null
@@ -468,8 +477,17 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         account = created
                         runCatching { LiChatService.start(context) }
                         if (!Settings.explained(context)) explaining = true
+                        // invited by someone (Olaf 10.10.): they are a contact at once, and their conversation is open – „direkt loslegen“
+                        created.invitedBy?.let { inviter ->
+                            work({ created.addContact(inviter); created.chatWith(inviter) }) { cid, _ -> Hub.changed(); if (cid != null) page = Page.Chat(cid) }
+                        }
                     }
                 }
+            }
+            if (scanning) io.github.veritasx1.lichat.ui.QrScanner { text ->
+                scanning = false
+                val invite = text?.let { Account.parseInviteUri(it) }
+                if (invite != null) scannedInvite = invite else if (text != null) problem = "Das ist keine LiChat-Einladung."
             }
             return@CompositionLocalProvider
         }
@@ -519,7 +537,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onScan = { problem = null; startScan("kontakt") },
                     onMyCode = { myCode = null to null; work({ acc.contactLink() }) { link, error -> problem = error; myCode = if (link != null) link to null else null } },
                     onPin = { pin -> problem = null; openWith { acc.redeemPin(pin) } },
-                    onPick = { user -> openWith { user } }) { names, text ->
+                    onPick = { user -> openWith { user } },
+                    onInvite = { inviting = null; invitingOpen = true; work({ acc.newInvite() }) { made, error -> problem = error; if (made != null) inviting = made else invitingOpen = false } }) { names, text ->
                     work({ acc.start(names).also { acc.send(it, text) } }) { cid, error ->
                         problem = error
                         Hub.changed()
@@ -604,6 +623,12 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 }
             }
         }
+        if (invitingOpen) io.github.veritasx1.lichat.ui.InviteSheet(inviting,
+            onShare = { link ->
+                context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND)
+                    .setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, "Komm zu LiChat: $link"), "Einladung teilen"))
+            },
+            onClose = { invitingOpen = false; inviting = null })
         myCode?.let { (link, pin) ->
             io.github.veritasx1.lichat.ui.ContactCodeSheet(link, account?.username ?: "", pin,
                 onPin = { account?.let { acc -> work({ acc.newPin() }) { p, error -> problem = error; if (p != null) myCode = link to p } } },
