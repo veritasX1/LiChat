@@ -68,6 +68,9 @@ fun <T> uploadWork(job: () -> T, done: (T?, String?) -> Unit) = uploader.execute
     main.post { done(result.getOrNull(), error) }
 }
 
+/** Draft photos to disk (f0-04), in the order they changed – beside texts and uploads. */
+private val drafter = Executors.newSingleThreadExecutor()
+
 /** Long waits (a new device to link, up to 10 minutes) on their own thread – sending must not wait behind them. */
 private val waiter = Executors.newCachedThreadPool()
 
@@ -280,21 +283,45 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     // A photo lies above the input first (2fcc3eef, like Messages): text to it, options by a tap; videos go at once.
     val staged = remember { androidx.compose.runtime.mutableStateListOf<io.github.veritasx1.lichat.ui.Staged>() }
     var stagedOpen by remember { mutableStateOf<Int?>(null) }
-    // they belong to the conversation they were picked in – and wait there when one goes elsewhere and comes back (979f9b22)
-    val stagedByChat = remember { mutableMapOf<String, List<io.github.veritasx1.lichat.ui.Staged>>() }
+    // they belong to the conversation they were picked in – and wait there when one goes elsewhere and comes back (979f9b22),
+    // also after the app was closed (f0-04): sealed on this device, read again when the conversation opens
     var stagedFor by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(chatId()) {
-        stagedFor?.let { stagedByChat[it] = staged.toList() }
+    var stagedLoaded by remember { mutableStateOf<List<io.github.veritasx1.lichat.ui.Staged>>(emptyList()) }
+    LaunchedEffect(chatId(), account) {
+        stagedFor = null                    // in the same step as the clearing: the old conversation keeps its photos
         staged.clear(); stagedOpen = null
-        chatId()?.let { cid -> staged.addAll(stagedByChat.remove(cid).orEmpty()) }
-        stagedFor = chatId()
+        val cid = chatId() ?: return@LaunchedEffect
+        val acc = account ?: return@LaunchedEffect
+        val kept = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { acc.draftPhotos(cid) }.map {
+            io.github.veritasx1.lichat.ui.Staged(Uri.EMPTY, it.bytes, it.once, it.secret, it.markedUp, it.asFile, it.name, it.mime)
+        }
+        staged.addAll(kept)
+        stagedLoaded = kept
+        stagedFor = cid
+    }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.snapshotFlow { stagedFor to staged.toList() }.collect { (cid, list) ->
+            val acc = account
+            if (cid == null || acc == null || list == stagedLoaded) return@collect
+            stagedLoaded = list
+            val photos = list.mapNotNull { item -> item.bytes?.let {
+                Account.DraftPhoto(it, item.name, item.mime, item.once, item.secret, item.asFile, item.markedUp) } }
+            drafter.execute { runCatching { acc.setDraftPhotos(cid, photos) } }
+        }
+    }
+    fun stageOf(uri: Uri, asFile: Boolean = false): io.github.veritasx1.lichat.ui.Staged {
+        val resolver = context.contentResolver
+        val name = runCatching { resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null } }.getOrNull() ?: "Foto.jpg"
+        return io.github.veritasx1.lichat.ui.Staged(uri, runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull(),
+            asFile = asFile, name = name, mime = resolver.getType(uri) ?: "image/jpeg")
     }
     // Up to 10 at once (5749ebd0, like Messages): photos lie above the input, videos go at once.
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(io.github.veritasx1.lichat.core.ALBUM_MAX)) { uris ->
         for (uri in uris) {
             if (context.contentResolver.getType(uri)?.startsWith("image/") == true) {
                 if (staged.size < io.github.veritasx1.lichat.core.ALBUM_MAX)
-                    staged.add(io.github.veritasx1.lichat.ui.Staged(uri, runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()))
+                    staged.add(stageOf(uri))
             } else sendFile(uri, false)
         }
     }
@@ -316,7 +343,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     val (jpeg, preview) = Pictures.photo(item.bytes)
                     acc.sendAttachment(cid, jpeg, "Foto.jpg", "image/jpeg", "bild", preview = preview, once = item.once, secret = item.secret,
                         caption = text, album = part, defer = true)
-                } else media.send(acc, cid, item.uri, item.asFile, item.once, item.secret, text, album = part, defer = true)
+                } else if (item.bytes != null)
+                    media.send(acc, cid, item.bytes, item.name, item.mime, item.asFile, item.once, item.secret, text, album = part, defer = true)
+                else media.send(acc, cid, item.uri, item.asFile, item.once, item.secret, text, album = part, defer = true)
             } catch (e: Exception) {
                 // one photo not readable: the others still go (laid down ones never hang on „wartet“)
                 problemText = problemText ?: (e as? LiChatException)?.message ?: "Ein Foto ließ sich nicht vorbereiten"; null
@@ -337,7 +366,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val type = uri?.let { context.contentResolver.getType(it) }.orEmpty()
         if (uri != null && type.startsWith("image/") && type != "image/svg+xml" && staged.size < io.github.veritasx1.lichat.core.ALBUM_MAX)
-            staged.add(io.github.veritasx1.lichat.ui.Staged(uri, runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull(), asFile = true))
+            staged.add(stageOf(uri, asFile = true))
         else sendFile(uri, true)
     }
     fun startRecording() {
