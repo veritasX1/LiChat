@@ -602,6 +602,14 @@ def main():
     big = big if isinstance(big, Gtk.Label) else [w for w in walk(big) if isinstance(w, Gtk.Label)][0]
     assert big.has_css_class("lichat-big-emoji") and not big.has_css_class("lichat-bubble")
 
+    # f028: „87,60/4 =“ – the result offered, Tab puts it in
+    window.input.set_text("Pro Kopf 87,60/4 =")
+    settle(0.2)
+    assert window.suggestions.get_visible() and window.sum_result == "21,9"
+    assert window.input._key(None, Gdk.KEY_Tab, 0, 0) is True
+    assert window.input.get_text() == "Pro Kopf 87,60/4 = 21,9", window.input.get_text()
+    window.input.set_text("")
+
     # formatting while writing: Strg+B around the selection, „Spoiler“ from the menu with the cursor between the signs
     window.input.set_text("Kommt alle")
     window.input.buffer.select_range(window.input.buffer.get_start_iter(), window.input.buffer.get_iter_at_offset(5))

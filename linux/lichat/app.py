@@ -30,6 +30,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango  # noqa: E402
 
+from .calc import suggestion  # noqa: E402
 from .formatting import formatted, preview_text  # noqa: E402
 from .recorder import Recorder  # noqa: E402
 
@@ -367,6 +368,7 @@ class Composer(Gtk.Overlay):
         self.view.insert_action_group("format", actions)
         menu.append_submenu("Format", formats)
         self.extra = menu                 # the window adds „Lautlos senden“ / „Später senden“ (f020/f021)
+        self.on_tab = None                # the window: Tab takes a suggested result (f028)
         self.view.set_extra_menu(menu)
 
     def _changed(self, _buffer):
@@ -390,6 +392,8 @@ class Composer(Gtk.Overlay):
             self.buffer.place_cursor(cursor)
 
     def _key(self, _controller, keyval, _keycode, state):
+        if keyval == Gdk.KEY_Tab and self.on_tab is not None and self.on_tab():
+            return True
         if state & Gdk.ModifierType.CONTROL_MASK and keyval in self.KEYS:
             self.wrap(self.KEYS[keyval])
             return True
@@ -1006,6 +1010,7 @@ class Window(Adw.ApplicationWindow):
         self.input.connect("changed", self.typed)
         self.input.connect("changed", self.keep_draft)
         self.input.connect("changed", self.suggest_mentions)
+        self.input.on_tab = lambda: getattr(self, "sum_result", None) is not None and (self.insert_result(self.sum_result) or True)
         self.typing_timer = 0
         line.append(self.input)
         # f0-05/f0-12, like Messages on the Mac: with the field empty a microphone at its end – a click records, Enter sends text.
@@ -1355,6 +1360,7 @@ class Window(Adw.ApplicationWindow):
                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
                 # „@name“ bold (card d54175ed)
                 piece.set_markup(bubble_markup(m["text"], self.spoiler_shown(m), m.get("effekt") == "tinte"))
+                self.cover_for_reader(piece, m)
                 piece.connect("activate-link", lambda label, uri, msg=m: self.bubble_link(label, uri, msg))
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
@@ -1475,7 +1481,19 @@ class Window(Adw.ApplicationWindow):
             button = Gtk.Button(label=self.account.display(user), css_classes=["lichat-suggestion"], tooltip_text=f"@{user}")
             button.connect("clicked", lambda _b, u=user: self.insert_mention(u))
             self.suggestions.append(button)
-        self.suggestions.set_visible(bool(names))
+        # f028, like Math Notes: „87,60/4 =“ at the end – the result offered, a click (or Tab) puts it in
+        result = suggestion(entry.get_text()) if not names else None
+        if result is not None:
+            button = Gtk.Button(label=f"= {result}", css_classes=["lichat-suggestion"], tooltip_text="Ergebnis einsetzen (Tab)")
+            button.connect("clicked", lambda _b, r=result: self.insert_result(r))
+            self.suggestions.append(button)
+        self.sum_result = result
+        self.suggestions.set_visible(bool(names) or result is not None)
+
+    def insert_result(self, result):
+        self.input.set_text(self.input.get_text().rstrip() + " " + result)
+        self.input.grab_focus()
+        self.input.set_position(-1)
 
     def insert_mention(self, user):
         text = self.input.get_text()
@@ -2179,6 +2197,22 @@ class Window(Adw.ApplicationWindow):
                     cr.arc(x * w + math.cos(angle) * reach, y * h + math.sin(angle) * reach + 0.08 * h * life * life, 2.4, 0, 2 * math.pi)
                     cr.fill()
 
+    INK_WORDS = "unsichtbare Tinte, zum Aufdecken anklicken"
+
+    def cover_for_reader(self, label, message):
+        """Michelle: a covered spoiler must not be read aloud – until uncovered the screen reader hears what it is."""
+        if self.spoiler_shown(message):
+            return
+        if message.get("effekt") == "tinte":
+            label.update_property([Gtk.AccessibleProperty.LABEL], [self.INK_WORDS])
+            return
+        plain, spans = formatted(message.get("text", ""))
+        covered = sorted((s for s in spans if s[2] == "spoiler"), reverse=True)
+        for start, end, _k, _t in covered:
+            plain = plain[:start] + f"({self.INK_WORDS})" + plain[end:]
+        if covered:
+            label.update_property([Gtk.AccessibleProperty.LABEL], [plain])
+
     def spoiler_shown(self, message):
         return message.get("mid") in getattr(self, "spoilers", set())
 
@@ -2188,6 +2222,7 @@ class Window(Adw.ApplicationWindow):
         if uri.startswith(SPOILER):
             self.spoilers = getattr(self, "spoilers", set()) | {message.get("mid")}
             label.set_markup(bubble_markup(message["text"], True, message.get("effekt") == "tinte"))
+            label.reset_property(Gtk.AccessibleProperty.LABEL)
             return True
         titled = [t for _a, _b, kind, t in formatted(message.get("text", ""))[1] if kind == "link"]
         if uri in titled:

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
@@ -557,12 +558,12 @@ httpd.serve_forever()
         anna.fetch()
         shot("2g-formatiert") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
         val shown = "Grillen am Samstag Freitag – wer? Barney Plan"
-        compose.onNodeWithText(shown).assertExists()
-        val text = compose.onNodeWithText(shown).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].first()
-        val spoiler = text.getLinkAnnotations(0, text.length).first { (it.item as? androidx.compose.ui.text.LinkAnnotation.Clickable)?.tag == "spoiler" }
-        assertEquals("Barney", text.substring(spoiler.start, spoiler.end))
-        assertTrue("verdeckt", text.spanStyles.any { it.start == spoiler.start && it.item.color == androidx.compose.ui.graphics.Color.Transparent })
-        (spoiler.item as androidx.compose.ui.text.LinkAnnotation.Clickable).linkInteractionListener!!.onClick(spoiler.item)
+        // covered: the screen reader hears „unsichtbare Tinte“, never „Barney“ (Michelle)
+        compose.onNodeWithText(shown).assertDoesNotExist()
+        val reader = compose.onNode(androidx.compose.ui.test.hasContentDescription("unsichtbare Tinte", substring = true))
+        assertEquals("Grillen am Samstag Freitag – wer? (unsichtbare Tinte, zum Aufdecken doppeltippen) Plan",
+            reader.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ContentDescription].first())
+        reader.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)      // a screen reader's double tap
         compose.waitForIdle()
         val after = compose.onNodeWithText(shown).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].first()
         assertTrue("aufgedeckt", after.spanStyles.none { it.item.color == androidx.compose.ui.graphics.Color.Transparent })
@@ -575,6 +576,17 @@ httpd.serve_forever()
         compose.waitForIdle()
         compose.onNodeWithText("Link öffnen?").assertDoesNotExist()
         assertEquals("wer? ••• Plan", io.github.veritasx1.lichat.core.describe(anna.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }).substringAfter("Freitag – "))
+    }
+
+    /** f028: „87,60/4 =“ – „= 21,9“ above the input, a tap puts it in. */
+    @Test
+    fun sumOffered() {
+        var sent = ""
+        shot("2k-rechnen") { androidx.compose.foundation.layout.Column { io.github.veritasx1.lichat.ui.InputBar({ sent = it }, draft = "Pro Kopf 87,60/4 =") } }
+        compose.onNodeWithText("= 21,9").performClick()
+        compose.waitForIdle()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performClick()
+        assertEquals("Pro Kopf 87,60/4 = 21,9", sent)
     }
 
     /** f012–f014: a new message with Konfetti plays it over the conversation; „Nicken“ moves, „Wiedergeben“ plays again. */
