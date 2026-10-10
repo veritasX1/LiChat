@@ -2,7 +2,7 @@
 
 Stand: 10. Oktober 2026 · geprüft von Michelle (Test) · Quelltext: github.com/veritasX1/LiChat
 
-Dieser Bericht sagt in einfachen Worten, was LiChat auf deinem Gerät und auf dem Server tut, wohin es Verbindungen aufbaut und was es speichert. Jede Angabe lässt sich im Quelltext nachprüfen. Wir haben jeden Punkt mit unserem Wertekompass abgeglichen: Privatsphäre zuerst, Kontrolle beim Menschen, einfach zu bedienen, kostenlos für immer.
+Dieser Bericht sagt in einfachen Worten, was LiChat auf deinem Gerät und auf dem Server tut, wohin es Verbindungen aufbaut und was es speichert. Jede Angabe lässt sich im Quelltext nachprüfen. Jeder Punkt richtet sich nach unserem Wertekompass: Privatsphäre zuerst, Kontrolle beim Menschen, einfach zu bedienen, kostenlos für immer.
 
 ## Kurz gesagt
 
@@ -71,7 +71,7 @@ Keine Berechtigung für Kontakte, Standort, Speicher oder Fotos. Fotos wählst d
 - **Server:** nur die Python-Standardbibliothek, im Docker-Abbild zusätzlich gunicorn.
 - Keine Werbe-, Analyse- oder Absturz-Bibliotheken.
 
-## Abgleich mit unserem Wertekompass
+## Unser Wertekompass
 
 | Grundsatz | Stand in 1.0 |
 |---|---|
