@@ -32,6 +32,7 @@ import io.github.veritasx1.lichat.ui.SettingsScreen
 import io.github.veritasx1.lichat.ui.SetupScreen
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -507,6 +508,33 @@ httpd.serve_forever()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Aufnahme beenden und anhören")).performClick()
         compose.waitForIdle()
         assertEquals(3.4 to false, kept)
+    }
+
+    /** f0-07, like Messages: a swipe to the left shows every message's time while held; to the right on a bubble answers. */
+    @Test
+    fun swipeForTimesAndToAnswer() {
+        shot("2f-uhrzeiten") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) }
+        val salad = "Ja, gern! Ich bringe Kartoffelsalat mit."
+        val list = anna.chat(cid).getJSONArray("messages")
+        val at = (0 until list.length()).map { list.getJSONObject(it) }.first { it.optString("text") == salad }.optLong("at")
+        val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMANY).format(java.util.Date(at * 1000))
+        val bubble = compose.onNodeWithText(salad)
+        val before = compose.onAllNodesWithText(time).fetchSemanticsNodes().size
+        val right = bubble.fetchSemanticsNode().boundsInRoot.right
+        bubble.performTouchInput { down(center); repeat(6) { moveBy(Offset(-30f, 0f)) } }
+        compose.waitForIdle()
+        println("f0-07: vorher $before, jetzt ${compose.onAllNodesWithText(time).fetchSemanticsNodes().size}, rechts $right → ${bubble.fetchSemanticsNode().boundsInRoot.right}")
+        assertTrue("Blase zur Seite", bubble.fetchSemanticsNode().boundsInRoot.right < right - 20)
+        assertTrue("Uhrzeit beim Wischen nach links", compose.onAllNodesWithText(time).fetchSemanticsNodes().size > before)
+        if (out != null) captureScreenRoboImage("$out/2f-uhrzeiten.png")
+        bubble.performTouchInput { up() }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        assertEquals("losgelassen: wieder weg", before, compose.onAllNodesWithText(time).fetchSemanticsNodes().size)
+        compose.onNodeWithText("Antwort an", substring = true).assertDoesNotExist()
+        bubble.performTouchInput { swipe(Offset(centerX - 100, centerY), Offset(centerX + 150, centerY), 300) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Antwort an", substring = true).assertExists()
     }
 
     @Test
