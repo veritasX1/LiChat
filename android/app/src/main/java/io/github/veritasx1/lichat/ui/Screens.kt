@@ -2329,6 +2329,8 @@ fun SettingsScreen(account: Account, preview: Boolean, unrestricted: Boolean, on
                 BasicText(account.server.url.removePrefix("https://"), style = style(15f, 400, colors.secondary), maxLines = 1)
             }
         }
+        BasicText("LiChat ${io.github.veritasx1.lichat.BuildConfig.VERSION_NAME} · lisoftware.de/lichat", style = style(13f, 400, colors.secondary).copy(textAlign = TextAlign.Center),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
     }
 }
 
