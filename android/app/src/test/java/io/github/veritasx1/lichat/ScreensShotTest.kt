@@ -577,6 +577,24 @@ httpd.serve_forever()
         assertEquals("wer? ••• Plan", io.github.veritasx1.lichat.core.describe(anna.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }).substringAfter("Freitag – "))
     }
 
+    /** f012–f014: a new message with Konfetti plays it over the conversation; „Nicken“ moves, „Wiedergeben“ plays again. */
+    @Test
+    fun effectPlays() {
+        bernd.send(cid, "Alles Gute!", effect = "konfetti")
+        anna.fetch()
+        compose.mainClock.autoAdvance = false
+        compose.setContent { CompositionLocalProvider(LocalPalette provides Palette(false)) { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }) } }
+        compose.mainClock.advanceTimeBy(1200)
+        assertEquals("konfetti", io.github.veritasx1.lichat.ui.Effects.screen?.first)
+        if (out != null) captureScreenRoboImage("$out/2j-konfetti.png")
+        compose.mainClock.advanceTimeBy(4000)
+        assertEquals(null, io.github.veritasx1.lichat.ui.Effects.screen)
+        compose.onNodeWithText("↻ Wiedergeben").performClick()
+        compose.mainClock.advanceTimeBy(100)
+        assertEquals("konfetti", io.github.veritasx1.lichat.ui.Effects.screen?.first)
+        compose.mainClock.autoAdvance = true
+    }
+
     /** f005–f011: text selected – a row of formats; „Fett“ puts it between stars. */
     @Test
     @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
@@ -596,8 +614,9 @@ httpd.serve_forever()
     @Test
     fun sendOptions() {
         var sent: Triple<String, Boolean, Long?>? = null
+        var effect: String? = null
         shot("2i-sendeoptionen") { androidx.compose.foundation.layout.Column {
-            io.github.veritasx1.lichat.ui.InputBar({}, draft = "Psst", onSendWith = { text, silent, later -> sent = Triple(text, silent, later) }) } }
+            io.github.veritasx1.lichat.ui.InputBar({}, draft = "Psst", onSendWith = { text, silent, later, e -> sent = Triple(text, silent, later); effect = e }) } }
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performTouchInput { longClick() }
         compose.waitForIdle()
         compose.onNodeWithText("Lautlos senden").performClick()
@@ -613,6 +632,15 @@ httpd.serve_forever()
         assertEquals("Morgen", sent?.first)
         assertEquals(false, sent?.second)
         assertEquals(io.github.veritasx1.lichat.ui.laterChoices().last().second, sent?.third)
+        // f012–f014: „Mit Effekt senden“ → Konfetti
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Nachricht")).performTextInput("Alles Gute")
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Mit Effekt senden …").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Konfetti").performClick()
+        compose.waitForIdle()
+        assertEquals("Alles Gute" to "konfetti", sent?.first to effect)
     }
 
     /** f0-01/30a02f81: the ⊕ menu like iOS 17 – round coloured symbols over the faded chat, a tap beside it closes it. */

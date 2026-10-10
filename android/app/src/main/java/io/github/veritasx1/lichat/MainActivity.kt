@@ -627,8 +627,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 }
                 ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) },
                     onSend = { text, replyTo -> work({ acc.send(p.cid, text, replyTo) }) { _, error -> problem = error; Hub.changed() } },
-                    onSendWith = { text, replyTo, silent, later ->
-                        work({ acc.send(p.cid, text, replyTo, silent = silent, later = later) }) { _, error -> problem = error; Hub.changed() } },
+                    onSendWith = { text, replyTo, silent, later, effect ->
+                        work({ acc.send(p.cid, text, replyTo, silent = silent, later = later, effect = effect) }) { _, error -> problem = error; Hub.changed() } },
                     actions = actions,
                     onReact = { mid, emoji -> work({ acc.react(p.cid, mid, emoji) }) { _, error -> problem = error; Hub.changed() } },
                     onEdit = { mid, text -> work({ acc.edit(p.cid, mid, text) }) { _, error -> problem = error; Hub.changed() } },

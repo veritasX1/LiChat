@@ -782,8 +782,11 @@ class SilentAndLater(Base):
         self.assertEqual(anna.tick(cid, anna.chats[cid]["messages"][-3])[0], "geplant")
         self.assertEqual(anna.send_due(now + 60), 0)
         self.assertEqual([n for n in bernd.fetch() if n.get("text")], [])
+        anna.send(cid, "Zwischendurch")
+        bernd.fetch()
         self.assertEqual(anna.send_due(now + 3601), 1)
         self.assertEqual([n["text"] for n in bernd.fetch() if n.get("text")], ["Guten Morgen!"])
+        self.assertEqual(anna.chats[cid]["messages"][-1]["text"], "Guten Morgen!")       # where it left, not where planned
         anna.send_planned_now(cid, soon["mid"])
         self.assertEqual([n["text"] for n in bernd.fetch() if n.get("text")], ["Gleich"])
         self.assertEqual(anna.send_due(now + 99999), 0)

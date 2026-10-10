@@ -69,6 +69,13 @@ const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+/** f012–f014, like Messages: how a message arrives. Bubble: knall, laut, sanft, tinte (covered until tapped). Screen:
+ *  konfetti, ballons, liebe, feuerwerk. Text (in a loop): gross, klein, schuetteln, nicken, zittern. Anything else is dropped. */
+val EFFECTS = linkedMapOf("knall" to "Knall", "laut" to "Laut", "sanft" to "Sanft", "tinte" to "Unsichtbare Tinte",
+    "konfetti" to "Konfetti", "ballons" to "Ballons", "liebe" to "Liebe", "feuerwerk" to "Feuerwerk",
+    "gross" to "Groß", "klein" to "Klein", "schuetteln" to "Schütteln", "nicken" to "Nicken", "zittern" to "Zittern")
+val SCREEN_EFFECTS = setOf("konfetti", "ballons", "liebe", "feuerwerk")
+val TEXT_EFFECTS = setOf("gross", "klein", "schuetteln", "nicken", "zittern")
 const val WAVE_MAX = 100            // bars in a voice message's wave at most (1a682a79)
 const val ALBUM_MAX = 10            // photos picked together at most (5749ebd0, like Messages)
 const val OUTBOX = "ausgang-"       // an attachment's local id until it is up (cf647f61)
@@ -156,6 +163,7 @@ fun isSingleEmoji(text: String): Boolean {
 
 fun describe(message: JSONObject): String {
     if (message.optBoolean("zurueckgerufen")) return "Nachricht widerrufen"
+    if (message.optString("effekt") == "tinte" && message.optJSONObject("anhang") == null) return "Nachricht mit unsichtbarer Tinte"   // f012: covered there too
     val info = message.optJSONObject("anhang") ?: return previewText(message.optString("text"))
     if (info.optBoolean("einmal")) return "Foto · Einmal-Ansicht"
     val label = when (info.optString("art")) {
@@ -1114,7 +1122,7 @@ class Account(val folder: File, private val key: ByteArray) {
     /** [replyTo]: the mid of the message this answers (Olaf 09.10.: swipe to answer) – sender and a short quote travel along.
      *  [silent] (f021, like Telegram/iOS „Lautlos senden“): the others get it without sound or vibration.
      *  [later] (f020, „Später senden“): kept here as „geplant“ and sent by [sendDue] at that time (unix seconds). */
-    fun send(cid: String, text: String, replyTo: String? = null, silent: Boolean = false, later: Long? = null): JSONObject {
+    fun send(cid: String, text: String, replyTo: String? = null, silent: Boolean = false, later: Long? = null, effect: String? = null): JSONObject {
         val clean = text.trim()
         if (clean.isEmpty()) throw LiChatException("Leere Nachricht")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1125,6 +1133,7 @@ class Account(val folder: File, private val key: ByteArray) {
         if (silent) message.put("lautlos", true)
         val content = JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid"))
         if (silent) content.put("lautlos", true)
+        effect?.takeIf { it in EFFECTS }?.let { message.put("effekt", it); content.put("effekt", it) }
         replyTo?.let { mid -> findMessage(cid, mid) }?.let { quoted ->
             val answer = JSONObject().put("mid", quoted.getString("mid")).put("from", quoted.optString("from"))
                 .put("text", describe(quoted).take(120))
@@ -1143,7 +1152,7 @@ class Account(val folder: File, private val key: ByteArray) {
             visibleChats().filter { chat(it).optString("removed").isEmpty() }.flatMap { cid ->
                 val list = chat(cid).getJSONArray("messages")
                 (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("status") == "geplant" && !it.has("geloescht") && it.optLong("at") <= nowS }.map { cid to it }
-            }.sortedBy { it.second.optLong("at") }.onEach { (_, m) -> m.put("status", "fehler").put("at", nowS) }.also { if (it.isNotEmpty()) save() }
+            }.sortedBy { it.second.optLong("at") }.onEach { (cid, m) -> m.put("status", "fehler").put("at", nowS); toEnd(cid, m) }.also { if (it.isNotEmpty()) save() }
         }
         var sent = 0
         for ((cid, message) in due) {
@@ -1154,8 +1163,19 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** f020: the planned message now instead of later. */
     fun sendPlannedNow(cid: String, mid: String): JSONObject {
-        synchronized(lock) { findMessage(cid, mid)?.takeIf { it.optString("status") == "geplant" }?.put("status", "fehler")?.put("at", System.currentTimeMillis() / 1000); save() }
+        synchronized(lock) {
+            findMessage(cid, mid)?.takeIf { it.optString("status") == "geplant" }?.let { it.put("status", "fehler").put("at", System.currentTimeMillis() / 1000); toEnd(cid, it) }
+            save()
+        }
         return retry(cid, mid)
+    }
+
+    /** A planned message that leaves now stands where it leaves – after what was sent meanwhile (Michelle, like Apple). */
+    private fun toEnd(cid: String, message: JSONObject) {
+        val list = chat(cid).getJSONArray("messages")
+        val k = (0 until list.length()).firstOrNull { list.getJSONObject(it) === message } ?: return
+        list.remove(k)
+        list.put(message)
     }
 
     /** The next planned time anywhere, for a wake-up – or null. */
@@ -1272,6 +1292,7 @@ class Account(val folder: File, private val key: ByteArray) {
         } ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
         if (message.optBoolean("lautlos")) content.put("lautlos", true)
+        message.optString("effekt").takeIf { it in EFFECTS }?.let { content.put("effekt", it) }
         message.optJSONObject("antwort")?.let { content.put("antwort", it) }
         message.put("status", "wartet")
         return deliver(cid, message, content)
@@ -2030,7 +2051,9 @@ class Account(val folder: File, private val key: ByteArray) {
                         val group = chat.getJSONObject("roster").length() > 2 || chat.optString("title").isNotEmpty()
                         val mention = group && mentionsMe(text)
                         if (data.optBoolean("lautlos")) message.put("lautlos", true)
-                        return listOf(News(cid, News.Kind.Text, from = sender, text = text, at = sent, received = at, mention = mention,
+                        data.optString("effekt").takeIf { it in EFFECTS }?.let { message.put("effekt", it) }
+                        return listOf(News(cid, News.Kind.Text, from = sender, text = if (message.optString("effekt") == "tinte") describe(message) else text,
+                            at = sent, received = at, mention = mention,
                             silent = data.optBoolean("lautlos")))
                     }
                 }
