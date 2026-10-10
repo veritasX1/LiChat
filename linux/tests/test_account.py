@@ -326,6 +326,15 @@ class Groups(Base):
         self.assertEqual(len(hidden), 2)
         self.assertEqual(theirs[2]["text"], "Herbst")
 
+    def test_contact_code_opens_the_conversation(self):
+        """89aae55d: a contact link → verified contact → straight into the conversation (the same one again later)."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        name, contact = anna.add_contact_link(bernd.contact_link())
+        self.assertEqual((name, contact["verifiziert"]), ("bernd", True))
+        cid = anna.chat_with("bernd")
+        self.assertEqual(anna.chat_with("bernd"), cid)
+        self.assertEqual(anna.known_people(), ["bernd"])
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

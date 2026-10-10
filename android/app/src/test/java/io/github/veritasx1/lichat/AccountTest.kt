@@ -520,6 +520,32 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals(listOf("Datei: notiz.txt: Einkaufsliste für Samstag"), anna.fetch().filter { it.attachment != null }.map { it.text })
     }
 
+    /** Card 89aae55d (Olaf 10.10.): a scanned QR code leads straight into the conversation – phone and Ubuntu compute the same
+     *  fingerprint, so codes work both ways; a wrong fingerprint is refused; a PIN works too; known people are offered. */
+    @Test
+    fun contactByQrAndPin() {
+        val anna = person("anna"); val bernd = person("bernd")
+        assertTrue(cli("erna", "register", url, invites.removeFirst(), "erna").contains("Angemeldet"))
+        // Ubuntu's code scanned on the phone: verified, a new conversation, the same one on a second scan
+        val ernaLink = cli("erna", "kontakt").lines().last { it.startsWith("lichat://kontakt") }
+        assertEquals("erna", anna.addContactLink(ernaLink))
+        val cid = anna.chatWith("erna")
+        assertEquals(listOf("erna"), anna.others(cid))
+        assertEquals(cid, anna.chatWith("erna"))
+        assertTrue(anna.profiles.getJSONObject("kontakte").getJSONObject("erna").getBoolean("verifiziert"))
+        // the phone's code scanned in Ubuntu: verified there too (same fingerprint)
+        assertTrue(cli("erna", "kontakt-hinzufuegen", anna.contactLink()).contains("verifiziert"))
+        // a code with a wrong fingerprint is refused
+        val forged = ernaLink.replace(Regex("fp=[0-9a-f]+"), "fp=" + "0".repeat(32))
+        try { anna.addContactLink(forged); throw AssertionError("muss scheitern") } catch (e: LiChatException) { assertTrue(e.message!!.contains("passt nicht")) }
+        try { anna.addContactLink(anna.contactLink()); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        // a PIN: bernd adds anna without typing her name
+        val pin = anna.newPin()
+        assertEquals("anna", bernd.redeemPin(pin))
+        assertEquals(listOf("anna"), bernd.knownPeople())
+        assertEquals(listOf("erna"), anna.knownPeople())
+    }
+
     /** Card 5749ebd0: four photos picked together arrive as one album on a phone and in the CLI, in order, the caption
      *  on the last; the transcript draws them in one row (the last one). */
     @Test

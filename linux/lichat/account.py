@@ -966,6 +966,19 @@ class Account:
         username = self.server.call("POST", "/v1/pins/einloesen", {"pin": pin})["username"]
         return username, self.add_contact(username)
 
+    def chat_with(self, user):
+        """The conversation with just this person: the one there is, else a new one (a code scanned → straight into it)."""
+        for cid, chat in self.visible_chats().items():
+            others = sorted({u for u in chat.get("roster", {}) if u != self.username})
+            if not chat.get("removed") and not chat.get("title") and others == [user]:
+                return cid
+        return self.start([user])
+
+    def known_people(self):
+        """People I could write to without typing their exact name: contacts and everyone from my conversations."""
+        people = set(self.contacts) | {u for chat in self.visible_chats().values() for u in chat.get("roster", {})}
+        return sorted(people - {self.username})
+
     def display(self, username):
         """What people see: „Vorname Nachname“ when that person told us (end to end), else the user name."""
         if username == self.username:

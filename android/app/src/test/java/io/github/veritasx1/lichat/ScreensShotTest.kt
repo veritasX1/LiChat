@@ -515,7 +515,22 @@ httpd.serve_forever()
     fun details() = shot("4-info") { Details(anna, group, 0, {}, {}, io.github.veritasx1.lichat.ui.GroupActions()) }
 
     @Test
-    fun newMessage() = shot("5-neue-nachricht") { NewMessage(null, {}, { _, _ -> }) }
+    fun newMessage() {
+        // 89aae55d: QR code, my code, PIN, and the people I know – nobody types an exact user name
+        shot("5-neue-nachricht") { NewMessage(null, {}, people = listOf("bernd" to "Bernd Brandt", "erna" to "erna")) { _, _ -> } }
+        compose.onNodeWithText("QR-Code scannen").assertExists()
+        compose.onNodeWithText("Meinen QR-Code zeigen").assertExists()
+        compose.onNodeWithText("PIN eingeben").assertExists()
+        compose.onNodeWithText("Bernd Brandt").assertExists()
+    }
+
+    /** 89aae55d: my contact code to show – QR, user name, and a PIN on request. */
+    @Test
+    fun myContactCode() {
+        shot("5b-mein-qr-code") { io.github.veritasx1.lichat.ui.ContactCodeSheet("lichat://kontakt?server=https%3A%2F%2Fbeispiel.de&name=anna&fp=0123456789abcdef0123456789abcdef", "anna", "4711", {}, {}) }
+        compose.onNodeWithText("4711").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("QR-Code zum Hinzufügen von anna")).assertExists()
+    }
 
     @Test
     fun settings() = shot("6-einstellungen") { SettingsScreen(anna, false, false, {}, {}, {}, {}) }
