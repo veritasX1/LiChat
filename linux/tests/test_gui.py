@@ -129,7 +129,7 @@ def main():
     # Bernd writes to Anna; the list shows it with the blue dot.
     cid = bernd.start(["anna"])
     sent = time.monotonic()
-    bernd.send(cid, "Hallo Anna! Kommst du Samstag zum Grillen?")
+    bernd.send(cid, "Hallo! Kommst du Samstag zum Grillen?")
     until(lambda: cid in anna.chats and anna.chats[cid]["messages"])
     assert time.monotonic() - sent < 3, "nicht sofort – die stehende Verbindung wartet nicht"
     settle(0.3)

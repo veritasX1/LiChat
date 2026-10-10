@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LiChat 1.0 – Transparenzbericht</title>
+<link rel="icon" href="lichat.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="lichat.svg" alt="">LiChat</a>
+    <nav class="links">
+      <a href="./">Start</a>
+      <a href="hilfe.html">Hilfe</a>
+      <a href="server.html">Eigener Server</a>
+      <a href="transparenz.html" aria-current="page">Transparenz</a>
+      <a href="https://github.com/veritasX1/LiChat">GitHub</a>
+    </nav>
+    <a class="btn small cta" href="./#laden">Laden</a>
+  </div>
+</header>
+<main>
+<div class="wrap docs">
+  <nav class="toc">
+    <a href="#kurz-gesagt">Kurz gesagt</a>
+    <a href="#verbindungen">Verbindungen</a>
+    <a href="#berechtigungen-android">Berechtigungen (Android)</a>
+    <a href="#was-auf-deinem-gerat-liegt">Was auf deinem Gerät liegt</a>
+    <a href="#was-der-server-sieht-und-speichert">Was der Server sieht und speichert</a>
+    <a href="#bibliotheken">Bibliotheken</a>
+    <a href="#gegen-den-wertekompass">Gegen den Wertekompass</a>
+    <a href="#was-wir-noch-verbessern-wollen">Was wir noch verbessern wollen</a>
+  </nav>
+  <article>
+<h1 id="transparenzbericht-lichat-10">Transparenzbericht LiChat 1.0</h1>
+<p>Stand: 10. Oktober 2026 · geprüft von Michelle (Test) · Quelltext: github.com/veritasX1/LiChat</p>
+<p>Dieser Bericht sagt in einfachen Worten, was LiChat auf deinem Gerät und auf dem Server tut, wohin es Verbindungen aufbaut und was es speichert. Jede Angabe lässt sich im Quelltext nachprüfen. Wir haben den Bericht gegen unseren Wertekompass geprüft: Privatsphäre zuerst, Kontrolle beim Menschen, einfach zu bedienen, kostenlos für immer.</p>
+<section><h2 id="kurz-gesagt">Kurz gesagt</h2>
+<ul>
+<li>LiChat spricht nur mit <strong>einem</strong> Server: dem, den du eingetragen hast. Ab Werk ist das exampleserver.lisoftware.de, du kannst aber jeden eigenen LiChat-Server eintragen.</li>
+<li>Nachrichten, Fotos, Sprachnachrichten und Dateien sind <strong>Ende-zu-Ende-verschlüsselt</strong> (MLS nach RFC 9420). Der Server leitet nur Pakete weiter, die er nicht lesen kann.</li>
+<li>Keine Werbung, keine Tracker, keine Telemetrie, keine Google-Dienste, kein Firebase.</li>
+<li>Keine Telefonnummer, kein Adressbuch-Hochladen. Du meldest dich mit einer Einladung und einem frei gewählten Namen an.</li>
+<li>Der Server löscht Nachrichten, sobald dein Gerät sie abgeholt hat.</li>
+</ul>
+</section><section><h2 id="verbindungen">Verbindungen</h2>
+<table>
+<thead>
+<tr>
+<th>Wohin</th>
+<th>Wann</th>
+<th>Wozu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dein LiChat-Server (ab Werk exampleserver.lisoftware.de, änderbar)</td>
+<td>solange die App läuft, als wartende Abfrage</td>
+<td>Nachrichten senden und abholen, Schlüssel austauschen</td>
+</tr>
+<tr>
+<td>sonst nirgendwohin</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Mitteilungen laufen über eine eigene, dauerhafte Verbindung zu deinem Server, nicht über Google-Push.</li>
+<li>Links in Nachrichten werden erkannt, aber erst geöffnet, wenn du sie antippst, im Browser deiner Wahl. LiChat lädt <strong>keine Link-Vorschauen</strong> aus dem Netz.</li>
+<li>Keine Update-Prüfung, keine Karten, keine GIF-Suche, keine Schriftarten aus dem Netz.</li>
+<li>Die App erlaubt nur verschlüsselte Verbindungen (HTTPS). Unverschlüsseltes HTTP ist gesperrt.</li>
+</ul>
+</section><section><h2 id="berechtigungen-android">Berechtigungen (Android)</h2>
+<table>
+<thead>
+<tr>
+<th>Berechtigung</th>
+<th>Wofür</th>
+<th>Wann gefragt</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Internet, Netzwerkstatus</td>
+<td>Verbindung zum Server, Neuverbindung bei Netzwechsel</td>
+<td>nie gefragt (Systemrecht)</td>
+</tr>
+<tr>
+<td>Mitteilungen</td>
+<td>neue Nachrichten anzeigen</td>
+<td>beim ersten Start</td>
+</tr>
+<tr>
+<td>Vordergrunddienst, Start nach Neustart</td>
+<td>die Verbindung halten, auch nach einem Neustart</td>
+<td>nie gefragt (Systemrecht)</td>
+</tr>
+<tr>
+<td>Akku-Optimierung ausnehmen</td>
+<td>damit Nachrichten im Ruhezustand ankommen</td>
+<td>einmal, du kannst ablehnen</td>
+</tr>
+<tr>
+<td>Mikrofon</td>
+<td>Sprachnachrichten</td>
+<td>erst beim Tippen aufs Mikrofon</td>
+</tr>
+<tr>
+<td>Kamera</td>
+<td>QR-Code scannen, Foto aufnehmen</td>
+<td>erst bei Benutzung, Kamera ist optional</td>
+</tr>
+<tr>
+<td>Bildschirmfoto erkennen (Android 14+)</td>
+<td>Hinweis, wenn jemand ein Einmal-Bild abfotografiert</td>
+<td>nie gefragt (Systemrecht)</td>
+</tr>
+<tr>
+<td>Biometrie</td>
+<td>App-Sperre mit Fingerabdruck oder Bildschirmsperre</td>
+<td>nur wenn du die App-Sperre einschaltest</td>
+</tr>
+</tbody>
+</table>
+<p>Keine Berechtigung für Kontakte, Standort, Speicher oder Fotos. Fotos wählst du über die Fotoauswahl des Systems aus, LiChat sieht nur die Bilder, die du antippst. Bibliotheken bringen keine weiteren Berechtigungen mit.</p>
+</section><section><h2 id="was-auf-deinem-gerat-liegt">Was auf deinem Gerät liegt</h2>
+<ul>
+<li>Konto, Schlüssel, Gespräche und Profil, verschlüsselt mit AES-256-GCM. Der Schlüssel liegt auf Android im Keystore, unter Ubuntu im GNOME-Schlüsselbund.</li>
+<li>Keine Sicherung in eine Cloud (Android-Backup ist ausgeschaltet).</li>
+<li>Beim Senden entfernt LiChat aus Fotos die Ortsangabe, Kameradaten und Zeitstempel (EXIF). Auch aus Videos, Sprachnachrichten und GIFs werden Zusatzdaten entfernt.</li>
+<li>Entwürfe bleiben nur auf diesem Gerät.</li>
+</ul>
+</section><section><h2 id="was-der-server-sieht-und-speichert">Was der Server sieht und speichert</h2>
+<p><strong>Er kann nicht lesen:</strong> Inhalte von Nachrichten und Anhängen, Gruppennamen, Gruppenbilder, Profilbilder, wer eine Nachricht geschrieben hat (Sealed Sender).</p>
+<p><strong>Er sieht:</strong> an welche Geräte ein Paket geht, wie groß es ist und wann es kommt, die Benutzernamen und die Anzahl der Geräte je Konto. IP-Adressen nutzt er nur kurz im Speicher, um Missbrauch zu bremsen. Ein Zugriffsprotokoll führt der Server nicht.</p>
+<p><strong>Er speichert und löscht:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Was</th>
+<th>wie lange</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nachrichten</td>
+<td>bis dein Gerät sie abgeholt hat, sonst höchstens 30 Tage</td>
+</tr>
+<tr>
+<td>Anhänge (verschlüsselt)</td>
+<td>30 Tage</td>
+</tr>
+<tr>
+<td>Einmal-Bilder</td>
+<td>bis alle sie geöffnet haben, sonst 14 Tage</td>
+</tr>
+<tr>
+<td>Einladungen</td>
+<td>7 Tage (vom Nutzer), 14 Tage (vom Betreiber)</td>
+</tr>
+<tr>
+<td>Kontakt-PIN, Kopplungscode</td>
+<td>10 Minuten</td>
+</tr>
+<tr>
+<td>Anmeldeschlüssel der Geräte</td>
+<td>nur als Prüfsumme</td>
+</tr>
+</tbody>
+</table>
+</section><section><h2 id="bibliotheken">Bibliotheken</h2>
+<ul>
+<li><strong>Android:</strong> AndroidX (Core, Activity, Lifecycle, Compose, ExifInterface, CameraX), ZXing (nur die QR-Code-Berechnung, ohne Google-Dienste), JNA.</li>
+<li><strong>Verschlüsselung (Rust-Kern):</strong> OpenMLS mit RustCrypto, AES-GCM.</li>
+<li><strong>Ubuntu:</strong> GTK 4, libadwaita, GStreamer (Sprachaufnahme), libsecret (Schlüsselbund), Python cryptography.</li>
+<li><strong>Server:</strong> nur die Python-Standardbibliothek, im Docker-Abbild zusätzlich gunicorn.</li>
+<li>Keine Werbe-, Analyse- oder Absturz-Bibliotheken.</li>
+</ul>
+</section><section><h2 id="gegen-den-wertekompass">Gegen den Wertekompass</h2>
+<table>
+<thead>
+<tr>
+<th>Grundsatz</th>
+<th>Stand in 1.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Privatsphäre zuerst</td>
+<td>Ende-zu-Ende-verschlüsselt, keine Telefonnummer, Metadaten aus Medien entfernt, Server löscht sofort. ✔</td>
+</tr>
+<tr>
+<td>Kontrolle beim Menschen</td>
+<td>eigener Server möglich, Lesebestätigungen und Tipp-Anzeige ab Werk aus, Mitteilungsvorschau ab Werk aus, App-Sperre wählbar. ✔</td>
+</tr>
+<tr>
+<td>Netz nur, wenn nötig</td>
+<td>eine einzige Verbindung zum eigenen Server, keine Vorschauen aus dem Netz. ✔</td>
+</tr>
+<tr>
+<td>Keine KI ab Werk</td>
+<td>LiChat enthält keine KI. ✔</td>
+</tr>
+<tr>
+<td>Kostenlos für immer</td>
+<td>keine Käufe, keine Abos, keine Werbung. Quelltext unter GPL-3.0. ✔</td>
+</tr>
+</tbody>
+</table>
+</section><section><h2 id="was-wir-noch-verbessern-wollen">Was wir noch verbessern wollen</h2>
+<ul>
+<li>Die Anmeldung am Server nutzt einen geheimen Geräteschlüssel (Bearer-Token über HTTPS). Geplant ist, dass jedes Gerät seine Anfragen zusätzlich selbst signiert.</li>
+<li>Der Server kann sehen, welche Pakete zur selben Unterhaltung gehören (die MLS-Gruppenkennung ist ein zufälliger Wert, aber sie wiederholt sich).</li>
+<li>Neue Gruppenmitglieder und neue Geräte sehen ältere Nachrichten nicht (außer der einmaligen Übertragung beim Koppeln). Das ist so gewollt, kann aber überraschen.</li>
+</ul>
+<p>Fragen oder Fehler? Schreib uns über die Hilfeseite.</p></section>
+  </article>
+</div>
+</main>
+<footer>
+  <div class="wrap made">
+    <img src="lichat.svg" alt="" width="34" height="34">
+    <p>Ein privates, nichtkommerzielles Projekt von LiSoftware aus Schleswig-Holstein.</p>
+  </div>
+</footer>
+<script src="site.js"></script>
+</body>
+</html>

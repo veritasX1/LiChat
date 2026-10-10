@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eigener LiChat-Server – Schritt für Schritt</title>
+<link rel="icon" href="lichat.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="lichat.svg" alt="">LiChat</a>
+    <nav class="links">
+      <a href="./">Start</a>
+      <a href="hilfe.html">Hilfe</a>
+      <a href="server.html" aria-current="page">Eigener Server</a>
+      <a href="transparenz.html">Transparenz</a>
+      <a href="https://github.com/veritasX1/LiChat">GitHub</a>
+    </nav>
+    <a class="btn small cta" href="./#laden">Laden</a>
+  </div>
+</header>
+<main>
+<div class="wrap docs">
+  <nav class="toc">
+    <a href="#was-du-brauchst">Was du brauchst</a>
+    <a href="#1-programme-installieren">1 · Programme installieren</a>
+    <a href="#2-lichat-holen-und-einstellen">2 · LiChat holen und einstellen</a>
+    <a href="#3-server-starten">3 · Server starten</a>
+    <a href="#4-nginx-und-https">4 · nginx und HTTPS</a>
+    <a href="#5-einladen">5 · Einladen</a>
+    <a href="#sicherung">Sicherung</a>
+    <a href="#aktualisieren">Aktualisieren</a>
+    <a href="#was-der-server-von-allein-tut">Was der Server von allein tut</a>
+    <a href="#wenn-etwas-hakt">Wenn etwas hakt</a>
+    <a href="#bekannte-grenzen">Bekannte Grenzen</a>
+  </nav>
+  <article>
+<h1 id="einen-eigenen-lichat-server-betreiben">Einen eigenen LiChat-Server betreiben</h1>
+<p>LiChat braucht einen Server, der die verschlüsselten Nachrichten zwischen den Geräten weiterreicht. Lesen kann er sie
+nicht: Er sieht nur Pakete, die auf den Geräten verschlüsselt wurden. Diese Anleitung richtet ihn auf einem Raspberry Pi
+oder einem anderen Rechner mit Debian, Ubuntu oder Raspberry Pi OS ein. Rechne mit einer halben Stunde.</p>
+<section><h2 id="was-du-brauchst">Was du brauchst</h2>
+<ul>
+<li>Einen Rechner, der dauerhaft läuft, z. B. einen Raspberry Pi 4 mit einer externen Festplatte oder SSD.
+  Die Daten sollen nicht auf der SD-Karte liegen.</li>
+<li>Eine eigene Adresse im Internet, z. B. <code>chat.example.org</code>, die auf deinen Anschluss zeigt.
+  Bei wechselnder IP hilft ein DynDNS-Dienst (deSEC, DuckDNS, der eigene Router).</li>
+<li>Im Router die Ports <strong>80</strong> und <strong>443</strong> auf diesen Rechner weitergeleitet.</li>
+<li>Zugang per Terminal mit <code>sudo</code>.</li>
+</ul>
+</section><section><h2 id="1-programme-installieren">1 · Programme installieren</h2>
+<pre><code>sudo apt update
+sudo apt install -y git docker.io docker-compose-v2 nginx certbot python3-certbot-nginx sqlite3
+</code></pre>
+<p>Auf Raspberry Pi OS und Debian 12 heißt das Compose-Paket anders. Dort installierst du Docker am einfachsten nach der
+Anleitung auf docs.docker.com (Paket <code>docker-compose-plugin</code>) und lässt <code>docker.io docker-compose-v2</code> oben weg.</p>
+</section><section><h2 id="2-lichat-holen-und-einstellen">2 · LiChat holen und einstellen</h2>
+<pre><code>git clone https://github.com/veritasX1/LiChat.git
+cd LiChat
+cp deploy/env.beispiel deploy/.env
+nano deploy/.env
+</code></pre>
+<p>In <code>deploy/.env</code> stehen zwei Zeilen:</p>
+<pre><code>LICHAT_DOMAIN=chat.example.org        # deine Adresse, ohne https://
+LICHAT_DATEN=/srv/lichat/daten        # wo die Datenbank liegt
+</code></pre>
+<p>Den Datenordner anlegen. Er gehört dem Benutzer 1000, mit dem der Server im Container läuft:</p>
+<pre><code>sudo install -d -o 1000 -g 1000 -m 700 /srv/lichat/daten
+</code></pre>
+</section><section><h2 id="3-server-starten">3 · Server starten</h2>
+<pre><code>sudo docker compose -f deploy/docker-compose.yml up -d --build
+curl http://127.0.0.1:8440/v1/health
+</code></pre>
+<p>Die Antwort sieht so aus: <code>{"ok": true, "version": "1.0.0"}</code>. Der Server lauscht nur auf <code>127.0.0.1</code>. Von außen
+erreicht man ihn erst über nginx. Er startet nach einem Neustart des Rechners von selbst.</p>
+</section><section><h2 id="4-nginx-und-https">4 · nginx und HTTPS</h2>
+<pre><code>sudo cp deploy/nginx-lichat.conf /etc/nginx/sites-available/lichat
+sudo sed -i 's/DEINE-DOMAIN/chat.example.org/g' /etc/nginx/sites-available/lichat
+sudo ln -s ../sites-available/lichat /etc/nginx/sites-enabled/lichat
+sudo nginx -t &amp;&amp; sudo systemctl reload nginx
+sudo certbot --nginx -d chat.example.org
+</code></pre>
+<p>certbot holt ein kostenloses Zertifikat von Let's Encrypt und erneuert es später von selbst. Danach prüfen, diesmal
+von außen:</p>
+<pre><code>curl https://chat.example.org/v1/health
+</code></pre>
+<p>nginx schreibt für LiChat kein Zugriffsprotokoll (<code>access_log off</code>). Der Server selbst notiert nur Methode, Pfad und
+Status, keine IP-Adressen.</p>
+</section><section><h2 id="5-einladen">5 · Einladen</h2>
+<p>Registrieren kann sich nur, wer eine Einladung hat. Für jede Person eine erzeugen:</p>
+<pre><code>sudo docker exec lichat-server python3 -m lichat_server.admin invite &quot;für Anna&quot;
+</code></pre>
+<p>Ausgegeben werden der Code und ein Link wie <code>https://chat.example.org/e/…</code>. Die Seite hinter dem Link zeigt einen
+QR-Code. Wer LiChat installiert hat, scannt ihn beim Einrichten, gibt nur noch einen Namen ein und ist drin. Ohne Kamera
+gehen auch Serveradresse und Code von Hand.</p>
+<p>Wer schon dabei ist, kann in der App weitere Leute einladen („Jemanden einladen“). Pro Person sind höchstens fünf
+offene Einladungen möglich, jede gilt sieben Tage.</p>
+</section><section><h2 id="sicherung">Sicherung</h2>
+<p>Alles Wichtige liegt in dem Ordner aus <code>LICHAT_DATEN</code>: die Datenbank und die verschlüsselten Anhänge. Darin stehen nur
+Benutzernamen, Geräte-IDs, öffentliche Schlüssel und noch nicht abgeholte, verschlüsselte Pakete. Die Gespräche selbst
+liegen auf den Geräten, nicht auf dem Server.</p>
+<p>Eine Sicherung im laufenden Betrieb:</p>
+<pre><code>sudo sqlite3 /srv/lichat/daten/lichat.db &quot;.backup '/srv/lichat/sicherung-$(date +%F).db'&quot;
+</code></pre>
+</section><section><h2 id="aktualisieren">Aktualisieren</h2>
+<pre><code>cd LiChat
+git pull
+sudo docker compose -f deploy/docker-compose.yml up -d --build
+</code></pre>
+<p>Die Apps verbinden sich danach von selbst neu. Was in der kurzen Pause gesendet wurde, geht automatisch nach.</p>
+</section><section><h2 id="was-der-server-von-allein-tut">Was der Server von allein tut</h2>
+<ul>
+<li>Abgeholte Nachrichten löscht er sofort.</li>
+<li>Nicht abgeholte Nachrichten und Anhänge löscht er nach 30 Tagen. Ein Einmal-Bild ist weg, sobald alle es geöffnet
+  haben, ungeöffnet nach 14 Tagen. Abgelaufene Einladungen und PINs fallen ebenfalls weg. Der Aufräumlauf startet höchstens einmal
+  pro Stunde von selbst.</li>
+<li>Gegen Missbrauch begrenzt er Registrierungen, Anmeldeversuche, Einladungen, PINs, das Abholen von Schlüsseln und die
+  Größe der Anhänge (höchstens 100 MB).</li>
+</ul>
+</section><section><h2 id="wenn-etwas-hakt">Wenn etwas hakt</h2>
+<p><strong><code>curl http://127.0.0.1:8440/v1/health</code> antwortet nicht.</strong>
+<code>sudo docker logs lichat-server</code> zeigt den Grund. Meist gehört der Datenordner nicht dem Benutzer 1000 (Schritt 2).</p>
+<p><strong>certbot meldet einen Fehler.</strong>
+Die Adresse zeigt noch nicht auf deinen Anschluss, oder Port 80 ist im Router nicht weitergeleitet. Mit
+<code>dig +short chat.example.org</code> prüfen, ob die richtige IP herauskommt.</p>
+<p><strong>Zu Hause geht es, unterwegs nicht.</strong>
+Port 443 ist nicht weitergeleitet, oder der Anbieter vergibt keine öffentliche IPv4-Adresse (DS-Lite). Dann hilft IPv6
+oder ein Tunnel; dein Anbieter kann dir sagen, was bei dir geht.</p>
+<p><strong>Die App sagt „Keine Verbindung zum Server“.</strong>
+Ist der Server erreichbar (<code>curl https://chat.example.org/v1/health</code>)? Die App versucht es von selbst weiter. Nicht
+gesendete Nachrichten gehen raus, sobald die Verbindung zurück ist.</p>
+</section><section><h2 id="bekannte-grenzen">Bekannte Grenzen</h2>
+<ul>
+<li>Geräte melden sich mit einem Zugangs-Token an, über HTTPS. In der Datenbank liegt nur dessen Prüfsumme, auf dem
+  Gerät ist es verschlüsselt. Signierte Anfragen kommen in einer späteren Version.</li>
+<li>Der Server sieht, welches Gerät wann Nachrichten abholt und an welche Geräte gesendet wird. Was in den Nachrichten
+  steht, wer in einer Gruppe ist und wie sie heißt, sieht er nicht.</li>
+</ul>
+<p>Mehr dazu: <a href="https://github.com/veritasX1/LiChat/blob/main/docs/ARCHITEKTUR.md">Architektur</a> · <a href="transparenz.html">Transparenzbericht</a></p></section>
+  </article>
+</div>
+</main>
+<footer>
+  <div class="wrap made">
+    <img src="lichat.svg" alt="" width="34" height="34">
+    <p>Ein privates, nichtkommerzielles Projekt von LiSoftware aus Schleswig-Holstein.</p>
+  </div>
+</footer>
+<script src="site.js"></script>
+</body>
+</html>
