@@ -1,8 +1,17 @@
 # LiChat – Hilfe
 
-LiChat ist ein Messenger für Android und Ubuntu. Er sieht aus und bedient sich wie Nachrichten auf dem iPhone und dem Mac.
+LiChat ist ein Messenger für Android und Ubuntu, aufgeräumt und ohne Schnickschnack.
 Alles, was du schreibst und schickst, wird auf deinem Gerät verschlüsselt und erst beim Empfänger wieder lesbar
 (Ende-zu-Ende, MLS). Der Server dazwischen gehört dir oder jemandem, dem du vertraust.
+
+## Installieren
+
+**Android (ab Android 8).** Die APK von [lisoftware.de/lichat](https://lisoftware.de/lichat/) oder aus den
+GitHub-Releases laden und öffnen. Android fragt beim ersten Mal, ob der Browser Apps installieren darf. Das einmal
+erlauben. Wer sichergehen will, vergleicht vorher die SHA-256-Prüfsumme mit der auf der Homepage.
+
+**Ubuntu (26.04 und neuer).** Die nötigen Pakete installieren, das Paket entpacken und `install.sh` ausführen. Die
+genauen Befehle stehen auf der Homepage unter „Laden“. LiChat erscheint danach im Programm-Menü.
 
 ## Loslegen
 
@@ -20,7 +29,7 @@ kommen Nachrichten manchmal später.
 ## Gespräche
 
 **Neues Gespräch.** Oben auf das Stift-Symbol tippen. Leute, die du schon kennst, erscheinen beim Tippen. Jemand Neues
-lässt sich per QR-Code oder PIN hinzufügen: Der andere zeigt unter „Mein Code“ seinen QR-Code, du scannst ihn – und
+lässt sich per QR-Code oder PIN hinzufügen: Der andere zeigt unter „Mein Code“ seinen QR-Code, du scannst ihn und
 bist sofort im Gespräch mit ihm.
 
 **Jemanden einladen, der LiChat noch nicht hat.** „Jemanden einladen“ zeigt einen QR-Code mit allem, was der andere
@@ -44,10 +53,10 @@ Du kannst sofort weiterschreiben, auch während ein Foto oder Video noch hochlä
   Feuerwerk) oder bewegter Text. Mit Vorschau, bevor es losgeht.
 - **Lautlos senden:** Der andere bekommt die Nachricht ohne Ton und Vibration.
 - **Später senden:** In einer Stunde, heute Abend, morgen früh oder zu einer eigenen Zeit. Die Nachricht wartet auf
-  deinem Gerät und geht raus, wenn es so weit ist (das Gerät muss dann an sein). Darunter steht „Geplant: …“ – ein
+  deinem Gerät und geht raus, wenn es so weit ist (das Gerät muss dann an sein). Darunter steht „Geplant: …“. Ein
   Tipp darauf schickt sie sofort.
 
-**Formatieren.** Wie bei WhatsApp: `*fett*`, `_kursiv_`, `__unterstrichen__`, `~durchgestrichen~`, `` `Code` ``,
+**Formatieren.** Mit Zeichen um den Text: `*fett*`, `_kursiv_`, `__unterstrichen__`, `~durchgestrichen~`, `` `Code` ``,
 `||Spoiler||`, `[Titel](https://…)`. Eine Zeile mit `> ` wird zum Zitat, mit `- ` zur Liste. Auf dem Handy erscheint
 über dem Eingabefeld eine Leiste, sobald du Text markierst. Unter Ubuntu gehen Strg+B, Strg+I, Strg+U und Rechtsklick
 „Format“.
@@ -60,7 +69,7 @@ Du kannst sofort weiterschreiben, auch während ein Foto oder Video noch hochlä
 
 **Emojis.** Ein bis drei Emojis allein erscheinen groß und ohne Blase.
 
-**Entwürfe.** Was du angefangen hast, bleibt beim Gespräch – auch eine angefangene Antwort und ausgewählte Fotos, auch
+**Entwürfe.** Was du angefangen hast, bleibt beim Gespräch, auch eine angefangene Antwort und ausgewählte Fotos, auch
 nach einem Neustart.
 
 ## Fotos, Videos, Dateien, Sprachnachrichten
@@ -82,7 +91,7 @@ die Geschwindigkeit wechselt zwischen 1×, 1,5× und 2×.
 
 **Lange drücken** auf eine Nachricht (oder zweimal tippen; Ubuntu: Rechtsklick oder Doppelklick):
 - **Reagieren** mit einem Emoji, „+“ für alle anderen.
-- **Antworten** – auch durch Wischen nach rechts. **Privat antworten** schreibt aus einer Gruppe heraus nur dem
+- **Antworten**, auch durch Wischen nach rechts. **Privat antworten** schreibt aus einer Gruppe heraus nur dem
   Absender, mit der Gruppennachricht als Zitat.
 - **Kopieren**, **Text auswählen** (nur einen Teil), **Teilen …** in eine andere App.
 - **Weiterleiten** in ein anderes Gespräch.
@@ -103,7 +112,8 @@ Lesebestätigungen eingeschaltet habt (ab Werk aus).
 ## Geräte und Sicherheit
 
 **Weiteres Gerät.** Einstellungen → Meine Geräte → Gerät hinzufügen. Das neue Gerät zeigt einen QR-Code, das alte
-scannt ihn. Jedes Gerät hat eigene Schlüssel. Alte Nachrichten kommen nicht mit, neue landen auf allen Geräten.
+scannt ihn. Jedes Gerät hat eigene Schlüssel. Beim Koppeln kommt der bisherige Verlauf einmal mit, verschlüsselt
+von Gerät zu Gerät. Danach landen neue Nachrichten auf allen Geräten.
 
 **App-Sperre (Android).** Einstellungen → App-Sperre: Fingerabdruck, Gesicht oder Bildschirmsperre. Solange gesperrt,
 zeigen Mitteilungen keinen Inhalt.
