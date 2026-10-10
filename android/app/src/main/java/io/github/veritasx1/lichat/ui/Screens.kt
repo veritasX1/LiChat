@@ -1481,7 +1481,13 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
     val isGroup = members.size > 2 || chat.optString("title").isNotEmpty()
     val active = chat.optString("removed").isEmpty()
     var name by remember(cid, version) { mutableStateOf(chat.optString("title")) }
-    var adding by remember(cid) { mutableStateOf("") }
+    // 4da136eb (Olaf 10.10.: „ich brauche eine art auswahlmenü mit meinen kontakten“): pick people like in Messages
+    var picking by remember(cid) { mutableStateOf(false) }
+    if (picking) {
+        AddPeopleSheet(remember(version) { account.knownPeople().map { it to account.display(it) } }, members.toSet(),
+            onCancel = { picking = false }) { chosen -> picking = false; if (chosen.isNotEmpty()) group.add(chosen) }
+        return
+    }
     val person = others.singleOrNull()?.takeIf { !isGroup }
     val picture = if (person != null) account.picture(person) else account.groupPicture(cid)
     // Olaf zu 8534fe11: a tap on the picture shows it big and whole
@@ -1529,14 +1535,10 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
                 }
                 Box(Modifier.padding(start = 60.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
             }
-            if (active) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (active) Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { picking = true }.padding(horizontal = 16.dp, vertical = 10.dp)
+                .semantics(mergeDescendants = true) { contentDescription = "Personen hinzufügen" }, verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(32.dp).clip(CircleShape).background(colors.fill), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Plus, colors.blue, 18.dp) }
-                BasicTextField(adding, { adding = it.lowercase() }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
-                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = {
-                        group.add(adding.split(',', ';', ' ').map { it.trim() }.filter { it.isNotEmpty() }); adding = "" }),
-                    modifier = Modifier.weight(1f).padding(start = 12.dp).semantics { contentDescription = "Person hinzufügen" },
-                    decorationBox = { inner -> Box { if (adding.isEmpty()) BasicText("Person hinzufügen", style = style(17f, 400, colors.blue)); inner() } })
+                BasicText("Personen hinzufügen", style = style(17f, 400, colors.blue), modifier = Modifier.padding(start = 12.dp))
             }
         }
         if (active) Section(null) {
@@ -1567,6 +1569,67 @@ fun Details(account: Account, cid: String, version: Int, onBack: () -> Unit, onR
 }
 
 /** What the details of a group can do (card d45b319a) – the activity does the work. */
+/** Add people to a group like Messages (4da136eb): search, my contacts with check marks, who is already in greyed out,
+ *  an exact user name typed that is not in the list as its own row; „Hinzufügen“ takes all at once. */
+@Composable
+fun AddPeopleSheet(people: List<Pair<String, String>>, members: Set<String>, onCancel: () -> Unit, onAdd: (List<String>) -> Unit) {
+    val colors = palette()
+    var query by remember { mutableStateOf("") }
+    val chosen = remember { androidx.compose.runtime.mutableStateListOf<String>() }
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    val typed = query.trim().lowercase()
+    val shown = if (typed.isEmpty()) people else people.filter { (user, name) -> typed in user || typed in name.lowercase() }
+    val exact = typed.takeIf { it.length >= 2 && Regex("[a-z0-9._-]+").matches(it) && people.none { p -> p.first == it } && it !in members }
+    Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) { TextButton("Abbrechen", colors.blue, onClick = onCancel) }
+            BasicText("Personen", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) {
+                TextButton(if (chosen.isEmpty()) "Hinzufügen" else "Hinzufügen (${chosen.size})", if (chosen.isEmpty()) colors.tertiary else colors.blue, 600) {
+                    if (chosen.isNotEmpty()) onAdd(chosen.toList())
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            BasicText("An:", style = style(17f, 400, colors.secondary))
+            BasicTextField(query, { query = it }, singleLine = true, textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None, autoCorrectEnabled = false),
+                modifier = Modifier.weight(1f).padding(start = 8.dp).semantics { contentDescription = "Name suchen" },
+                decorationBox = { inner -> Box { if (query.isEmpty()) BasicText("Name oder Benutzername", style = style(17f, 400, colors.tertiary)); inner() } })
+        }
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            @Composable
+            fun Person(user: String, name: String) {
+                val inside = user in members
+                val ticked = user in chosen
+                Row(Modifier.fillMaxWidth().clickable(enabled = !inside, role = Role.Checkbox) { if (ticked) chosen.remove(user) else chosen.add(user) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .semantics(mergeDescendants = true) { contentDescription = "$name" + (if (inside) ", schon in der Gruppe" else if (ticked) ", ausgewählt" else "") },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(24.dp).clip(CircleShape).background(if (ticked) colors.blue else Color.Transparent)
+                        .border(1.5.dp, if (ticked) colors.blue else colors.tertiary, CircleShape), contentAlignment = Alignment.Center) {
+                        if (ticked) GlyphIcon(Glyph.Check, Color.White, 14.dp)
+                    }
+                    Box(Modifier.padding(start = 12.dp).alpha(if (inside) 0.4f else 1f)) { Avatar(name, null, 36.dp) }
+                    Column(Modifier.padding(start = 12.dp).weight(1f).alpha(if (inside) 0.4f else 1f)) {
+                        BasicText(name, style = style(17f, 400, colors.label))
+                        if (inside) BasicText("Schon in der Gruppe", style = style(13f, 400, colors.secondary))
+                        else if (name != user) BasicText(user, style = style(13f, 400, colors.secondary))
+                    }
+                }
+            }
+            exact?.let { Person(it, it) }
+            if (shown.isNotEmpty()) BasicText("KONTAKTE", style = style(13f, 400, colors.secondary), modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp))
+            shown.forEach { (user, name) -> Person(user, name) }
+            if (people.isEmpty() && exact == null) BasicText("Noch keine Kontakte – tippe einen Benutzernamen ein oder füge Leute über „Neue Nachricht“ per QR-Code hinzu.",
+                style = style(15f, 400, colors.secondary), modifier = Modifier.padding(16.dp))
+        }
+        BasicText("Neue Mitglieder sehen die Nachrichten ab jetzt – frühere bleiben für sie verborgen (Ende-zu-Ende-verschlüsselt).",
+            style = style(13f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.fillMaxWidth().padding(16.dp))
+    }
+}
+
 class GroupActions(
     val rename: (String) -> Unit = {},
     val picture: () -> Unit = {},
