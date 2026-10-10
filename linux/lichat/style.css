@@ -147,3 +147,10 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-effekt-schuetteln { animation: lichat-schuetteln 1400ms linear infinite; }
 .lichat-effekt-nicken { animation: lichat-nicken 1400ms ease-in-out infinite; }
 .lichat-effekt-zittern { animation: lichat-zittern 240ms linear infinite; }
+
+/* ---------- message actions (49bec05f) ---------- */
+.lichat-pinbar { padding: 2px 8px 2px 12px; border-bottom: 1px solid rgba(60, 60, 67, 0.15); }
+.lichat-forwarded { font-size: 12px; font-style: italic; color: rgba(60, 60, 67, 0.6); margin: 2px 6px 0 6px; }
+.lichat-starred { font-size: 11px; font-weight: 600; color: #ff9500; margin: 0 6px; }
+.lichat-dark .lichat-forwarded { color: rgba(235, 235, 245, 0.6); }
+.lichat-pin-text { font-weight: 400; }

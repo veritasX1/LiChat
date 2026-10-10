@@ -24,6 +24,7 @@ class Palette(val dark: Boolean) {
     val blue = if (dark) Color(0xFF0A84FF) else Color(0xFF007AFF)
     val red = if (dark) Color(0xFFFF453A) else Color(0xFFFF3B30)
     val green = if (dark) Color(0xFF30D158) else Color(0xFF34C759)
+    val orange = if (dark) Color(0xFFFF9F0A) else Color(0xFFFF9500)
     /** The others' bubbles. */
     val theirs = if (dark) Color(0xFF26252A) else Color(0xFFE9E9EB)
     /** Tool bars (matt, the same as LiMail and LiCal). */

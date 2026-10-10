@@ -939,6 +939,15 @@ class Window(Adw.ApplicationWindow):
         top.pack_end(self.info)
         self.pane.append(Gtk.WindowHandle(child=top))
         self.pane.append(Gtk.Box(css_classes=["lichat-hairline"]))
+        # f046: the pinned message under the title, for everyone – a click jumps to it, ✕ takes it off
+        self.pin_bar = Gtk.Box(spacing=8, css_classes=["lichat-pinbar"], visible=False)
+        self.pin_label = Gtk.Button(css_classes=["flat"], hexpand=True)
+        self.pin_label.connect("clicked", lambda *_: self.to_pinned())
+        unpin = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat", "circular"], tooltip_text="Lösen")
+        unpin.connect("clicked", lambda *_: self.pin(self.current, None))
+        self.pin_bar.append(self.pin_label)
+        self.pin_bar.append(unpin)
+        self.pane.append(self.pin_bar)
         self.to_line = Gtk.Box(spacing=6, margin_start=16, margin_end=16, margin_top=8, margin_bottom=8, visible=False)
         self.to_line.append(Gtk.Label(label="An:", css_classes=["lichat-to"]))
         self.to_entry = Gtk.Entry(placeholder_text="Benutzernamen, durch Komma getrennt", hexpand=True, css_classes=["lichat-to-entry"],
@@ -1340,8 +1349,12 @@ class Window(Adw.ApplicationWindow):
                 quoted = m["antwort"]
                 who = "Du" if quoted.get("from") == self.account.username else self.account.display(quoted.get("from", ""))
                 said = "Nachricht widerrufen" if quoted.get("zurueckgerufen") else quoted.get("text", "")
-                self.bubbles.append(Gtk.Label(label=f"↩ {who}: {said}", css_classes=["lichat-quote"], wrap=True,
+                where = f" in „{quoted['gruppe']}“" if quoted.get("gruppe") else ""
+                self.bubbles.append(Gtk.Label(label=f"↩ {who}{where}: {said}", css_classes=["lichat-quote"], wrap=True,
                                               max_width_chars=44, lines=2, ellipsize=Pango.EllipsizeMode.END, xalign=0,
+                                              halign=Gtk.Align.END if mine else Gtk.Align.START))
+            if m.get("weitergeleitet"):
+                self.bubbles.append(Gtk.Label(label="↪ Weitergeleitet", css_classes=["lichat-forwarded"],
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
             if m.get("anhang"):
                 # an album (5749ebd0) or one attachment – the caption under it either way (Michelle: missing under albums)
@@ -1391,6 +1404,9 @@ class Window(Adw.ApplicationWindow):
                     gesture.connect("pressed" if isinstance(gesture, Gtk.GestureClick) else "pressed",
                                     lambda g, *a, msg=m, w=piece: self.message_menu(cid, msg, w))
                     piece.add_controller(gesture)
+                double = Gtk.GestureClick(button=1)          # f038: a double click – the tapbacks, like a double tap on iOS
+                double.connect("pressed", lambda g, n, *a, msg=m, w=piece: n == 2 and self.message_menu(cid, msg, w))
+                piece.add_controller(double)
             reactions = m.get("reaktionen") or {}
             if reactions:
                 # At the bubble's lower right, for mine and theirs (Olaf „unten rechts“, Michelle a7d9d987).
@@ -1410,6 +1426,8 @@ class Window(Adw.ApplicationWindow):
             line.append(piece)
             line.append(stamp)
             self.bubbles.append(line)
+            if m.get("markiert"):
+                self.bubbles.append(Gtk.Label(label="★ Markiert", css_classes=["lichat-starred"], halign=Gtk.Align.END if mine else Gtk.Align.START))
             effect = m.get("effekt") if m.get("effekt") in EFFECTS else None
             if effect in TEXT_EFFECTS:
                 piece.add_css_class(f"lichat-effekt-{effect}")          # in a loop, like the iPhone
@@ -1436,6 +1454,12 @@ class Window(Adw.ApplicationWindow):
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
         self.fresh_effect()
+        self.show_pinned()
+        quote = self.account.draft_quote(cid) if self.reply_to is None and not self.composing else None
+        if quote:
+            # f036: privately from a group – the quote above the input until sent or ✕
+            self.reply_label.set_label(f"Privat an {self.account.display(quote.get('from', ''))} aus „{quote.get('gruppe', '')}“: {quote.get('text', '')}")
+            self.reply_line.set_visible(True)
         if first and first in self.bubble_of:
             count = self.account.unread(cid)
             self.first_pill.set_label("↑ 1 ungelesene Nachricht" if count == 1 else f"↑ {count} ungelesene Nachrichten")
@@ -1879,10 +1903,15 @@ class Window(Adw.ApplicationWindow):
         else:
             cid = self.current
             reply = self.reply_to["mid"] if getattr(self, "reply_to", None) else None
+            quote = account.draft_quote(cid) if not reply else None
+            self._sending_quote = True              # end_reply must not drop the quote that is about to go
             self.end_reply()
+            self._sending_quote = False
 
             def job():
-                account.send(cid, text, reply_to=reply, changed=self.upload_moved, silent=silent, later=later, effect=effect)
+                account.send(cid, text, reply_to=reply, changed=self.upload_moved, silent=silent, later=later, effect=effect, quote=quote)
+                if quote:
+                    account.set_draft_quote(cid, None)
                 return cid
 
         if not self.composing:
@@ -2014,6 +2043,24 @@ class Window(Adw.ApplicationWindow):
         answer = Gtk.Button(label="Antworten", css_classes=["flat"])
         answer.connect("clicked", lambda *_: (popover.popdown(), self.start_reply(message)))
         box.append(answer)
+        chat = self.account.chats[cid]
+        group = len(chat.get("roster", {})) > 2 or bool(chat.get("title"))
+
+        def item(label, action, destructive=False):
+            button = Gtk.Button(label=label, css_classes=["flat"] + (["lichat-destructive"] if destructive else []))
+            button.connect("clicked", lambda *_: (popover.popdown(), action()))
+            box.append(button)
+        if group and message.get("from") != self.account.username:
+            item("Privat antworten", lambda: self.private_reply(cid, message))
+        if self.account.can_forward(message):
+            item("Weiterleiten …", lambda: self.ask_forward(cid, message))
+        pinned = (self.account.pinned_message(cid) or {}).get("mid") == message.get("mid")
+        item("Lösen" if pinned else "Anheften", lambda: self.pin(cid, None if pinned else message["mid"]))
+        starred = bool(message.get("markiert"))
+        item("Markierung entfernen" if starred else "Markieren",
+             lambda: self.worker.do(lambda: self.account.star(cid, message["mid"], not starred), lambda *_: self.show_conversation()))
+        if message.get("from") == self.account.username:
+            item("Info", lambda: self.show_message_info(cid, message))
         if message.get("text"):
             copy = Gtk.Button(label="Kopieren", css_classes=["flat"])
             copy.connect("clicked", lambda *_: (popover.popdown(), self.get_clipboard().set(message["text"])))
@@ -2202,6 +2249,88 @@ class Window(Adw.ApplicationWindow):
                     cr.arc(x * w + math.cos(angle) * reach, y * h + math.sin(angle) * reach + 0.08 * h * life * life, 2.4, 0, 2 * math.pi)
                     cr.fill()
 
+    # ------------------------------------------------------------------------------------------ message actions (49bec05f)
+
+    def pin(self, cid, mid):
+        account = self.account
+        self.worker.do(lambda: account.pin_message(cid, mid), lambda _r, error: (self.show_notice(error), self.show_conversation()))
+
+    def show_pinned(self):
+        pinned = self.account.pinned_message(self.current) if self.current and not self.composing else None
+        self.pin_bar.set_visible(pinned is not None)
+        if pinned is not None:
+            label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["lichat-pin-text"])
+            label.set_markup(f'<span foreground="#0a7aff" weight="bold">Angeheftet</span>  {GLib.markup_escape_text(Account.describe(pinned))}')
+            self.pin_label.set_child(label)
+            self.pin_label.update_property([Gtk.AccessibleProperty.LABEL], [f"Angeheftet: {Account.describe(pinned)}"])
+
+    def to_pinned(self):
+        pinned = self.account.pinned_message(self.current)
+        widget = self.bubble_of.get((pinned or {}).get("mid"))
+        if widget is not None:
+            point = widget.compute_point(self.bubbles, Graphene.Point())
+            if point[0]:
+                self.scroller.get_vadjustment().set_value(max(0, point[1].y - 40))
+
+    def ask_forward(self, cid, message):
+        """f043: to which of my other chats."""
+        account = self.account
+        dialog = Adw.AlertDialog(heading="Weiterleiten an")
+        rows = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE)
+        targets = [c for c in account.visible_chats() if c != cid and not account.chats[c].get("geloescht") and not account.chats[c].get("removed")]
+        for target in targets:
+            button = Gtk.Button(label=account.title(target), css_classes=["flat"])
+            button.connect("clicked", lambda _b, t=target: (dialog.close(), self.forward(cid, message, t)))
+            rows.append(button)
+        if not targets:
+            rows.append(Gtk.Label(label="Keine anderen Gespräche", margin_top=8, margin_bottom=8))
+        dialog.set_extra_child(Gtk.ScrolledWindow(child=rows, min_content_height=min(320, 44 * max(1, len(targets))),
+                                                  hscrollbar_policy=Gtk.PolicyType.NEVER))
+        dialog.add_response("abbrechen", "Abbrechen")
+        self.forward_dialog = (dialog, targets)          # for the GUI test
+        dialog.present(self)
+
+    def forward(self, cid, message, target):
+        account = self.account
+        busy = self.uploader if message.get("anhang") else self.worker
+        busy.do(lambda: account.forward(cid, message["mid"], target, changed=self.upload_moved),
+                lambda _r, error: (self.show_notice(error), self.fill_list(), self.show_conversation()))
+
+    def private_reply(self, cid, message):
+        """f036: out of the group into the 1:1 chat with the sender – the group message waits there as the quote."""
+        account, group = self.account, self.account.title(cid)
+
+        def job():
+            to = account.chat_with(message["from"])
+            account.set_draft_quote(to, {"from": message["from"], "text": Account.describe(message)[:120], "gruppe": group})
+            return to
+
+        def done(to, error):
+            self.show_notice(error)
+            if to:
+                self.composing = False
+                self.current = to
+                self.fill_list()
+                self.show_conversation()
+                self.input.grab_focus()
+        self.worker.do(job, done)
+
+    def show_message_info(self, cid, message):
+        """f057/f032/f033: when it went, and per person delivered / read."""
+        info = self.account.message_info(cid, message["mid"])
+
+        def when(at):
+            return time.strftime("%d.%m. %H:%M", time.localtime(at)) if at else "–"
+        lines = [f"Gesendet  {when(info['gesendet'])}"] + ([f"Bearbeitet  {when(info['bearbeitet'])}"] if info.get("bearbeitet") else [])
+        receipts = self.account.receipts_for(cid)
+        for person, got, read in info["personen"]:
+            lines.append(f"\n{self.account.display(person)}\n  Zugestellt  {when(got)}\n  Gelesen  "
+                         + (when(read) if receipts else "(Lesebestätigungen aus)"))
+        dialog = Adw.AlertDialog(heading="Info", body="\n".join(lines))
+        dialog.add_response("ok", "Fertig")
+        self.info_dialog = dialog
+        dialog.present(self)
+
     INK_WORDS = "unsichtbare Tinte, zum Aufdecken anklicken"
 
     def cover_for_reader(self, label, message):
@@ -2292,6 +2421,9 @@ class Window(Adw.ApplicationWindow):
     def end_reply(self):
         if self.reply_to is not None and self.current is not None and not self.composing:
             self.account.set_draft_reply(self.current, None)
+        if self.reply_to is None and self.current is not None and not self.composing and self.account.draft_quote(self.current) \
+                and not getattr(self, "_sending_quote", False):
+            self.account.set_draft_quote(self.current, None)
         self.reply_to = None
         self.editing = None
         self.reply_line.set_visible(False)

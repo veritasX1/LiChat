@@ -90,6 +90,9 @@ EFFECTS = {"knall": "Knall", "laut": "Laut", "sanft": "Sanft", "tinte": "Unsicht
            "gross": "Groß", "klein": "Klein", "schuetteln": "Schütteln", "nicken": "Nicken", "zittern": "Zittern"}
 SCREEN_EFFECTS = {"konfetti", "ballons", "liebe", "feuerwerk"}
 TEXT_EFFECTS = {"gross", "klein", "schuetteln", "nicken", "zittern"}
+# Flags a message carries end to end (card 49bec05f): weitergeleitet (f043), schutz = the sender asks not to forward
+# or share it (f044 – a courtesy between LiChat apps, not a lock: a screenshot still works), lautlos (f021).
+FLAGS = ("lautlos", "weitergeleitet", "schutz")
 WAVE_MAX = 100             # bars in a voice message's wave at most (1a682a79)
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
@@ -1112,7 +1115,7 @@ class Account:
     def _payload(data):
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send(self, cid, text, reply_to=None, changed=None, silent=False, later=None, effect=None):
+    def send(self, cid, text, reply_to=None, changed=None, silent=False, later=None, effect=None, forwarded=False, quote=None):
         """[reply_to]: the mid of the message this answers – its sender and a short quote travel along. [changed]: called
         once the bubble is there, before it goes out (it shows at once, even while the server is slow). [silent] (f021):
         the others get it without sound. [later] (f020): kept here as „geplant“, send_due sends it then (unix seconds)."""
@@ -1129,6 +1132,14 @@ class Account:
         payload = {"t": "text", "text": text, "at": at, "mid": message["mid"]}
         if silent:
             message["lautlos"] = payload["lautlos"] = True
+        if forwarded:
+            message["weitergeleitet"] = payload["weitergeleitet"] = True
+        if self.chats[cid].get("schutz"):
+            message["schutz"] = payload["schutz"] = True
+        if quote and not reply_to:
+            # f036 „Privat antworten“: the group message as the quote, with the group's name
+            message["antwort"] = payload["antwort"] = {"from": str(quote.get("from", ""))[:40], "text": str(quote.get("text", ""))[:120],
+                                                       "gruppe": str(quote.get("gruppe", ""))[:80]}
         if effect in EFFECTS:
             message["effekt"] = payload["effekt"] = effect
         if reply_to:
@@ -1244,6 +1255,87 @@ class Account:
             self.save()
         self._group_message(cid, {"t": "bearbeiten", "mid": mid, "text": text, "at": now})
 
+    # ------------------------------------------------------------------------------------------ message actions (49bec05f)
+
+    def find_message(self, cid, mid):
+        return next((m for m in self.chats[cid]["messages"] if m.get("mid") == mid), None)
+
+    def can_forward(self, message):
+        """f044: what the sender protected, a one-time picture or a called-back message is not passed on."""
+        return not (message.get("zurueckgerufen") or (message.get("anhang") or {}).get("einmal")
+                    or (message.get("schutz") and message.get("from") != self.username) or message.get("system"))
+
+    def forward(self, from_cid, mid, to_cid, changed=None):
+        """f043: the message once more in another chat, marked „Weitergeleitet“ – an attachment opened here and sent anew
+        (its own key), never the same server copy."""
+        message = self.find_message(from_cid, mid)
+        if message is None or not self.can_forward(message):
+            raise LiChatError("Diese Nachricht lässt sich nicht weiterleiten")
+        info = message.get("anhang")
+        if info:
+            data = self.open_attachment(info)
+            kind = info.get("art") if info.get("art") in KINDS else "datei"
+            return self.send_attachment(to_cid, data, info.get("name") or "Datei", info.get("mime") or "application/octet-stream",
+                                        kind, duration=info.get("dauer"), caption=message.get("text", ""), changed=changed,
+                                        wave=info.get("welle"), forwarded=True)
+        return self.send(to_cid, message.get("text", ""), changed=changed, forwarded=True)
+
+    def pin_message(self, cid, mid):
+        """f046: one message pinned at the top for everyone in the chat; None takes it off."""
+        if mid and self.find_message(cid, mid) is None:
+            raise LiChatError("Nachricht nicht gefunden")
+        self.chats[cid]["nachricht_angeheftet"] = mid or None
+        self._group_message(cid, {"t": "anheften", "mid": mid or ""},
+                            "Du hast eine Nachricht angeheftet." if mid else "Du hast die angeheftete Nachricht gelöst.")
+
+    def pinned_message(self, cid):
+        mid = (self.chats.get(cid) or {}).get("nachricht_angeheftet")
+        message = self.find_message(cid, mid) if mid else None
+        return None if message is None or message.get("zurueckgerufen") or message.get("geloescht") else message
+
+    def star(self, cid, mid, on=True):
+        """f047: marked for me (only on this device, never sent) – like WhatsApp's star."""
+        with self.lock:
+            message = self.find_message(cid, mid)
+            if message is None:
+                raise LiChatError("Nachricht nicht gefunden")
+            if on:
+                message["markiert"] = True
+            else:
+                message.pop("markiert", None)
+            self.save()
+
+    def starred(self, cid=None):
+        """[(cid, message)] newest first – one chat or all."""
+        found = [(c, m) for c, chat in self.chats.items() if cid in (None, c) and not chat.get("geloescht")
+                 for m in chat["messages"] if m.get("markiert") and not m.get("zurueckgerufen") and not m.get("geloescht")]
+        return sorted(found, key=lambda pair: pair[1].get("at", 0), reverse=True)
+
+    def draft_quote(self, cid):
+        """f036: the group message quoted in a private answer – waits with the draft of the 1:1 chat (only here)."""
+        return (self.chats.get(cid) or {}).get("entwurf_zitat")
+
+    def set_draft_quote(self, cid, quote):
+        self._chat_setting(cid, "entwurf_zitat", dict(quote) if quote else None, tell=False)
+
+    def set_protected(self, cid, on):
+        """f044: my messages in this chat from now on ask the others not to forward or share them."""
+        self._chat_setting(cid, "schutz", True if on else None, tell=False)
+
+    def message_info(self, cid, mid):
+        """f057/f032/f033: when it was sent, and per person delivered / read (read only with read receipts on – mutual)."""
+        message = self.find_message(cid, mid)
+        if message is None:
+            raise LiChatError("Nachricht nicht gefunden")
+        people = []
+        if message.get("from") == self.username:
+            read = message.get("gelesen") or {} if self.receipts_for(cid) else {}
+            got = message.get("zugestellt") or {}
+            for person in [u for u in self.members(cid) if u != self.username]:
+                people.append((person, got.get(person) or read.get(person), read.get(person)))
+        return {"gesendet": message.get("at"), "bearbeitet": message.get("bearbeitet_am"), "personen": people,
+                "von": message.get("from")}
+
     def unsend(self, cid, mid):
         """My message taken back (iOS: two minutes) – for everyone a grey line instead of the bubble."""
         with self.lock:
@@ -1307,8 +1399,7 @@ class Account:
             payload["text"] = message["text"]
         if message.get("anhang") and message.get("album"):
             payload["album"] = message["album"]
-        if message.get("lautlos"):
-            payload["lautlos"] = True
+        payload.update({flag: True for flag in FLAGS if message.get(flag)})
         if message.get("effekt") in EFFECTS:
             payload["effekt"] = message["effekt"]
         if message.get("antwort"):
@@ -1672,7 +1763,7 @@ class Account:
             return target.read_bytes()
 
     def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None,
-                        caption="", album=None, defer=False, wave=None):
+                        caption="", album=None, defer=False, wave=None, forwarded=False):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
         [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
@@ -1726,6 +1817,10 @@ class Account:
         at = int(time.time())
         # The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
         message = {"from": self.username, "text": str(caption or "").strip(), "at": at, "anhang": info, "mid": mid, "status": "wartet"}
+        if forwarded:
+            message["weitergeleitet"] = True
+        if self.chats[cid].get("schutz"):
+            message["schutz"] = True
         if album and not once and not secret:
             message["album"] = dict(album)      # photos picked together stay together (5749ebd0)
         with self.lock:
@@ -1804,6 +1899,7 @@ class Account:
                 if changed:
                     changed()
         payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]}
+        payload.update({flag: True for flag in FLAGS if message.get(flag)})
         if message.get("text"):
             payload["text"] = message["text"]
         if message.get("album"):
@@ -2166,6 +2262,15 @@ class Account:
             who = "Du hast" if sender == self.username else f"{self.display(sender)} hat"
             line = self._system(chat, f"{who} ein Bildschirmfoto vom Einmal-Bild gemacht.")
             return [{"chat": cid, "system": line["text"]}]
+        if data.get("t") == "anheften":
+            # f046: one message pinned at the top of the chat, for everyone; "" takes it off
+            mid = str(data.get("mid") or "")
+            if mid and not any(m.get("mid") == mid for m in chat["messages"]):
+                return []
+            chat["nachricht_angeheftet"] = mid or None
+            who = "Du hast" if sender == self.username else f"{self.display(sender)} hat"
+            line = self._system(chat, f"{who} eine Nachricht angeheftet." if mid else f"{who} die angeheftete Nachricht gelöst.")
+            return [{"chat": cid, "system": line["text"]}]
         if data.get("t") == "reaktion":
             mid, emoji = str(data.get("mid", "")), str(data.get("emoji") or "").strip()
             target = next((m for m in chat["messages"] if m.get("mid") == mid), None)
@@ -2235,6 +2340,7 @@ class Account:
                 return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
             info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
             message = {"from": sender, "text": str(data.get("text") or ""), "at": int(data.get("at") or time.time()), "anhang": info}
+            message.update({flag: True for flag in FLAGS if data.get(flag) is True})
             album = data.get("album")
             if isinstance(album, dict) and re.fullmatch(r"[0-9a-f]{16}", str(album.get("id", ""))) and not info.get("einmal") \
                     and not info.get("geheim") and isinstance(album.get("anzahl"), int) and isinstance(album.get("nr"), int) \
@@ -2249,6 +2355,10 @@ class Account:
             answer = data.get("antwort")
             if isinstance(answer, dict) and re.fullmatch(r"[0-9a-f]{16}", str(answer.get("mid", ""))):
                 message["antwort"] = {"mid": answer["mid"], "from": str(answer.get("from", ""))[:40], "text": str(answer.get("text", ""))[:120]}
+            elif isinstance(answer, dict) and answer.get("gruppe"):
+                message["antwort"] = {"from": str(answer.get("from", ""))[:40], "text": str(answer.get("text", ""))[:120],
+                                      "gruppe": str(answer["gruppe"])[:80]}
+            message.update({flag: True for flag in FLAGS if data.get(flag) is True})
             self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)
