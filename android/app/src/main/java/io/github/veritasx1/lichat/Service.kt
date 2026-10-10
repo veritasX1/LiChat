@@ -212,6 +212,8 @@ class LiChatService : Service() {
                 if (!Hub.connected.value) {
                     connectedSince = System.currentTimeMillis()
                     setConnected(true)
+                    // What failed while the server was out of reach goes now – beside the fetch, never holding it up (72c8a716).
+                    Thread({ if (runCatching { account.resendFailed() }.getOrDefault(0) > 0) Hub.changed() }, "LiChat-Nachsenden").start()
                 }
                 Hub.problem.value = null
                 pause = 2_000L
@@ -221,6 +223,8 @@ class LiChatService : Service() {
                 // tries again; it never takes the app down (Michelle 09.10.: „wird wiederholt beendet“).
                 setConnected(false)
                 Hub.problem.value = (e as? LiChatException)?.message ?: "Verbindung unterbrochen – neuer Versuch"
+                // The raw cause (address, port) only in the test build's log, never on the screen (8e7a493b).
+                if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) Log.w("LiChat", "Verbindung: ${(e as? LiChatException)?.detail ?: e}")
                 synchronized(wake) {
                     if (!networkCame) wake.wait(pause)
                     if (networkCame) { networkCame = false; pause = 1_000L } else pause = minOf(pause * 2, 60_000L)

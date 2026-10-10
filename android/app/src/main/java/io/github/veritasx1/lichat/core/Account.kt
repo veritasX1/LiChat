@@ -27,7 +27,15 @@ import javax.crypto.spec.SecretKeySpec
  */
 
 /** [suggestions]: free user names when the wanted one is taken (ebc3d629). */
-class LiChatException(message: String, val suggestions: List<String> = emptyList()) : Exception(message)
+class LiChatException(message: String, val suggestions: List<String> = emptyList(), val detail: String? = null) : Exception(message)
+
+/** No way to the server: one plain sentence per kind – the raw text (public IP, port, the phone's home address) only as
+ *  [LiChatException.detail] for the log, never on the screen (Michelle 8e7a493b). */
+fun unreachable(e: java.io.IOException) = LiChatException(when (e) {
+    is java.net.UnknownHostException -> "Server nicht gefunden. Besteht eine Internetverbindung?"
+    is javax.net.ssl.SSLException -> "Keine sichere Verbindung zum Server möglich."
+    else -> "Keine Verbindung zum Server. LiChat versucht es gleich wieder."
+}, detail = e.toString())
 
 private const val WELCOME: Byte = 'W'.code.toByte()
 private const val MLS: Byte = 'M'.code.toByte()
@@ -51,6 +59,7 @@ const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+const val RESEND_S = 24 * 3600L     // „Nicht gesendet“ goes out by itself when the connection is back – for a day (72c8a716)
 private const val LATE_S = 60L       // slack for clocks a little apart (only the sender's own times are compared)
 const val TYPING_EVERY_MS = 3_000L   // between two „tippt“ of mine
 const val TYPING_FRESH_MS = 6_000L   // a „tippt“ stays shown this long after it arrived
@@ -149,7 +158,7 @@ class Server(url: String, var token: String? = null) {
                 json?.optJSONArray("vorschlaege")?.let { a -> (0 until minOf(a.length(), 3)).mapNotNull { a.optString(it).takeIf { n -> n.isNotEmpty() } } } ?: emptyList())
             return json ?: throw LiChatException("Server: unverständliche Antwort ($code)")
         } catch (e: java.io.IOException) {
-            throw LiChatException("Server nicht erreichbar: ${e.message}")
+            throw unreachable(e)
         } finally {
             open = null
             connection.disconnect()
@@ -179,7 +188,7 @@ class Server(url: String, var token: String? = null) {
             }
             return connection.inputStream.use { it.readBytes() }
         } catch (e: java.io.IOException) {
-            throw LiChatException("Server nicht erreichbar: ${e.message}")
+            throw unreachable(e)
         } finally {
             connection.disconnect()
         }
@@ -985,6 +994,24 @@ class Account(val folder: File, private val key: ByteArray) {
         content.put("at", message.optLong("at")).put("mid", mid)
         message.put("status", "wartet")
         return deliver(cid, message, content)
+    }
+
+    /** Back online: what stayed „Nicht gesendet“ during the outage goes out by itself, oldest first (72c8a716: Olaf's
+     *  messages from the morning of the IP change never left the phone). Only the last day – older ones wait for a tap. */
+    fun resendFailed(nowS: Long = System.currentTimeMillis() / 1000): Int {
+        val failed = synchronized(lock) {
+            visibleChats().filter { chat(it).optString("removed").isEmpty() }.flatMap { cid ->
+                val list = chat(cid).getJSONArray("messages")
+                (0 until list.length()).map { list.getJSONObject(it) }
+                    .filter { it.optString("from") == username && it.optString("status") == "fehler" && nowS - it.optLong("at") <= RESEND_S }
+                    .map { cid to it }
+            }.sortedBy { it.second.optLong("at") }
+        }
+        var sent = 0
+        for ((cid, message) in failed) {
+            try { retry(cid, message.getString("mid")); sent++ } catch (_: LiChatException) { }
+        }
+        return sent
     }
 
     // ------------------------------------------------------------------------------------------ delivery state (db70d358)

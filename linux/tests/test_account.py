@@ -1219,5 +1219,19 @@ class Cli(Base):
         self.assertIn("Noch kein Konto", out)
 
 
+
+class UnreachableTest(unittest.TestCase):
+    """8e7a493b: no way to the server – a plain sentence, never address and port on the screen."""
+
+    def test_plain_sentence(self):
+        with self.assertRaises(LiChatError) as caught:
+            account_module.Server("http://127.0.0.1:9").call("GET", "/v1/health", timeout=3)
+        self.assertEqual(str(caught.exception), "Keine Verbindung zum Server. LiChat versucht es gleich wieder.")
+        self.assertIn("refused", caught.exception.detail.lower())
+        with self.assertRaises(LiChatError) as caught:
+            account_module.Server("https://gibt-es-nicht.invalid").raw("GET", "/v1/health")
+        self.assertEqual(str(caught.exception), "Server nicht gefunden. Besteht eine Internetverbindung?")
+
+
 if __name__ == "__main__":
     unittest.main()
