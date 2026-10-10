@@ -821,6 +821,7 @@ class Window(Adw.ApplicationWindow):
                                input_hints=Gtk.InputHints.UPPERCASE_SENTENCES | Gtk.InputHints.SPELLCHECK | Gtk.InputHints.EMOJI)
         self.input.connect("activate", lambda *_: self.send())
         self.input.connect("changed", self.typed)
+        self.input.connect("changed", self.keep_draft)
         self.input.connect("changed", self.suggest_mentions)
         self.typing_timer = 0
         line.append(self.input)
@@ -999,7 +1000,39 @@ class Window(Adw.ApplicationWindow):
     # ------------------------------------------------------------------------------------------ conversation
 
     @locked
+    def keep_draft(self, *_):
+        """979f9b22: the text begun here stays with this conversation – kept a moment after typing stops."""
+        if getattr(self, "_draft_loading", False) or self.composing or self.current is None or getattr(self, "editing", None):
+            return
+        if getattr(self, "_draft_timer", None):
+            GLib.source_remove(self._draft_timer)
+        cid, text = self.current, self.input.get_text()
+
+        def save():
+            self._draft_timer = None
+            self.account.set_draft(cid, text)
+            return False
+        self._draft_timer = GLib.timeout_add(400, save)
+
+    def switch_draft(self):
+        """Another conversation shown: keep what was typed in the old one, bring back what waits in the new one."""
+        old = getattr(self, "_draft_cid", None)
+        new = None if self.composing else self.current
+        if old == new or self.account is None:
+            return
+        if getattr(self, "_draft_timer", None):
+            GLib.source_remove(self._draft_timer)
+            self._draft_timer = None
+        if old is not None and old in self.account.chats and not getattr(self, "editing", None):
+            self.account.set_draft(old, self.input.get_text())
+        self._draft_cid = new
+        self._draft_loading = True
+        self.input.set_text(self.account.draft(new) if new else "")
+        self.input.set_position(-1)
+        self._draft_loading = False
+
     def show_conversation(self):
+        self.switch_draft()
         while (child := self.bubbles.get_first_child()) is not None:
             self.bubbles.remove(child)
         while (child := self.title_box.get_first_child()) is not None:

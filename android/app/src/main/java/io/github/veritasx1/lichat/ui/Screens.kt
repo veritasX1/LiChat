@@ -521,12 +521,13 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
             }
         }
-        if (chat.optString("removed").isEmpty()) InputBar({ text ->
+        if (chat.optString("removed").isEmpty()) androidx.compose.runtime.key(cid) { InputBar({ text ->
             val edited = editing
             if (edited != null) { onEdit(edited.optString("mid"), text); editing = null }
             else { onSend(text, replyTo?.optString("mid")); replyTo = null }
         }, actions, preset = editing?.optString("text"),
-            mentions = if (isGroup) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null)
+            mentions = if (isGroup) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null,
+            draft = account.draft(cid), onDraft = { text -> if (editing == null) runCatching { account.setDraft(cid, text) } }) }   // a draft never crashes
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
@@ -1210,10 +1211,14 @@ fun TickGlyph(state: String, color: Color, modifier: Modifier = Modifier) {
  *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
 @Composable
 fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null,
-             mentions: ((String) -> List<Pair<String, String>>)? = null) {
+             mentions: ((String) -> List<Pair<String, String>>)? = null, draft: String = "", onDraft: (String) -> Unit = {}) {
     val colors = palette()
     // The text with its cursor: after „Bearbeiten“ or a suggested name the cursor stands at the end (Michelle 4ceca163).
-    var field by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+    // It starts with the draft left here before (979f9b22) and keeps it, a moment after each change.
+    var field by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(draft, androidx.compose.ui.text.TextRange(draft.length))) }
+    LaunchedEffect(field.text) { kotlinx.coroutines.delay(400); onDraft(field.text) }
+    val latest by androidx.compose.runtime.rememberUpdatedState(field.text)
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { onDraft(latest) } }     // leaving at once: the last letters too
     val text = field.text
     fun setText(value: String) { field = androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length)) }
     // „@…“ at the end in a group: the members that fit as a row above the input, a tap writes „@name “ (card d54175ed).
