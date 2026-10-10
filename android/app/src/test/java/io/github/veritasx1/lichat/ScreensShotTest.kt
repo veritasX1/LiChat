@@ -31,6 +31,7 @@ import io.github.veritasx1.lichat.ui.Palette
 import io.github.veritasx1.lichat.ui.SettingsScreen
 import io.github.veritasx1.lichat.ui.SetupScreen
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -473,6 +474,39 @@ httpd.serve_forever()
     @Test
     fun recordingVoice() = shot("2c-aufnahme") {
         ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {}, micStart = {}, recording = 4))
+    }
+
+    /** f0-12, like Messages: holding the microphone records and letting go keeps it to hear first; a short tap only records. */
+    @Test
+    fun holdToRecordThenHear() {
+        var recording by androidx.compose.runtime.mutableStateOf<Int?>(null)
+        var kept by androidx.compose.runtime.mutableStateOf<Pair<Double, Boolean>?>(null)
+        var sent = 0
+        shot("2c-aufnahme-halten") {
+            ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, io.github.veritasx1.lichat.ui.AttachmentActions(plus = {},
+                micStart = { recording = 3 }, recording = recording, recorded = kept,
+                micPreview = { recording = null; kept = 3.4 to false },
+                previewToggle = { kept = kept?.let { it.first to !it.second } },
+                micStop = { send -> if (send) sent++; recording = null; kept = null }))
+        }
+        val mic = compose.onNode(androidx.compose.ui.test.hasContentDescription("Sprachnachricht aufnehmen"))
+        mic.performTouchInput { down(center); advanceEventTime(800); up() }       // held and let go
+        compose.waitForIdle()
+        assertEquals(3.4 to false, kept)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Anhören")).performClick()
+        compose.waitForIdle()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Anhalten")).assertExists()
+        if (out != null) captureScreenRoboImage("$out/2c-aufnahme-anhoeren.png")
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Sprachnachricht senden")).performClick()
+        compose.waitForIdle()
+        assertEquals(1, sent)
+        mic.performTouchInput { down(center); advanceEventTime(100); up() }       // a tap: it records on
+        compose.waitForIdle()
+        assertEquals(3, recording)
+        assertEquals(null, kept)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Aufnahme beenden und anhören")).performClick()
+        compose.waitForIdle()
+        assertEquals(3.4 to false, kept)
     }
 
     @Test
