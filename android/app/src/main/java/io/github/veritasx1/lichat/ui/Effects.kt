@@ -12,6 +12,22 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -164,4 +180,70 @@ private fun heart(c: Offset, s: Float) = Path().apply {
     cubicTo(c.x - s * 1.1f, c.y - s * 0.3f, c.x - s * 0.45f, c.y - s * 0.95f, c.x, c.y - s * 0.4f)
     cubicTo(c.x + s * 0.45f, c.y - s * 0.95f, c.x + s * 1.1f, c.y - s * 0.3f, c.x, c.y + s * 0.35f)
     close()
+}
+
+/** The effect groups like the iPhone's „Mit Effekt senden“ screen (Michelle: grouped, with a preview). */
+val EFFECT_GROUPS = listOf(
+    "Blase" to listOf("knall", "laut", "sanft", "tinte"),
+    "Bildschirm" to listOf("konfetti", "ballons", "liebe", "feuerwerk"),
+    "Text" to listOf("gross", "klein", "schuetteln", "nicken", "zittern"))
+
+/** f012–f014: choose an effect with a live preview of my own message, then send it with ↑ (✕ or „zurück“ cancels). */
+@Composable
+fun EffectSheet(text: String, onSend: (String) -> Unit, onCancel: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    var group by androidx.compose.runtime.remember { mutableStateOf(0) }
+    var chosen by androidx.compose.runtime.remember { mutableStateOf(EFFECT_GROUPS[0].second[0]) }
+    var replay by androidx.compose.runtime.remember { mutableStateOf(1) }
+    fun choose(kind: String) {
+        chosen = kind; replay++
+        if (kind !in SCREEN_EFFECTS && kind !in TEXT_EFFECTS) Effects.bubble = "vorschau" to replay
+    }
+    LaunchedEffect(Unit) { choose(chosen) }
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF101012))) {
+        androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.systemBars).padding(16.dp)) {
+            androidx.compose.foundation.text.BasicText("Mit Effekt senden", style = style(17f, 600, Color.White),
+                modifier = Modifier.fillMaxWidth().semantics { heading() }.padding(bottom = 12.dp))
+            // Blase | Bildschirm | Text
+            androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp)).background(Color(0x33FFFFFF)).padding(2.dp)) {
+                EFFECT_GROUPS.forEachIndexed { k, (name, kinds) ->
+                    androidx.compose.foundation.text.BasicText(name, style = style(15f, if (group == k) 600 else 400, Color.White)
+                        .copy(textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (group == k) Color(0x55FFFFFF) else Color.Transparent)
+                            .clickable(role = androidx.compose.ui.semantics.Role.Tab) { group = k; choose(kinds[0]) }.padding(vertical = 7.dp)
+                            .semantics { selected = group == k })
+                }
+            }
+            // the preview: my own message with the chosen effect
+            androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                androidx.compose.foundation.text.BasicText(text, style = style(17f, 400, Color.White), maxLines = 6,
+                    modifier = Modifier.bubbleEffect(chosen, "vorschau").textEffect(chosen)
+                        .clip(RoundedCornerShape(18.dp)).background(colors.blue).padding(horizontal = 12.dp, vertical = 7.dp)
+                        .then(if (chosen == "tinte") Modifier.background(Color(0x99FFFFFF), RoundedCornerShape(4.dp)) else Modifier)
+                        .semantics { contentDescription = "Vorschau: $text mit ${io.github.veritasx1.lichat.core.EFFECTS[chosen]}" })
+            }
+            EFFECT_GROUPS[group].second.forEach { kind ->
+                androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .background(if (kind == chosen) Color(0x33FFFFFF) else Color.Transparent)
+                    .clickable(role = androidx.compose.ui.semantics.Role.RadioButton) { choose(kind) }.padding(horizontal = 14.dp, vertical = 11.dp)
+                    .semantics { selected = kind == chosen }, verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.foundation.text.BasicText(io.github.veritasx1.lichat.core.EFFECTS[kind] ?: kind, style = style(17f, 400, Color.White), modifier = Modifier.weight(1f))
+                    if (kind == chosen) GlyphIcon(Glyph.Check, Color.White, 18.dp)
+                }
+            }
+            androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.foundation.layout.Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0x33FFFFFF))
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onCancel).semantics { contentDescription = "Abbrechen" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, Color.White, 18.dp) }
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                androidx.compose.foundation.layout.Box(Modifier.size(44.dp).clip(CircleShape).background(colors.blue)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onSend(chosen) }
+                    .semantics { contentDescription = "Mit ${io.github.veritasx1.lichat.core.EFFECTS[chosen]} senden" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 22.dp) }
+            }
+        }
+        if (chosen in SCREEN_EFFECTS) ScreenEffect(chosen, replay) {}
+    }
 }

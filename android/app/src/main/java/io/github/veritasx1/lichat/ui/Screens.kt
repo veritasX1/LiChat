@@ -1504,11 +1504,9 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         sendMenu = false
         when (choice) { 0 -> effectMenu = true; 1 -> sendWith(true, null); else -> laterMenu = true }
     }, onCancel = { sendMenu = false }) }
-    // f012–f014, like holding the arrow on the iPhone: Blase, Bildschirm, Text
-    if (effectMenu) Over { ChoiceSheet(io.github.veritasx1.lichat.core.EFFECTS.values.toList(), -1, onChoose = { k ->
-        effectMenu = false
-        sendWith(false, null, io.github.veritasx1.lichat.core.EFFECTS.keys.toList()[k])
-    }, onCancel = { effectMenu = false }) }
+    // f012–f014, like holding the arrow on the iPhone: Blase | Bildschirm | Text with a preview of the message (Michelle)
+    if (effectMenu) Over { EffectSheet(text.trim(), onSend = { kind -> effectMenu = false; sendWith(false, null, kind) },
+        onCancel = { effectMenu = false }) }
     if (laterMenu) {
         val choices = laterChoices()
         Over { ChoiceSheet(choices.map { it.first } + "Eigene Zeit …", -1, onChoose = { k ->
