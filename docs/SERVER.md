@@ -145,4 +145,6 @@ gesendete Nachrichten gehen raus, sobald die Verbindung zurück ist.
 - Der Server sieht, welches Gerät wann Nachrichten abholt und an welche Geräte gesendet wird. Was in den Nachrichten
   steht, wer in einer Gruppe ist und wie sie heißt, sieht er nicht.
 
+Den Server darüber hinaus härten (Firewall, SSH, Updates, Wächter): [lisoftware.de/sicherheit](https://lisoftware.de/sicherheit/).
+
 Mehr dazu: [Architektur](ARCHITEKTUR.md) · [Transparenzbericht](TRANSPARENZ-1.0.md)
