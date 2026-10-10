@@ -1047,8 +1047,13 @@ class Window(Adw.ApplicationWindow):
         self.input.view.insert_action_group("senden", sending)
         options = Gio.Menu()
         effects = Gio.Menu()
-        for key, label in EFFECTS.items():
-            effects.append(label, f"senden.effekt::{key}")
+        # grouped like the iPhone (Michelle): Blase, Bildschirm, Text
+        for title, keys in (("Blase", ("knall", "laut", "sanft", "tinte")), ("Bildschirm", sorted(SCREEN_EFFECTS, key=list(EFFECTS).index)),
+                            ("Text", sorted(TEXT_EFFECTS, key=list(EFFECTS).index))):
+            section = Gio.Menu()
+            for key in keys:
+                section.append(EFFECTS[key], f"senden.effekt::{key}")
+            effects.append_section(title, section)
         effect = Gio.SimpleAction.new("effekt", GLib.VariantType.new("s"))
         effect.connect("activate", lambda _a, value: self.send(effect=value.get_string()))
         sending.add_action(effect)
