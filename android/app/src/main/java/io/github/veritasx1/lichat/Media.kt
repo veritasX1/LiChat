@@ -134,15 +134,47 @@ class Media(private val context: Context) {
 
     fun recordedSeconds() = ((SystemClock.elapsedRealtime() - started) / 1000).toInt()
 
-    /** Ends the recording: (bytes, seconds) to send, or null when discarded or too short. */
-    fun stopRecording(send: Boolean): Pair<ByteArray, Double>? {
+    // The loudness while recording (1a682a79, like Signal): sampled every 100 ms, sent as ~50 bars – the receiver draws the
+    // real wave of this message without fetching and decoding it first.
+    private val levels = mutableListOf<Int>()
+    fun sampleLevel() { recorder?.let { r -> runCatching { r.maxAmplitude }.getOrNull()?.let { levels.add(it) } } }
+
+    /** A recording ended: (bytes, seconds, wave 0…31 × ~50) to send, or null when discarded or too short. */
+    fun stopRecording(send: Boolean): Triple<ByteArray, Double, List<Int>>? {
         val r = recorder ?: return null
         recorder = null
         val seconds = (SystemClock.elapsedRealtime() - started) / 1000.0
         val ok = runCatching { r.stop() }.isSuccess
         r.release()
+        val bars = wave(levels.toList())
+        levels.clear()
         val file = recordFile
-        return try { if (send && ok && seconds >= 0.5) file.readBytes() to seconds else null } finally { file.delete() }
+        return try { if (send && ok && seconds >= 0.5) Triple(file.readBytes(), seconds, bars) else null } finally { file.delete() }
+    }
+
+    companion object {
+        const val WAVE_BARS = 50
+
+        /** Raw levels (0…32767) → [WAVE_BARS] bars 0…31: the loudest of each slice, on a square-root scale like the ear. */
+        fun wave(raw: List<Int>): List<Int> {
+            if (raw.isEmpty()) return emptyList()
+            val slices = (0 until WAVE_BARS).map { k ->
+                val from = k * raw.size / WAVE_BARS
+                val to = maxOf(from + 1, (k + 1) * raw.size / WAVE_BARS)
+                raw.subList(minOf(from, raw.size - 1), minOf(to, raw.size)).maxOrNull() ?: 0
+            }
+            val top = slices.maxOrNull()?.coerceAtLeast(1) ?: 1
+            return slices.map { (31 * Math.sqrt(it / top.toDouble())).toInt().coerceIn(1, 31) }
+        }
+    }
+
+    /** Playback speed like Signal: 1× → 1,5× → 2× → 1× – kept for the next voice message too. */
+    var speed = 1f
+        private set
+    fun cycleSpeed(): Float {
+        speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
+        player?.let { p -> runCatching { if (p.isPlaying) p.playbackParams = p.playbackParams.setSpeed(speed) } }
+        return speed
     }
 
     fun play(bytes: ByteArray, done: () -> Unit) {
@@ -153,12 +185,13 @@ class Media(private val context: Context) {
             setOnCompletionListener { stopPlaying(); done() }      // at the end back to the start (Messages)
             prepare()
             start()
+            if (speed != 1f) runCatching { playbackParams = playbackParams.setSpeed(speed) }
         }
     }
 
     // Voice messages like Messages (Olaf 864041bf): pause keeps the place, play goes on from there, a swipe jumps.
     fun pause() = runCatching { player?.pause() }
-    fun resume() = runCatching { player?.start() }
+    fun resume() = runCatching { player?.let { it.start(); if (speed != 1f) it.playbackParams = it.playbackParams.setSpeed(speed) } }
     val isPlaying: Boolean get() = runCatching { player?.isPlaying == true }.getOrDefault(false)
     /** (position, duration) in ms of what is loaded, or null. */
     fun progress(): Pair<Int, Int>? = runCatching { player?.let { it.currentPosition to it.duration } }.getOrNull()

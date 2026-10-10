@@ -474,7 +474,9 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     BasicText(if (versionsOf == mid) "Frühere Versionen ausblenden" else "Bearbeitet", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
                         modifier = Modifier.fillMaxWidth().clickable { versionsOf = if (versionsOf == mid) null else mid }.padding(horizontal = 12.dp, vertical = 2.dp))
                 }
-                if (mine) TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
+                // a voice message carries time and ticks inside its bubble like Signal (1a682a79) – only „Nicht gesendet“ stays below
+                if (mine && (info?.optString("art") != "sprache" || account.tick(cid, m).first == "fehler"))
+                    TickLine(account.tick(cid, m), m.optLong("at")) { actions.retry(m.optString("mid")) }
             } }
             item { Spacer(Modifier.height(8.dp)) }
         }
@@ -569,6 +571,79 @@ fun firstEmoji(text: String): String? {
         i++
     }
     return null
+}
+
+/** A voice message like Signal (Olaf 10.10., 1a682a79): a round ▶/⏸, the message's real wave (heard part bright), under it
+ *  the time left, a dot while it was never heard, 1× / 1,5× / 2× while it plays – and time and ticks inside the bubble.
+ *  Older messages without a wave keep a fixed one. A tap or swipe on the wave jumps (864041bf). */
+@Composable
+fun VoiceBubble(info: JSONObject, mine: Boolean, playing: Boolean, paused: Boolean, progress: () -> Pair<Int, Int>?, seek: (Float) -> Unit,
+                speed: Float, onSpeed: () -> Unit, unheard: Boolean, stamp: Pair<Pair<String, Long>, Long>?, uploading: Float?,
+                onCancel: () -> Unit, onToggle: () -> Unit) {
+    val colors = palette()
+    val id = info.optString("id")
+    val foreground = if (mine) Color.White else colors.label
+    var fraction by remember(id) { mutableStateOf(0f) }
+    var left by remember(id) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(playing, paused) {
+        if (!playing) { fraction = 0f; left = null; return@LaunchedEffect }
+        while (true) {
+            progress()?.let { (position, length) -> if (length > 0) { fraction = position / length.toFloat(); left = (length - position + 999) / 1000 } }
+            if (paused) break
+            kotlinx.coroutines.delay(100)
+        }
+    }
+    val bars = remember(id) {
+        info.optJSONArray("welle")?.let { w -> (0 until w.length()).map { w.optInt(it).coerceIn(1, 31) } }?.takeIf { it.isNotEmpty() }
+            ?: listOf(6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12, 18, 9, 15, 7, 13, 19, 11, 6, 14, 10, 17, 8, 12, 16, 9, 13)
+                .map { it * 31 / 20 }
+    }
+    val seconds = left ?: info.optDouble("dauer", 0.0).toInt()
+    Column(Modifier.width(260.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
+        .padding(start = 8.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // the round button, white on my blue bubble, blue on theirs – like Signal
+            Box(Modifier.size(40.dp).clip(CircleShape).background(if (mine) Color.White else colors.blue)
+                .clickable(role = Role.Button, onClick = if (uploading != null) onCancel else onToggle)
+                .semantics { contentDescription = if (uploading != null) "Wird gesendet – tippen zum Abbrechen" else if (playing && !paused) "Anhalten" else "Sprachnachricht abspielen" },
+                contentAlignment = Alignment.Center) {
+                val inner = if (mine) colors.blue else Color.White
+                if (uploading != null) UploadRing(uploading, inner, Modifier.size(30.dp), onCancel)
+                else GlyphIcon(if (playing && !paused) Glyph.Pause else Glyph.Play, inner, 20.dp)
+            }
+            androidx.compose.foundation.Canvas(Modifier.padding(start = 10.dp).weight(1f).height(30.dp).then(if (playing) Modifier.pointerInput(id) {
+                    detectTapGestures { offset -> seek(offset.x / size.width); fraction = offset.x / size.width }
+                }.pointerInput("$id-ziehen") {
+                    detectHorizontalDragGestures { change, _ -> change.consume(); val f = (change.position.x / size.width).coerceIn(0f, 1f); seek(f); fraction = f }
+                } else Modifier.clickable(onClick = onToggle))
+                .semantics { contentDescription = if (playing) "Abgespielt ${(fraction * 100).toInt()} Prozent" else "Welle der Sprachnachricht" }) {
+                val step = size.width / bars.size
+                val bar = (step * 0.55f).coerceAtLeast(1.5f)
+                bars.forEachIndexed { i, h ->
+                    val done = playing && (i + 0.5f) / bars.size <= fraction
+                    val height = (size.height * h / 31f).coerceAtLeast(bar)
+                    drawRoundRect(foreground.copy(alpha = if (done) 1f else 0.45f),
+                        androidx.compose.ui.geometry.Offset(i * step + (step - bar) / 2, (size.height - height) / 2),
+                        androidx.compose.ui.geometry.Size(bar, height), androidx.compose.ui.geometry.CornerRadius(bar / 2))
+                }
+            }
+        }
+        Row(Modifier.padding(start = 50.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            BasicText("%d:%02d".format(seconds / 60, seconds % 60), style = style(12f, 400, foreground.copy(alpha = 0.85f)))
+            // never heard: a dot beside the time, like Signal
+            if (unheard) Box(Modifier.padding(start = 6.dp).size(6.dp).clip(CircleShape).background(if (mine) Color.White else colors.blue)
+                .semantics { contentDescription = "Noch nicht angehört" })
+            if (playing) BasicText(if (speed == 1.5f) "1,5×" else "${speed.toInt()}×", style = style(12f, 600, foreground),
+                modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(6.dp)).background(foreground.copy(alpha = 0.18f))
+                    .clickable(role = Role.Button, onClick = onSpeed).padding(horizontal = 6.dp, vertical = 1.dp)
+                    .semantics { contentDescription = "Geschwindigkeit ${if (speed == 1.5f) "1,5" else speed.toInt().toString()}-fach, tippen zum Ändern" })
+            Spacer(Modifier.weight(1f))
+            stamp?.let { (tick, at) ->
+                BasicText(SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(at * 1000)), style = style(11f, 400, foreground.copy(alpha = 0.85f)))
+                if (mine) TickGlyph(tick.first, if (tick.first == "gelesen") Color.White else foreground.copy(alpha = 0.85f), Modifier.padding(start = 3.dp))
+            }
+        }
+    }
 }
 
 /** Photos picked together (5749ebd0): leaders (the album's last message, which draws it) → its photos in order, and the
@@ -689,7 +764,9 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
             uploading = { mid -> if (mine) actions?.uploading?.invoke(mid) else null }, onCancel = { mid -> actions?.cancelUpload?.invoke(mid) })
         else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {},
             uploading = if (mine) actions?.uploading?.invoke(m.optString("mid")) else null,
-            onCancel = { actions?.cancelUpload?.invoke(m.optString("mid")) }) { open(info) }
+            onCancel = { actions?.cancelUpload?.invoke(m.optString("mid")) }, speed = actions?.speed ?: 1f, onSpeed = { actions?.cycleSpeed?.invoke() },
+            unheard = !mine && !m.optBoolean("angehoert") && m.has("from"),
+            stamp = m.optLong("at").takeIf { it > 0 }?.let { at -> ((if (mine) actions?.tick?.invoke(m) else null) ?: ("" to at)) to at }) { open(info) }
         // The caption under the picture, in the same message (2fcc3eef) – like Messages, a text bubble right below it.
         if (m.optString("text").isNotBlank()) {
             Spacer(Modifier.height(2.dp))
@@ -792,7 +869,8 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                     GlyphIcon(Glyph.Plus, colors.secondary, 18.dp)
                 }
                         }
-            Box { bubble() }
+            // its own node: read on its own, not merged into the full-screen backdrop that closes the menu
+            Box(Modifier.semantics(mergeDescendants = true) {}) { bubble() }
             Column(Modifier.widthIn(min = 200.dp, max = 260.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(enabled = false) {}) {
                 BasicText("Antworten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onReply).padding(14.dp))
                 if (message.optString("text").isNotEmpty()) {
@@ -949,6 +1027,11 @@ class AttachmentActions(
     val openStaged: (Int) -> Unit = {},
     /** Send: the staged photos, the text as the caption of the last one. */
     val sendStaged: (String) -> Unit = {},
+    /** Voice messages like Signal (1a682a79): the speed now, and a tap on „1×“ to change it. */
+    val speed: Float = 1f,
+    val cycleSpeed: () -> Unit = {},
+    /** A message's tick state and time (my voice messages show them inside the bubble). */
+    val tick: (JSONObject) -> Pair<String, Long>? = { null },
     /** How far my attachment (its mid) is up (0…1), or null when it is not going up now (cf647f61). */
     val uploading: (String) -> Float? = { null },
     /** The ring tapped: stop sending that attachment (its mid). */
@@ -1099,8 +1182,15 @@ fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(end = 2.dp, top = 1.dp, bottom = 2.dp).semantics(mergeDescendants = true) { contentDescription = label },
         horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         BasicText(time, style = style(11f, 400, colors.secondary))
-        val color = if (state == "gelesen") colors.blue else colors.secondary
-        androidx.compose.foundation.Canvas(Modifier.padding(start = 3.dp).size(17.dp, 11.dp)) {
+        TickGlyph(state, if (state == "gelesen") colors.blue else colors.secondary, Modifier.padding(start = 3.dp))
+    }
+}
+
+/** ◷ waiting, ✓ sent, ✓✓ delivered / read – the mark alone (also inside a voice message's bubble, 1a682a79). */
+@Composable
+fun TickGlyph(state: String, color: Color, modifier: Modifier = Modifier) {
+    run {
+        androidx.compose.foundation.Canvas(modifier.size(17.dp, 11.dp)) {
             val s = size.width / 17f
             val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = (if (state == "wartet") 1.3f else 1.6f) * s,
                 cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
@@ -1204,7 +1294,8 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
 @Composable
 fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((JSONObject) -> ByteArray)? = null,
                      paused: Boolean = false, progress: () -> Pair<Int, Int>? = { null }, seek: (Float) -> Unit = {},
-                     uploading: Float? = null, onCancel: () -> Unit = {}, onOpen: () -> Unit) {
+                     uploading: Float? = null, onCancel: () -> Unit = {}, speed: Float = 1f, onSpeed: () -> Unit = {},
+                     unheard: Boolean = false, stamp: Pair<Pair<String, Long>, Long>? = null, onOpen: () -> Unit) {
     val colors = palette()
     val kind = info.optString("art")
     val id = info.optString("id")
@@ -1253,41 +1344,16 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
         }
         return
     }
+    if (kind == "sprache") {
+        VoiceBubble(info, mine, playing, paused, progress, seek, speed, onSpeed, unheard, stamp, uploading, onCancel, onOpen)
+        return
+    }
     val foreground = if (mine) Color.White else colors.label
     Row(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
         .clickable(onClick = onOpen).semantics { contentDescription = label }.padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically) {
         if (uploading != null) UploadRing(uploading, foreground, Modifier.padding(end = 8.dp).size(28.dp), onCancel)
-        if (kind == "sprache") {
-            // Like Messages (Olaf 864041bf): ▶ ⇄ ⏸, the wave fills as it plays, the time left counts down, a pause keeps
-            // the place, a swipe or tap on the wave jumps, at the end it is back at the start.
-            var fraction by remember(id) { mutableStateOf(0f) }
-            var left by remember(id) { mutableStateOf<Int?>(null) }
-            LaunchedEffect(playing, paused) {
-                if (!playing) { fraction = 0f; left = null; return@LaunchedEffect }
-                while (true) {
-                    progress()?.let { (position, length) -> if (length > 0) { fraction = position / length.toFloat(); left = (length - position + 999) / 1000 } }
-                    if (paused) break
-                    kotlinx.coroutines.delay(100)
-                }
-            }
-            GlyphIcon(if (playing && !paused) Glyph.Pause else Glyph.Play, foreground, 20.dp)
-            val bars = listOf(6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12)
-            Row(Modifier.padding(horizontal = 10.dp).then(if (playing) Modifier.pointerInput(id) {
-                    detectTapGestures { offset -> seek(offset.x / size.width); fraction = offset.x / size.width }
-                }.pointerInput("$id-ziehen") {
-                    detectHorizontalDragGestures { change, _ -> change.consume(); val f = (change.position.x / size.width).coerceIn(0f, 1f); seek(f); fraction = f }
-                } else Modifier).semantics { if (playing) contentDescription = "Abgespielt ${(fraction * 100).toInt()} Prozent" },
-                verticalAlignment = Alignment.CenterVertically) {
-                bars.forEachIndexed { i, h ->
-                    val done = playing && (i + 0.5f) / bars.size <= fraction
-                    Box(Modifier.padding(horizontal = 1.dp).size(3.dp, h.dp).clip(RoundedCornerShape(2.dp))
-                        .background(foreground.copy(alpha = if (!playing) 0.8f else if (done) 1f else 0.35f)))
-                }
-            }
-            val seconds = left ?: info.optDouble("dauer", 0.0).toInt()
-            BasicText("%d:%02d".format(seconds / 60, seconds % 60), style = style(15f, 400, foreground))
-        } else {
+        run {
             GlyphIcon(Glyph.Document, foreground, 26.dp)
             Column(Modifier.padding(start = 8.dp)) {
                 BasicText(info.optString("name", "Datei"), style = style(15f, 600, foreground), maxLines = 1, overflow = TextOverflow.Ellipsis)

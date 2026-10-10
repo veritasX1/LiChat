@@ -214,6 +214,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var recording by remember { mutableStateOf<Int?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
     var paused by remember { mutableStateOf(false) }
+    var voiceSpeed by remember { mutableStateOf(1f) }        // 1× / 1,5× / 2× like Signal (1a682a79)
     val media = remember { Media(context) }
     var notifying by remember { mutableStateOf(runCatching { Settings.notifying(context) }.getOrDefault(true)) }
     // Back from Android's settings: look again (the person may have switched notifications on or off there).
@@ -325,8 +326,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         if (media.startRecording()) {
             recording = 0
             main.postDelayed(object : Runnable {
-                override fun run() { if (recording != null) { recording = media.recordedSeconds(); main.postDelayed(this, 250) } }
-            }, 250)
+                // every 100 ms: the seconds shown, and the loudness for the voice message's wave (1a682a79)
+                override fun run() { if (recording != null) { recording = media.recordedSeconds(); media.sampleLevel(); main.postDelayed(this, 100) } }
+            }, 100)
         } else problem = "Aufnahme nicht möglich"
     }
     // Scanning a new device's QR code (Olaf: „per QR-Code koppeln“): the camera only for that moment.
@@ -355,6 +357,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     val actions = AttachmentActions(
         load = { info -> account?.openAttachment(info) ?: throw LiChatException("kein Konto") },
         uploading = { mid -> account?.uploads?.get(mid) },
+        speed = voiceSpeed,
+        cycleSpeed = { voiceSpeed = media.cycleSpeed() },
+        tick = { m -> chatId()?.let { cid -> account?.tick(cid, m) } },
         staged = staged,
         unstage = { index -> if (index in staged.indices) staged.removeAt(index) },
         openStaged = { index -> stagedOpen = index },
@@ -381,7 +386,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             val acc = account
             val cid = chatId()
             if (voice != null && acc != null && cid != null) work({
-                acc.sendAttachment(cid, voice.first, "Sprachnachricht.m4a", "audio/mp4", "sprache", voice.second)
+                acc.sendAttachment(cid, voice.first, "Sprachnachricht.m4a", "audio/mp4", "sprache", voice.second, wave = voice.third)
             }) { _, error -> problem = error; Hub.changed() }
         },
         open = { info ->
@@ -395,7 +400,10 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     problem = error
                     if (bytes != null) when (info.optString("art")) {
                         "bild" -> photo = bytes
-                        "sprache" -> { playing = info.optString("id"); paused = false; media.play(bytes) { playing = null; paused = false } }
+                        "sprache" -> {
+                            playing = info.optString("id"); paused = false; media.play(bytes) { playing = null; paused = false }
+                            chatId()?.let { cid -> acc.markListened(cid, info.optString("id")); Hub.changed() }      // the dot goes (1a682a79)
+                        }
                         else -> media.view(bytes, info)?.let { problem = it }
                     }
                 }

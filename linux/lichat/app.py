@@ -1871,7 +1871,7 @@ class Window(Adw.ApplicationWindow):
             except GLib.Error:
                 kind = "datei"
         if kind == "sprache":
-            return self.with_upload(self.voice_bubble(info, mine, box), message)
+            return self.with_upload(self.voice_bubble(info, mine, box, message), message)
         if button.get_child() is None:
             if kind == "sprache":
                 seconds = int(round(info.get("dauer") or 0))
@@ -1976,14 +1976,20 @@ class Window(Adw.ApplicationWindow):
 
     WAVE = (6, 12, 18, 10, 16, 8, 14, 20, 12, 6, 10, 16, 8, 12)
 
-    def voice_bubble(self, info, mine, box):
+    def voice_bubble(self, info, mine, box, message=None):
         bubble = Gtk.Box(spacing=8, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs", "lichat-voice"])
         toggle = Gtk.Button(css_classes=["flat", "lichat-voice-button"], tooltip_text="Abspielen")
-        wave = Gtk.DrawingArea(content_width=len(self.WAVE) * 5, content_height=22, valign=Gtk.Align.CENTER)
+        # the message's real wave when it brought one (1a682a79, like Signal), else the fixed one
+        bars = [max(1, min(31, int(v))) for v in info.get("welle") or []] or [h * 31 // 20 for h in self.WAVE]
+        wave = Gtk.DrawingArea(content_width=200, content_height=26, valign=Gtk.Align.CENTER)
         time_label = Gtk.Label(css_classes=["lichat-voice-time"])
         bubble.append(toggle)
         bubble.append(wave)
         bubble.append(time_label)
+        unheard = message is not None and not mine and not message.get("angehoert")
+        if unheard:
+            # never heard: a dot beside the time, like Signal
+            bubble.append(Gtk.Label(label="●", css_classes=["lichat-unheard"], tooltip_text="Noch nicht angehört"))
         key = info.get("id")
         light = mine or self.has_css_class("lichat-dark")
 
@@ -2006,11 +2012,13 @@ class Window(Adw.ApplicationWindow):
 
         def draw(_area, cr, width, height):
             media, fraction, _left = state()
-            for i, h in enumerate(self.WAVE):
-                done = media is not None and (i + 0.5) / len(self.WAVE) <= fraction
-                alpha = 0.8 if media is None else (1.0 if done else 0.35)
+            step = width / len(bars)
+            for i, h in enumerate(bars):
+                done = media is not None and (i + 0.5) / len(bars) <= fraction
+                alpha = 0.8 if media is None else (1.0 if done else 0.4)
                 cr.set_source_rgba(*((1, 1, 1) if light else (0.11, 0.11, 0.12)), alpha)
-                cr.rectangle(i * 5 + 1, (height - h) / 2, 3, h)
+                tall = max(2.0, height * h / 31)
+                cr.rectangle(i * step + step * 0.2, (height - tall) / 2, max(1.5, step * 0.6), tall)
                 cr.fill()
         wave.set_draw_func(draw)
 
@@ -2038,7 +2046,11 @@ class Window(Adw.ApplicationWindow):
             account = self.account
             folder = self.private_folder()
 
+            cid = self.current
+
             def job():
+                if cid and message is not None and not mine:
+                    account.mark_listened(cid, key)      # the dot goes (1a682a79)
                 path = folder / f"{key[:8]}-sprache.m4a"
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "wb") as f:

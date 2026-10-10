@@ -524,6 +524,24 @@ httpd.serve_forever()
         compose.onNodeWithText("Bernd Brandt").assertExists()
     }
 
+    /** 1a682a79: voice messages like Signal – mine playing at 1,5× with its real wave, ticks and time inside; theirs unheard. */
+    @Test
+    fun voiceLikeSignal() {
+        val wave = org.json.JSONArray(io.github.veritasx1.lichat.Media.wave((0 until 200).map { (Math.abs(Math.sin(it / 9.0)) * 30000).toInt() + 500 }))
+        val mine = org.json.JSONObject().put("id", "v1").put("art", "sprache").put("dauer", 194.0).put("welle", wave)
+        val theirs = org.json.JSONObject().put("id", "v2").put("art", "sprache").put("dauer", 23.0)
+        shot("2n-sprachnachricht-wie-signal") {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.background(io.github.veritasx1.lichat.ui.palette().background)) {
+                io.github.veritasx1.lichat.ui.AttachmentBubble(mine, true, playing = true, paused = false, progress = { 30_000 to 194_000 },
+                    speed = 1.5f, stamp = ("gelesen" to 1791606000L) to 1791606000L) {}
+                io.github.veritasx1.lichat.ui.AttachmentBubble(theirs, false, playing = false, unheard = true, stamp = ("" to 1791606300L) to 1791606300L) {}
+            }
+        }
+        compose.onNodeWithText("1,5×").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Noch nicht angehört")).assertExists()
+        compose.onNodeWithText("0:23").assertExists()
+    }
+
     /** Olaf 10.10.: invite by QR code – the sheet to show, and the setup screen after scanning (only the name is left). */
     @Test
     fun inviteSheet() {

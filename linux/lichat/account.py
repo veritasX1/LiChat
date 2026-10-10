@@ -83,6 +83,7 @@ ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 OUTBOX = "ausgang-"        # an attachment's local id until it is up (cf647f61)
 ALBUM_MAX = 10             # photos picked together at most (5749ebd0, like Messages)
+WAVE_MAX = 100             # bars in a voice message's wave at most (1a682a79)
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
 ONCE_DAYS = 14             # an unopened one-time picture lapses (the server deletes it too)
@@ -974,6 +975,14 @@ class Account:
         the new person only types their name and lands in the conversation with me (Olaf 10.10.)."""
         made = self.server.call("POST", "/v1/einladungen", {})
         return made["code"], made["link"]
+
+    def mark_listened(self, cid, attachment):
+        """A voice message heard (1a682a79): Signal's dot beside its time goes. Only here, not told to anyone."""
+        with self.lock:
+            for m in self.chats[cid]["messages"]:
+                if (m.get("anhang") or {}).get("id") == attachment and not m.get("angehoert"):
+                    m["angehoert"] = True
+                    self.save()
 
     def chat_with(self, user):
         """The conversation with just this person: the one there is, else a new one (a code scanned → straight into it)."""
@@ -2055,6 +2064,11 @@ class Account:
             return [{"chat": cid, "receipt": kind}]
         if data.get("t") == "anhang":
             info = {k: data.get(k) for k in ("id", "schluessel", "sha256", "name", "mime", "groesse", "art", "dauer", "vorschau") if data.get(k) is not None}
+            wave = data.get("welle")
+            # a voice message's real wave (1a682a79): only as it should be – at most WAVE_MAX numbers 0…31
+            if info.get("art") == "sprache" and isinstance(wave, list) and 1 <= len(wave) <= WAVE_MAX \
+                    and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 31 for v in wave):
+                info["welle"] = wave
             for flag in ("einmal", "geheim"):
                 if data.get(flag) is True and info.get("art") == "bild":
                     info[flag] = True
