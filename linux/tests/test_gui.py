@@ -255,7 +255,7 @@ def main():
     wrapped = next(w for w in walk(window.bubbles) if isinstance(w, Gtk.Label) and w.get_text() == "für Gruppen wie du\nvorgeschlagen hast")
     assert wrapped.get_width() < 260, wrapped.get_width()
     linked = next(w for w in walk(window.bubbles) if isinstance(w, Gtk.Label) and "lisoftware" in w.get_text())
-    assert '<a href="https://www.lisoftware.de">' in linked.get_label() and '<a href="mailto:olaf@example.org">' in linked.get_label()
+    assert '<a href="https://www.lisoftware.de"' in linked.get_label() and '<a href="mailto:olaf@example.org"' in linked.get_label()
     shot(window, "03f-links.png")
 
     # 864041bf: a voice message plays in the bubble – ⏸ while playing, pause keeps the place, a click on the wave jumps
@@ -576,6 +576,33 @@ def main():
     until(lambda: any(m.get("text") == "Einkaufsliste:\nKohle\nSenf" for m in anna.chats[cid]["messages"]))
     assert [n["text"] for n in bernd.fetch() if "text" in n] == ["Einkaufsliste:\nKohle\nSenf"]
     assert window.input.get_text() == ""
+
+    # f005–f011: formatting shown, a spoiler covered until clicked, a titled link asks with its real address first.
+    bernd.send(cid, "*Grillen* am _Samstag_, ~Freitag~ __sicher__ – wer kommt? ||Barney|| Plan: [hier](https://example.org/plan)")
+    until(lambda: anna.chats[cid]["messages"][-1].get("text", "").startswith("*Grillen*"))
+    settle(0.4)
+    last = anna.chats[cid]["messages"][-1]
+    label = [w for w in walk(window.bubble_of[last["mid"]]) if isinstance(w, Gtk.Label)][0] if isinstance(window.bubble_of[last["mid"]], Gtk.Box) else window.bubble_of[last["mid"]]
+    assert label.get_text().startswith("Grillen am Samstag, Freitag sicher") and "*" not in label.get_text(), label.get_text()
+    assert "<b>Grillen</b>" in label.get_label() and "fgalpha" in label.get_label()
+    shot(window, "08e-formatiert.png")
+    assert window.bubble_link(label, "lichat-spoiler:0", last) is True and "fgalpha" not in label.get_label()
+    assert window.bubble_link(label, "https://example.org/plan", last) is True and window.link_dialog.get_body() == "https://example.org/plan"
+    window.link_dialog.close()
+    assert window.bubble_link(label, "https://example.org", last) is False      # a plain one opens as before
+    shown = [w.get_text() for w in walk(window.list) if isinstance(w, Gtk.Label)]
+    assert any("wer kommt? ••• Plan: hier" in t for t in shown), shown         # the list: no signs, the spoiler covered
+
+    # formatting while writing: Strg+B around the selection, „Spoiler“ from the menu with the cursor between the signs
+    window.input.set_text("Kommt alle")
+    window.input.buffer.select_range(window.input.buffer.get_start_iter(), window.input.buffer.get_iter_at_offset(5))
+    assert window.input._key(None, Gdk.KEY_b, 0, Gdk.ModifierType.CONTROL_MASK) is True
+    assert window.input.get_text() == "*Kommt* alle"
+    window.input.set_position(-1)
+    window.input.view.activate_action("format.spoiler", None)
+    window.input.buffer.insert_at_cursor("Barney")
+    assert window.input.get_text() == "*Kommt* alle||Barney||", window.input.get_text()
+    window.input.set_text("")
 
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)

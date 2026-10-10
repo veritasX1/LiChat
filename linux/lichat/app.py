@@ -29,6 +29,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango  # noqa: E402
 
+from .formatting import formatted, preview_text  # noqa: E402
 from .recorder import Recorder  # noqa: E402
 
 from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, find_links, short, unb64  # noqa: E402
@@ -174,18 +175,60 @@ def album_runs(messages):
     return leaders, hidden
 
 
-def bubble_markup(text):
-    """The bubble's text: links (web, mail, phone – 22c918ce) clickable, „@name“ bold (d54175ed); everything escaped."""
-    links = find_links(text)
-    out, at = [], 0
+SPOILER = "lichat-spoiler:"      # a covered spoiler is a link of its own – a click uncovers it (f009)
 
-    def plain(piece):
-        return MENTION.sub(lambda f: f"<b>{f.group(0)}</b>", GLib.markup_escape_text(piece))
-    for start, end, target in links:
-        out.append(plain(text[at:start]))
-        out.append(f'<a href="{GLib.markup_escape_text(target)}">{GLib.markup_escape_text(text[start:end])}</a>')
-        at = end
-    out.append(plain(text[at:]))
+
+def bubble_markup(text, revealed=False):
+    """The bubble's text: its formatting (f005–f011, formatting.py) – *fett*, _kursiv_, __unter__, ~durch~, `Code`,
+    ||Spoiler|| covered until clicked, [Titel](Link), „> “ quotes –, links (web, mail, phone – 22c918ce) clickable,
+    „@name“ bold (d54175ed); everything escaped."""
+    plain, spans = formatted(text)
+    covered = [(a, b) for a, b, kind, _t in spans if kind in ("link", "code") or (kind == "spoiler" and not revealed)]
+    links = [(a, b, t) for a, b, t in find_links(plain) if not any(a < e and s < b for s, e in covered)]
+    links += [(a, b, t) for a, b, kind, t in spans if kind == "link"]
+    if not revealed:
+        links += [(a, b, f"{SPOILER}{a}") for a, b, kind, _t in spans if kind == "spoiler"]
+    mentions = [(m.start(), m.end()) for m in MENTION.finditer(plain)]
+    kinds = [set() for _ in plain]
+    for a, b, kind, _t in spans:
+        for k in range(a, b):
+            kinds[k].add(kind)
+    for a, b in mentions:
+        for k in range(a, b):
+            kinds[k].add("erwaehnt")
+    link_at = {}
+    for a, b, target in links:
+        for k in range(a, b):
+            link_at.setdefault(k, (a, target))
+    out, k = [], 0
+    while k < len(plain):
+        here, link = kinds[k], link_at.get(k)
+        end = k + 1
+        while end < len(plain) and kinds[end] == here and link_at.get(end) == link:
+            end += 1
+        piece = GLib.markup_escape_text(plain[k:end])
+        tags = []
+        if "fett" in here or ("erwaehnt" in here and link is None):
+            tags.append("b")
+        if "kursiv" in here or "zitat" in here:
+            tags.append("i")
+        if "unter" in here:
+            tags.append("u")
+        if "durch" in here:
+            tags.append("s")
+        if "code" in here:
+            tags.append("tt")
+        for tag in tags:
+            piece = f"<{tag}>{piece}</{tag}>"
+        if "zitat" in here:
+            piece = f'<span alpha="70%">{piece}</span>'
+        if "spoiler" in here and not revealed:
+            piece = f'<span fgalpha="1" background="#8e8e93" bgalpha="45%">{piece}</span>'
+        if link is not None:
+            target = link[1]
+            piece = f'<a href="{GLib.markup_escape_text(target)}" title="{GLib.markup_escape_text("Aufdecken" if target.startswith(SPOILER) else target)}">{piece}</a>'
+        out.append(piece)
+        k = end
     return "".join(out)
 
 
@@ -270,6 +313,9 @@ class Composer(Gtk.Overlay):
     __gsignals__ = {"changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
                     "activate": (GObject.SignalFlags.RUN_FIRST, None, ())}
     LINES = 6
+    FORMATS = (("fett", "Fett", "*"), ("kursiv", "Kursiv", "_"), ("unter", "Unterstrichen", "__"),
+               ("durch", "Durchgestrichen", "~"), ("code", "Code", "`"), ("spoiler", "Spoiler (unsichtbare Tinte)", "||"))
+    KEYS = {Gdk.KEY_b: "*", Gdk.KEY_i: "_", Gdk.KEY_u: "__"}
 
     def __init__(self, placeholder, css_classes, input_hints):
         super().__init__(hexpand=True, css_classes=css_classes)
@@ -291,12 +337,42 @@ class Composer(Gtk.Overlay):
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self._key)
         self.view.add_controller(keys)
+        # f005–f011: select and format – right click „Format“ or Strg+B/I/U; the signs go into the text (formatting.py)
+        actions = Gio.SimpleActionGroup()
+        menu, formats = Gio.Menu(), Gio.Menu()
+        for name, label, sign in self.FORMATS:
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p, sg=sign: self.wrap(sg))
+            actions.add_action(action)
+            formats.append(label, f"format.{name}")
+        self.view.insert_action_group("format", actions)
+        menu.append_submenu("Format", formats)
+        self.view.set_extra_menu(menu)
 
     def _changed(self, _buffer):
         self.placeholder.set_visible(not self.get_text())
         self.emit("changed")
 
+    def wrap(self, sign):
+        """The selection between the signs – or the signs with the cursor between them, ready to type."""
+        bounds = self.buffer.get_selection_bounds()
+        if bounds:
+            start, end = bounds
+            inner = self.buffer.get_text(start, end, False)
+            self.buffer.begin_user_action()
+            self.buffer.delete(start, end)
+            self.buffer.insert_at_cursor(f"{sign}{inner}{sign}")
+            self.buffer.end_user_action()
+        else:
+            self.buffer.insert_at_cursor(sign + sign)
+            cursor = self.buffer.get_iter_at_mark(self.buffer.get_insert())
+            cursor.backward_chars(len(sign))
+            self.buffer.place_cursor(cursor)
+
     def _key(self, _controller, keyval, _keycode, state):
+        if state & Gdk.ModifierType.CONTROL_MASK and keyval in self.KEYS:
+            self.wrap(self.KEYS[keyval])
+            return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter) and not state & Gdk.ModifierType.SHIFT_MASK:
             self.emit("activate")
             return True
@@ -1056,7 +1132,7 @@ class Window(Adw.ApplicationWindow):
                 line = Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
                                  ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD)
                 if drafted:
-                    line.set_markup(f'<span foreground="#ff3b30">Entwurf:</span> {GLib.markup_escape_text(self.account.draft(cid).strip())}')
+                    line.set_markup(f'<span foreground="#ff3b30">Entwurf:</span> {GLib.markup_escape_text(' '.join(self.account.draft(cid).split()))}')     # one line, breaks as spaces (Michelle)
                 text.append(line)
             box.append(text)
             row.set_child(box)
@@ -1220,14 +1296,16 @@ class Window(Adw.ApplicationWindow):
                     caption = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True, max_width_chars=48,
                                         css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                         halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
-                    caption.set_markup(bubble_markup(m["text"]))
+                    caption.set_markup(bubble_markup(m["text"], self.spoiler_shown(m)))
+                    caption.connect("activate-link", lambda label, uri, msg=m: self.bubble_link(label, uri, msg))
                     piece.append(caption)
             else:
                 piece = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
                 # „@name“ bold (card d54175ed)
-                piece.set_markup(bubble_markup(m["text"]))
+                piece.set_markup(bubble_markup(m["text"], self.spoiler_shown(m)))
+                piece.connect("activate-link", lambda label, uri, msg=m: self.bubble_link(label, uri, msg))
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
                 row = Gtk.Box(spacing=6, halign=Gtk.Align.START)
@@ -1778,7 +1856,8 @@ class Window(Adw.ApplicationWindow):
         note = Gio.Notification.new("LiChat")
         if self.settings["vorschau"]:
             who = self.account.display(item["from"])     # the display name, not the user name (Michelle)
-            note.set_body(f"{who} hat dich erwähnt: {item['text']}" if item.get("mention") else f"{who}: {item['text']}")
+            shown = preview_text(item["text"])         # no signs, a spoiler stays covered (f009)
+            note.set_body(f"{who} hat dich erwähnt: {shown}" if item.get("mention") else f"{who}: {shown}")
         else:
             note.set_body("Neue Erwähnung" if item.get("mention") else "Neue Nachricht")
         note.set_default_action_and_target("app.oeffnen", GLib.Variant.new_string(item["chat"]))
@@ -1885,6 +1964,28 @@ class Window(Adw.ApplicationWindow):
     def unsend(self, cid, mid):
         account = self.account
         self.worker.do(lambda: account.unsend(cid, mid), lambda _r, error: (self.show_notice(error), self.show_conversation(), self.fill_list()))
+
+    def spoiler_shown(self, message):
+        return message.get("mid") in getattr(self, "spoilers", set())
+
+    def bubble_link(self, label, uri, message):
+        """A click on a link in a bubble: a spoiler uncovers (f009); a link with a title shows its real address first
+        (f011, a title can say anything); every other link opens as before."""
+        if uri.startswith(SPOILER):
+            self.spoilers = getattr(self, "spoilers", set()) | {message.get("mid")}
+            label.set_markup(bubble_markup(message["text"], True))
+            return True
+        titled = [t for _a, _b, kind, t in formatted(message.get("text", ""))[1] if kind == "link"]
+        if uri in titled:
+            dialog = Adw.AlertDialog(heading="Link öffnen?", body=uri)
+            dialog.add_response("abbrechen", "Abbrechen")
+            dialog.add_response("oeffnen", "Öffnen")
+            dialog.set_response_appearance("oeffnen", Adw.ResponseAppearance.SUGGESTED)
+            dialog.connect("response", lambda _d, answer: answer == "oeffnen" and Gtk.UriLauncher.new(uri).launch(self, None, None))
+            self.link_dialog = dialog          # for the GUI test
+            dialog.present(self)
+            return True
+        return False
 
     def peek_scrolled(self, _controller, dx, _dy):
         """Two fingers to the left (dx > 0): the times show; to the right it is the bubble's (answer)."""

@@ -122,7 +122,8 @@ object Notifications {
     fun message(context: Context, news: News, who: String = news.from, group: String? = null) {
         val chat = news.chat ?: return
         val preview = Settings.preview(context) && !Settings.lock(context)     // locked app: notifications without content
-        val text = if (preview) (if (news.mention) "hat dich erwähnt: ${news.text}" else news.text) else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
+        val shown = io.github.veritasx1.lichat.core.previewText(news.text)      // no signs, a spoiler stays covered (f009)
+        val text = if (preview) (if (news.mention) "hat dich erwähnt: $shown" else shown) else if (news.mention) "Neue Erwähnung" else "Neue Nachricht"
         val list = synchronized(lines) { lines.getOrPut(chat) { mutableListOf() }.also { it.add(Triple(if (preview) who else "", text, System.currentTimeMillis())); while (it.size > 6) it.removeAt(0) }.toList() }
         val builder = Notification.Builder(context, MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lichat)

@@ -128,13 +128,13 @@ fun isSingleEmoji(text: String): Boolean {
 
 fun describe(message: JSONObject): String {
     if (message.optBoolean("zurueckgerufen")) return "Nachricht widerrufen"
-    val info = message.optJSONObject("anhang") ?: return message.optString("text")
+    val info = message.optJSONObject("anhang") ?: return previewText(message.optString("text"))
     if (info.optBoolean("einmal")) return "Foto · Einmal-Ansicht"
     val label = when (info.optString("art")) {
         "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"
         else -> "Datei: " + info.optString("name")
     }
-    return message.optString("text").takeIf { it.isNotBlank() }?.let { "$label: $it" } ?: label   // with its caption (2fcc3eef)
+    return message.optString("text").takeIf { it.isNotBlank() }?.let { "$label: ${previewText(it)}" } ?: label   // with its caption (2fcc3eef)
 }
 
 /** https only – except for a server on this phone (adb reverse in tests: 127.0.0.1 is the computer). */

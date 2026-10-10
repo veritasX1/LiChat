@@ -39,6 +39,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -270,7 +272,7 @@ fun ChatList(account: Account, version: Int, seen: Map<String, Int>, problem: St
                         if (account.hasDraft(cid)) {
                             BasicText(androidx.compose.ui.text.buildAnnotatedString {
                                 pushStyle(androidx.compose.ui.text.SpanStyle(color = colors.red)); append("Entwurf:"); pop()
-                                append(" " + account.draft(cid).trim().ifEmpty { if (account.draftReply(cid) != null) "Antwort" else "Foto" })
+                                append(" " + account.draft(cid).trim().split(Regex("\\s+")).joinToString(" ").ifEmpty { if (account.draftReply(cid) != null) "Antwort" else "Foto" })
                             }, style = style(15f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis)
                             return@Column
                         }
@@ -822,7 +824,16 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
     }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
-        val text = withMentions(m.optString("text"), if (mine) Color.White else colors.blue)
+        // f005–f011: *fett*, _kursiv_, ||Spoiler|| … shown formatted; a spoiler stays covered until tapped (invisible ink),
+        // a link with a title shows its real address before it opens
+        val spoilerKey = m.optString("mid").ifEmpty { m.optString("text").hashCode().toString() }
+        val revealed = spoilerKey in SpoilerShown.ids
+        var asking by remember { mutableStateOf<String?>(null) }
+        val text = remember(m.optString("text"), revealed, mine, colors.dark) {
+            formattedText(m.optString("text"), if (mine) Color.White else colors.blue, if (mine) Color.White else colors.label, revealed,
+                onSpoiler = { SpoilerShown.ids.add(spoilerKey) }, onTitledLink = { asking = it })
+        }
+        asking?.let { url -> LinkCheck(url, onCancel = { asking = null }) }
         val textStyle = style(17f, 400, if (mine) Color.White else colors.label)
         val measurer = androidx.compose.ui.text.rememberTextMeasurer()
         val density = androidx.compose.ui.platform.LocalDensity.current
@@ -835,6 +846,88 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
         BasicText(text, style = textStyle, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
             modifier = modifier.clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
                 .then(interact).padding(horizontal = 12.dp, vertical = 7.dp).width(tight + 1.dp))
+    }
+}
+
+/** Spoilers uncovered (by tap) in this session – like invisible ink they are covered again after the app was closed. */
+object SpoilerShown {
+    val ids = androidx.compose.runtime.mutableStateListOf<String>()
+}
+
+/** A message's text with its formatting (f005–f011, core/Format.kt), links and „@name“. */
+fun formattedText(raw: String, linkColor: Color, textColor: Color, revealed: Boolean, onSpoiler: () -> Unit = {},
+                  onTitledLink: (String) -> Unit = {}): androidx.compose.ui.text.AnnotatedString {
+    val (plain, spans) = io.github.veritasx1.lichat.core.formatted(raw)
+    return androidx.compose.ui.text.buildAnnotatedString {
+        append(plain)
+        val lines = mutableMapOf<Int, MutableSet<String>>()          // decorations meet: underline and strike together
+        for (span in spans) when (span.kind) {
+            "fett" -> addStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold), span.start, span.end)
+            "kursiv" -> addStyle(androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), span.start, span.end)
+            "unter", "durch" -> for (k in span.start until span.end) lines.getOrPut(k) { mutableSetOf() }.add(span.kind)
+            "code" -> addStyle(androidx.compose.ui.text.SpanStyle(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                background = textColor.copy(alpha = 0.12f)), span.start, span.end)
+            "zitat" -> {
+                addStyle(androidx.compose.ui.text.SpanStyle(color = textColor.copy(alpha = 0.7f), fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), span.start, span.end)
+                addStyle(androidx.compose.ui.text.ParagraphStyle(textIndent = androidx.compose.ui.text.style.TextIndent(10.sp, 10.sp)), span.start, span.end)
+            }
+            "spoiler" -> if (!revealed) {
+                // covered: the letters invisible on a grain of their own colour – a tap uncovers them
+                addStyle(androidx.compose.ui.text.SpanStyle(color = Color.Transparent, background = textColor.copy(alpha = 0.32f)), span.start, span.end)
+                addLink(androidx.compose.ui.text.LinkAnnotation.Clickable("spoiler") { onSpoiler() }, span.start, span.end)
+            }
+            "link" -> {
+                addLink(androidx.compose.ui.text.LinkAnnotation.Clickable(span.target ?: "") { onTitledLink(span.target ?: "") }, span.start, span.end)
+                addStyle(androidx.compose.ui.text.SpanStyle(color = linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline), span.start, span.end)
+            }
+        }
+        var k = 0
+        val keys = lines.keys.sorted()
+        while (k < keys.size) {
+            val from = keys[k]; val kinds = lines[from]!!
+            var to = from + 1
+            while (lines[to] == kinds) to++
+            val decorations = kinds.map { if (it == "unter") androidx.compose.ui.text.style.TextDecoration.Underline else androidx.compose.ui.text.style.TextDecoration.LineThrough }
+            addStyle(androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.combine(decorations)), from, to)
+            k = keys.indexOfFirst { it >= to }.takeIf { it >= 0 } ?: keys.size
+        }
+        val covered = spans.filter { it.kind == "link" || it.kind == "code" || (it.kind == "spoiler" && !revealed) }
+        val links = io.github.veritasx1.lichat.core.findLinks(plain).filter { l -> covered.none { it.start <= l.range.last && l.range.first < it.end } }
+        for (link in links) {
+            addLink(androidx.compose.ui.text.LinkAnnotation.Url(link.target, androidx.compose.ui.text.TextLinkStyles(
+                androidx.compose.ui.text.SpanStyle(color = linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline))),
+                link.range.first, link.range.last + 1)
+        }
+        for (match in io.github.veritasx1.lichat.core.MENTION.findAll(plain)) {
+            if (links.any { it.range.first <= match.range.last && match.range.first <= it.range.last }) continue
+            addStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), match.range.first, match.range.last + 1)
+        }
+    }
+}
+
+/** A link with a title tapped (f011): its real address first, like Telegram – a title can say anything. */
+@Composable
+fun LinkCheck(url: String, onCancel: () -> Unit) {
+    val colors = palette()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.ui.window.Dialog(onDismissRequest = onCancel) {
+        Column(Modifier.width(270.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell)) {
+            BasicText("Link öffnen?", style = style(17f, 600, colors.label).copy(textAlign = TextAlign.Center),
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp, start = 16.dp, end = 16.dp))
+            BasicText(url, style = style(13f, 400, colors.label).copy(textAlign = TextAlign.Center),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 18.dp))
+            Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+            Row(Modifier.fillMaxWidth().height(44.dp)) {
+                BasicText("Abbrechen", style = style(17f, 400, colors.blue).copy(textAlign = TextAlign.Center),
+                    modifier = Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button, onClick = onCancel).wrapContentHeight())
+                Box(Modifier.width(0.5.dp).fillMaxHeight().background(colors.separator))
+                BasicText("Öffnen", style = style(17f, 600, colors.blue).copy(textAlign = TextAlign.Center),
+                    modifier = Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button) {
+                        onCancel()
+                        runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+                    }.wrapContentHeight())
+            }
+        }
     }
 }
 
@@ -1285,6 +1378,20 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
                 }.padding(horizontal = 12.dp, vertical = 6.dp).semantics { contentDescription = "$name erwähnen" })
         }
     }
+    // f005–f011, like „Formatieren“ on the iPhone: with text selected a row of formats above the input – a tap puts the
+    // selection between the signs (*fett*, _kursiv_ …); the bubble shows it formatted (core/Format.kt).
+    if (!field.selection.collapsed) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 6.dp)
+        .semantics { contentDescription = "Formatieren" }) {
+        for ((label, sign, look) in TEXT_FORMATS) {
+            BasicText(label, style = look(style(15f, 400, colors.label)), modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(16.dp))
+                .background(colors.fill).clickable(role = Role.Button) {
+                    val sel = field.selection
+                    val a = minOf(sel.start, sel.end); val b = maxOf(sel.start, sel.end)
+                    val wrapped = field.text.substring(0, a) + sign + field.text.substring(a, b) + sign + field.text.substring(b)
+                    field = androidx.compose.ui.text.input.TextFieldValue(wrapped, androidx.compose.ui.text.TextRange(b + 2 * sign.length))
+                }.padding(horizontal = 12.dp, vertical = 6.dp))
+        }
+    }
     LaunchedEffect(preset) { if (preset != null) setText(preset) }     // „Bearbeiten“: the message's text to correct
     // Picked photos lie in the input capsule above the text (2fcc3eef, like Messages – Michelle: inside, not above it):
     // × takes one out, a tap opens its options.
@@ -1383,6 +1490,16 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
     }
 }
+
+/** The formats offered for a selection (f005–f011): what the chip says, the sign around the text, how the chip looks. */
+val TEXT_FORMATS: List<Triple<String, String, (androidx.compose.ui.text.TextStyle) -> androidx.compose.ui.text.TextStyle>> = listOf(
+    Triple("Fett", "*", { it.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) }),
+    Triple("Kursiv", "_", { it.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) }),
+    Triple("Unterstrichen", "__", { it.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline) }),
+    Triple("Durchgestrichen", "~", { it.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough) }),
+    Triple("Code", "`", { it.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) }),
+    Triple("Spoiler", "||", { it }),
+)
 
 /** How far a swipe to the left pulls the bubbles aside for the times (f0-07). */
 const val PEEK_DP = 64
