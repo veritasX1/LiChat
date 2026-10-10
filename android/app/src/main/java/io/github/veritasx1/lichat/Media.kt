@@ -32,6 +32,12 @@ class Media(private val context: Context) {
             if (c.moveToFirst()) c.getString(0) else null
         } ?: "Datei"
         val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw LiChatException("Datei nicht lesbar")
+        return send(account, cid, bytes, name, mime, asFile, once, secret, caption, album, defer)
+    }
+
+    /** The same from bytes already read – a photo kept in the draft (f0-04) has no picker link any more after a restart. */
+    fun send(account: Account, cid: String, bytes: ByteArray, name: String, mime: String, asFile: Boolean, once: Boolean = false,
+             secret: Boolean = false, caption: String = "", album: org.json.JSONObject? = null, defer: Boolean = false): org.json.JSONObject {
         return when {
             mime == "image/gif" || io.github.veritasx1.lichat.core.Gif.isGif(bytes) -> {
                 // A GIF stays a GIF – animated, looping (Michelle 999f37be): only comments, XMP and other extra blocks go.

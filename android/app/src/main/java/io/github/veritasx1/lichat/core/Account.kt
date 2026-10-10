@@ -55,6 +55,7 @@ const val SUPPLY = 20
 const val PICTURE_MAX = 150 * 1024
 private val ATTACHMENT_MAGIC = "LICHATA1".toByteArray()
 private val HISTORY_MAGIC = "LICHATV1".toByteArray()
+private val DRAFT_MAGIC = "LICHATE1".toByteArray()      // photos waiting above the input (f0-04), sealed like the rest
 const val ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 val KINDS = setOf("bild", "video", "sprache", "datei")
 const val ONCE_DAYS = 14      // an unopened one-time picture lapses (fe9f2029; the server deletes it too)
@@ -972,7 +973,47 @@ class Account(val folder: File, private val key: ByteArray) {
         }
     }
 
-    fun deleteChat(cid: String) = chatSetting(cid, "geloescht", System.currentTimeMillis() / 1000, tell = false)
+    fun deleteChat(cid: String) {
+        setDraftPhotos(cid, emptyList())
+        chatSetting(cid, "geloescht", System.currentTimeMillis() / 1000, tell = false)
+    }
+
+    // ------------------------------------------------------------------------------------------ draft photos (f0-04)
+    // Like Messages: photos laid above the input stay with their conversation, also after the app was closed. Only on
+    // this device, sealed with the profile key in entwuerfe/<hash of the chat>/ – never sent, gone once they are sent.
+
+    class DraftPhoto(val bytes: ByteArray, val name: String = "Foto.jpg", val mime: String = "image/jpeg", val once: Boolean = false,
+                     val secret: Boolean = false, val asFile: Boolean = false, val markedUp: Boolean = false)
+
+    private fun draftFolder(cid: String) = File(File(folder, "entwuerfe"), sha256(cid.toByteArray()).take(32))
+
+    fun draftPhotos(cid: String): List<DraftPhoto> = synchronized(lock) {
+        val dir = draftFolder(cid)
+        val index = File(dir, "liste.bin").takeIf { it.exists() } ?: return emptyList()
+        runCatching {
+            val list = JSONArray(String(unseal(key, DRAFT_MAGIC, index.readBytes())))
+            (0 until list.length()).mapNotNull { n ->
+                val o = list.getJSONObject(n)
+                val file = File(dir, o.getString("datei")).takeIf { it.exists() } ?: return@mapNotNull null
+                DraftPhoto(unseal(key, DRAFT_MAGIC, file.readBytes()), o.optString("name", "Foto.jpg"), o.optString("mime", "image/jpeg"),
+                    o.optBoolean("einmal"), o.optBoolean("geheim"), o.optBoolean("datei_art"), o.optBoolean("markiert"))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun setDraftPhotos(cid: String, photos: List<DraftPhoto>) = synchronized(lock) {
+        val dir = draftFolder(cid)
+        dir.deleteRecursively()
+        if (photos.isEmpty()) return@synchronized
+        dir.mkdirs()
+        val list = JSONArray()
+        photos.forEachIndexed { n, p ->
+            writePrivate(File(dir, "$n.bin"), seal(key, DRAFT_MAGIC, p.bytes))
+            list.put(JSONObject().put("datei", "$n.bin").put("name", p.name).put("mime", p.mime).put("einmal", p.once)
+                .put("geheim", p.secret).put("datei_art", p.asFile).put("markiert", p.markedUp))
+        }
+        writePrivate(File(dir, "liste.bin"), seal(key, DRAFT_MAGIC, list.toString().toByteArray()))
+    }
 
     fun deleteMessage(cid: String, mid: String) = synchronized(lock) { findMessage(cid, mid)?.put("geloescht", System.currentTimeMillis() / 1000); save() }
 

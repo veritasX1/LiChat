@@ -994,7 +994,7 @@ fun ContactCodeSheet(link: String?, username: String, pin: String?, onPin: () ->
 
 /** A photo waiting above the input (2fcc3eef): what was picked, its bytes (marked up, if so) and how it leaves. */
 data class Staged(val uri: android.net.Uri, val bytes: ByteArray?, val once: Boolean = false, val secret: Boolean = false,
-                  val markedUp: Boolean = false, val asFile: Boolean = false)
+                  val markedUp: Boolean = false, val asFile: Boolean = false, val name: String = "Foto.jpg", val mime: String = "image/jpeg")
 
 /** What the conversation can do with attachments (card 9780f3a0) – the activity does the work (pickers, recorder, files). */
 class AttachmentActions(

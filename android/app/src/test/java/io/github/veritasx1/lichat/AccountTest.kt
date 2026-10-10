@@ -574,6 +574,31 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue(bernd.visibleChats().none { bernd.chat(it).has("entwurf") })
     }
 
+    /** f0-04: photos laid above the input stay with their conversation after a restart – sealed, never in plain on disk. */
+    @Test
+    fun draftPhotosPerConversation() {
+        val anna = person("anna"); person("bernd")
+        val a = anna.start(listOf("bernd")); val b = anna.start(listOf("bernd"), "Grillabend")
+        val photo = ByteArray(40_000).also { java.util.Random(7).nextBytes(it) }
+        val marker = "UNVERSCHLUESSELT-ERKENNBAR".toByteArray()
+        anna.setDraftPhotos(a, listOf(Account.DraftPhoto(photo, "Strand.jpg"), Account.DraftPhoto(marker + photo, "Plan.png", "image/png", secret = true, asFile = true)))
+        val again = Account(File(root, "anna"), KeyVault.Plain.load(File(root, "anna"))!!)
+        val kept = again.draftPhotos(a)
+        assertEquals(listOf("Strand.jpg", "Plan.png"), kept.map { it.name })
+        assertEquals(photo.toList(), kept[0].bytes.toList())
+        assertTrue(kept[1].secret && kept[1].asFile && !kept[1].once)
+        assertEquals("image/png", kept[1].mime)
+        assertEquals("die andere Unterhaltung hat keine", 0, again.draftPhotos(b).size)
+        val onDisk = File(File(root, "anna"), "entwuerfe").walkTopDown().filter { it.isFile }.map { it.readBytes() }.toList()
+        assertTrue(onDisk.isNotEmpty())
+        assertTrue("nichts im Klartext", onDisk.none { file -> String(file, Charsets.ISO_8859_1).contains("UNVERSCHLUESSELT") || String(file, Charsets.ISO_8859_1).contains("Strand") })
+        again.setDraftPhotos(a, emptyList())
+        assertEquals(0, again.draftPhotos(a).size)
+        again.setDraftPhotos(b, listOf(Account.DraftPhoto(photo)))
+        again.deleteChat(b)
+        assertEquals("ein gelöschtes Gespräch nimmt seine Fotos mit", 0, again.draftPhotos(b).size)
+    }
+
     /** Michelle 4da136eb: someone taken out of a group stays in „known people“; an unknown name leaves the group as it was. */
     @Test
     fun addPeopleKnownAndUnknown() {
