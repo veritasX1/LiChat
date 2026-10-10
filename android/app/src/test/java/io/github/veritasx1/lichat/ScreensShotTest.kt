@@ -86,7 +86,7 @@ httpd.serve_forever()
         fun person(name: String, invite: String) = File(root, name).let { Account.register(it, url, invite, name, KeyVault.Plain.create(it)) }
         anna = person("anna", first[1]); bernd = person("bernd", first[2]); val erna = person("erna", first[3])
         cid = bernd.start(listOf("anna"))
-        bernd.send(cid, "Hallo Anna! Kommst du Samstag zum Grillen?")
+        bernd.send(cid, "Hallo! Kommst du Samstag zum Grillen?")
         anna.fetch()
         anna.send(cid, "Ja, gern! Ich bringe Kartoffelsalat mit.")
         bernd.fetch()

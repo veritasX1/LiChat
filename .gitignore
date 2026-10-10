@@ -12,3 +12,4 @@ local.properties
 keystore.properties
 deploy/.env
 build-shots/
+homepage/download/
