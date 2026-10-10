@@ -25,7 +25,7 @@ import gi  # noqa: E402
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Graphene", "1.0")
-from gi.repository import Adw, GLib, Graphene, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Graphene, Gtk  # noqa: E402
 
 from lichat import app as app_module  # noqa: E402
 from lichat.account import Account  # noqa: E402
@@ -557,6 +557,25 @@ def main():
     window.input.set_text("")
     settle(0.6)
     assert anna.draft_reply(cid) is None and not anna.has_draft(cid)
+
+    # f024/f025: the field takes several lines – Shift+Enter breaks the line, Enter sends; it grows, at most six lines.
+    window.input.grab_focus()
+    window.input.set_text("Einkaufsliste:")
+    height_one = window.input.get_height()
+    assert window.input._key(None, Gdk.KEY_Return, 0, Gdk.ModifierType.SHIFT_MASK) is False      # left to the field
+    window.input.buffer.insert_at_cursor("\nKohle\nSenf")
+    settle(0.3)
+    assert window.input.get_height() > height_one
+    window.input.set_text("\n".join(f"Zeile {k}" for k in range(1, 12)))
+    settle(0.3)
+    assert window.input.get_height() < 10 * height_one                  # it stops growing and scrolls
+    shot(window, "08d-mehrzeilig.png")
+    window.input.set_text("Einkaufsliste:\nKohle\nSenf")
+    bernd.fetch()
+    assert window.input._key(None, Gdk.KEY_Return, 0, 0) is True                                 # Enter sends
+    until(lambda: any(m.get("text") == "Einkaufsliste:\nKohle\nSenf" for m in anna.chats[cid]["messages"]))
+    assert [n["text"] for n in bernd.fetch() if "text" in n] == ["Einkaufsliste:\nKohle\nSenf"]
+    assert window.input.get_text() == ""
 
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)
