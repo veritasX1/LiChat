@@ -763,6 +763,34 @@ class Ticks(Base):
         self.assertEqual([n for n in bernd.fetch() if n.get("anhang")][0]["anhang"]["name"], "Plan.pdf")
 
 
+class SilentAndLater(Base):
+    def test_silent_and_planned(self):
+        """f021: „lautlos“ arrives as such; f020: planned stays here until due, then goes with the time it leaves –
+        a deleted planned one never goes, „jetzt senden“ sends at once."""
+        import time as clock
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        anna.send(cid, "Psst", silent=True)
+        got = [n for n in bernd.fetch() if n.get("text")]
+        self.assertEqual([(n["text"], n.get("lautlos")) for n in got], [("Psst", True)])
+        now = int(clock.time())
+        anna.send(cid, "Guten Morgen!", later=now + 3600)
+        gone = anna.send(cid, "Doch nicht", later=now + 3600)
+        soon = anna.send(cid, "Gleich", later=now + 7200)
+        anna.delete_message(cid, gone["mid"])
+        self.assertEqual(anna.tick(cid, anna.chats[cid]["messages"][-3])[0], "geplant")
+        self.assertEqual(anna.send_due(now + 60), 0)
+        self.assertEqual([n for n in bernd.fetch() if n.get("text")], [])
+        self.assertEqual(anna.send_due(now + 3601), 1)
+        self.assertEqual([n["text"] for n in bernd.fetch() if n.get("text")], ["Guten Morgen!"])
+        anna.send_planned_now(cid, soon["mid"])
+        self.assertEqual([n["text"] for n in bernd.fetch() if n.get("text")], ["Gleich"])
+        self.assertEqual(anna.send_due(now + 99999), 0)
+        with self.assertRaises(LiChatError):
+            anna.send(cid, "Zu spät", later=now - 10)
+
+
 class Drafts(Base):
     def test_draft_reply_and_mark(self):
         """f003/f004: the answer begun waits with the draft over a restart; text or answer mark it as „Entwurf“."""

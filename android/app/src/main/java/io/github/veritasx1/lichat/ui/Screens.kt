@@ -336,7 +336,8 @@ fun ChoiceSheet(choices: List<String>, chosen: Int, destructive: Int = -1, onCho
 fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, onBack: () -> Unit, onInfo: () -> Unit,
                onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
                onReact: (String, String) -> Unit = { _, _ -> }, onEdit: (String, String) -> Unit = { _, _ -> },
-               onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {}) {
+               onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {},
+               onSendWith: ((String, String?, Boolean, Long?) -> Unit)? = null) {
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     // f004: an answer begun here waits with the draft and is there again when the conversation opens
@@ -575,7 +576,8 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             else { onSend(text, replyTo?.optString("mid")); replyTo = null }
         }, actions, preset = editing?.optString("text"),
             mentions = if (isGroup) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null,
-            draft = account.draft(cid), onDraft = { text -> if (editing == null) runCatching { account.setDraft(cid, text) } }) }   // a draft never crashes
+            draft = account.draft(cid), onDraft = { text -> if (editing == null) runCatching { account.setDraft(cid, text) } },   // a draft never crashes
+            onSendWith = onSendWith?.takeIf { editing == null }?.let { with -> { text, silent, later -> with(text, replyTo?.optString("mid"), silent, later); replyTo = null } }) }
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
@@ -1319,11 +1321,34 @@ object FullImages {
 
 /** Under my bubble, grey: the time and ◷ / ✓ / ✓✓ / blue ✓✓ (17 × 11, line 1.6, round ends – Olaf's scheme with Jaques,
  *  card db70d358). Not sent: a red line, a tap sends it again. */
+/** f020: the quick times for „Später senden“ – in an hour, this evening at 20:00 (while it is still ahead), tomorrow 09:00. */
+fun laterChoices(now: Calendar = Calendar.getInstance()): List<Pair<String, Long>> {
+    fun at(days: Int, hour: Int) = (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, days); set(Calendar.HOUR_OF_DAY, hour)
+        set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis / 1000
+    val hour = now.timeInMillis / 1000 + 3600
+    return listOfNotNull("In einer Stunde" to hour, ("Heute 20:00" to at(0, 20)).takeIf { it.second > hour }, "Morgen 09:00" to at(1, 9))
+}
+
+/** f020: when a planned message goes – „heute 20:00“, „morgen 09:00“, „Mo., 13.10. 09:00“. */
+fun plannedWhen(at: Long): String {
+    val then = Calendar.getInstance().apply { timeInMillis = at * 1000 }
+    val now = Calendar.getInstance()
+    val days = then.get(Calendar.DAY_OF_YEAR) - now.get(Calendar.DAY_OF_YEAR) + 365 * (then.get(Calendar.YEAR) - now.get(Calendar.YEAR))
+    val time = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(at * 1000))
+    return when (days) { 0 -> "heute $time"; 1 -> "morgen $time"; else -> SimpleDateFormat("EE, dd.MM.", Locale.GERMANY).format(Date(at * 1000)) + " $time" }
+}
+
 @Composable
 fun TickLine(tick: Pair<String, Long>, at: Long, onRetry: () -> Unit) {
     val colors = palette()
     val (state, whenAt) = tick
     val time = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(at * 1000))
+    if (state == "geplant") {
+        // f020: planned – when it goes, and a tap sends it now
+        BasicText("Geplant: ${plannedWhen(at)} · Jetzt senden", style = style(11f, 400, colors.blue).copy(textAlign = TextAlign.End),
+            modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onRetry).padding(end = 4.dp, top = 1.dp, bottom = 2.dp))
+        return
+    }
     if (state == "fehler") {
         BasicText("Nicht gesendet – tippen zum Wiederholen", style = style(11f, 400, colors.red).copy(textAlign = TextAlign.End),
             modifier = Modifier.fillMaxWidth().clickable(onClick = onRetry).padding(end = 4.dp, top = 1.dp, bottom = 2.dp))
@@ -1360,9 +1385,11 @@ fun TickGlyph(state: String, color: Color, modifier: Modifier = Modifier) {
 
 /** The input line like iOS 18: ⊕ on the left, the rounded field „LiChat“, inside it 🎤 while empty and the blue ↑ with
  *  text (Michelle b7a191c4: without a visible button it looked as if one could not send). While recording: the time, ✕, ↑. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null,
-             mentions: ((String) -> List<Pair<String, String>>)? = null, draft: String = "", onDraft: (String) -> Unit = {}) {
+             mentions: ((String) -> List<Pair<String, String>>)? = null, draft: String = "", onDraft: (String) -> Unit = {},
+             onSendWith: ((String, Boolean, Long?) -> Unit)? = null) {
     val colors = palette()
     // The text with its cursor: after „Bearbeiten“ or a suggested name the cursor stands at the end (Michelle 4ceca163).
     // It starts with the draft left here before (979f9b22) and keeps it, a moment after each change.
@@ -1418,6 +1445,35 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
     }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    var sendMenu by remember { mutableStateOf(false) }
+    var laterMenu by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun sendWith(silent: Boolean, later: Long?) { onSendWith?.invoke(text, silent, later); setText("") }
+    // over the whole screen, not inside the input's column
+    @Composable
+    fun Over(content: @Composable () -> Unit) = androidx.compose.ui.window.Dialog(onDismissRequest = { sendMenu = false; laterMenu = false },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) { content() }
+    if (sendMenu) Over { ChoiceSheet(listOf("Lautlos senden", "Später senden …"), -1, onChoose = { choice ->
+        sendMenu = false
+        if (choice == 0) sendWith(true, null) else laterMenu = true
+    }, onCancel = { sendMenu = false }) }
+    if (laterMenu) {
+        val choices = laterChoices()
+        Over { ChoiceSheet(choices.map { it.first } + "Eigene Zeit …", -1, onChoose = { k ->
+            laterMenu = false
+            if (k < choices.size) sendWith(false, choices[k].second)
+            else {
+                // a day, then a time – the system's own pickers
+                val now = Calendar.getInstance()
+                android.app.DatePickerDialog(context, { _, y, mo, d ->
+                    android.app.TimePickerDialog(context, { _, h, mi ->
+                        val at = Calendar.getInstance().apply { set(y, mo, d, h, mi, 0) }.timeInMillis / 1000
+                        if (at > System.currentTimeMillis() / 1000) sendWith(false, at)
+                    }, now.get(Calendar.HOUR_OF_DAY) + 1, 0, true).show()
+                }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH)).apply { datePicker.minDate = now.timeInMillis }.show()
+            }
+        }, onCancel = { laterMenu = false }) }
+    }
     // f0-12, like Messages: holding the microphone records, letting go keeps it to hear first; a short tap records until ■ or ↑.
     // The microphone gives way to the recording row at once – so the letting go is watched here, on the row that stays.
     var armed by remember { mutableStateOf(false) }
@@ -1484,8 +1540,11 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
                 decorationBox = { inner -> Box { if (text.isEmpty()) BasicText(if (actions.staged.isEmpty()) "LiChat" else "Text zum Foto", style = style(17f, 400, colors.tertiary)); inner() } })
             }
             if (text.isNotBlank() || actions.staged.isNotEmpty()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
-                .clickable(role = Role.Button) { if (actions.staged.isNotEmpty()) actions.sendStaged(text.trim()) else onSend(text); setText("") }
-                .semantics { contentDescription = "Senden" },
+                // f020/f021, like Telegram and iOS: holding ↑ offers „Lautlos senden“ and „Später senden“
+                .combinedClickable(role = Role.Button, onLongClick = { if (onSendWith != null && actions.staged.isEmpty()) sendMenu = true }) {
+                    if (actions.staged.isNotEmpty()) actions.sendStaged(text.trim()) else onSend(text); setText("") }
+                .semantics { contentDescription = "Senden"
+                    if (onSendWith != null) customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Weitere Sendeoptionen") { sendMenu = true; true }) },
                 contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
             else actions.micStart?.let { mic ->
                 Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape)

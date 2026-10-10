@@ -11,6 +11,7 @@ import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
@@ -589,6 +590,29 @@ httpd.serve_forever()
         compose.waitForIdle()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performClick()
         assertEquals("*Kommt* alle", sent)
+    }
+
+    /** f020/f021: holding ↑ offers „Lautlos senden“ and „Später senden“ with quick times. */
+    @Test
+    fun sendOptions() {
+        var sent: Triple<String, Boolean, Long?>? = null
+        shot("2i-sendeoptionen") { androidx.compose.foundation.layout.Column {
+            io.github.veritasx1.lichat.ui.InputBar({}, draft = "Psst", onSendWith = { text, silent, later -> sent = Triple(text, silent, later) }) } }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Lautlos senden").performClick()
+        compose.waitForIdle()
+        assertEquals(Triple("Psst", true, null), sent)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Nachricht")).performTextInput("Morgen")
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Später senden …").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Morgen 09:00").performClick()
+        compose.waitForIdle()
+        assertEquals("Morgen", sent?.first)
+        assertEquals(false, sent?.second)
+        assertEquals(io.github.veritasx1.lichat.ui.laterChoices().last().second, sent?.third)
     }
 
     /** f0-01/30a02f81: the ⊕ menu like iOS 17 – round coloured symbols over the faded chat, a tap beside it closes it. */

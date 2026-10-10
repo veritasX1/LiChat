@@ -612,6 +612,27 @@ def main():
     assert window.input.get_text() == "*Kommt* alle||Barney||", window.input.get_text()
     window.input.set_text("")
 
+    # f020: „Später senden“ – planned with a time, „Geplant: … – jetzt senden“ under it, a click sends it now
+    bernd.fetch()
+    window.input.set_text("Erinnerung: Kohle!")
+    window.ask_later()
+    dialog, _typed, chosen = window.later_dialog
+    chosen(dialog, "zeit0")
+    dialog.close()
+    until(lambda: anna.chats[cid]["messages"][-1].get("status") == "geplant")
+    settle(0.4)
+    planned = [w for w in walk(window.bubbles) if isinstance(w, Gtk.Button) and (w.get_label() or "").startswith("Geplant: heute")]
+    assert planned and window.input.get_text() == "", [w.get_label() for w in walk(window.bubbles) if isinstance(w, Gtk.Button)]
+    assert [n for n in bernd.fetch() if n.get("text")] == []
+    planned[0].emit("clicked")
+    until(lambda: anna.chats[cid]["messages"][-1].get("status") != "geplant")
+    assert [n["text"] for n in bernd.fetch() if n.get("text")] == ["Erinnerung: Kohle!"]
+    # f021: „Lautlos senden“ from the input's menu
+    window.input.set_text("Psst")
+    window.input.view.activate_action("senden.lautlos", None)
+    until(lambda: anna.chats[cid]["messages"][-1].get("text") == "Psst" and anna.tick(cid, anna.chats[cid]["messages"][-1])[0] != "wartet")
+    assert [(n["text"], n.get("lautlos")) for n in bernd.fetch() if n.get("text")] == [("Psst", True)]
+
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)
     settle(0.3)
