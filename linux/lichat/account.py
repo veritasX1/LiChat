@@ -762,11 +762,7 @@ class Account:
         others = sorted({str(u).strip().lower() for u in usernames if str(u).strip() and u != self.username})
         if not others:
             raise LiChatError("Mit wem? Mindestens eine andere Person")
-        # A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): plainly, with a guess.
-        for missing in others:
-            if not self.directory(missing):
-                guess = next((p for p in self.known_people() if missing in p or p.split(".")[0] == missing), None)
-                raise LiChatError(f"„{missing}“ gibt es auf diesem Server nicht" + (f" – meinst du {guess}?" if guess else ""))
+        self._check_names(others)
         roster, packages = self._claim(others)
         roster[self.username] = [self.device_id]
         with self.lock:
@@ -813,9 +809,10 @@ class Account:
         chat = self.chats[cid]
         if chat.get("removed"):
             raise LiChatError("Du bist nicht mehr in diesem Gespräch")
-        new = sorted({u for u in usernames if u != self.username and u not in chat["roster"]})
+        new = sorted({str(u).strip().lower() for u in usernames if str(u).strip() and u != self.username and u not in chat["roster"]})
         if not new:
             raise LiChatError("Wen hinzufügen? Die Person ist schon dabei")
+        self._check_names(new)      # before anything changes – an unknown name leaves the group as it was (Michelle 4da136eb)
         added, packages = self._claim(new)
         with self.lock:
             before = self.targets(cid)
@@ -997,10 +994,19 @@ class Account:
                 return cid
         return self.start([user])
 
+    def _check_names(self, names):
+        """A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): plainly, with a guess."""
+        for missing in names:
+            if not self.directory(missing):
+                guess = next((p for p in self.known_people() if missing in p or p.split(".")[0] == missing), None)
+                raise LiChatError(f"„{missing}“ gibt es auf diesem Server nicht" + (f" – meinst du {guess}?" if guess else ""))
+
     def known_people(self):
-        """People I could write to without typing their exact name: contacts and everyone from my conversations."""
-        people = set(self.contacts) | {u for chat in self.visible_chats().values() for u in chat.get("roster", {})}
-        return sorted(people - {self.username})
+        """People I could write to without typing their exact name: contacts, everyone in my conversations, and everyone who
+        ever wrote in one of them (also someone taken out of a group since – Michelle 4da136eb)."""
+        people = set(self.contacts) | {u for chat in self.visible_chats().values() for u in chat.get("roster", {})} \
+            | {m.get("from") for chat in self.visible_chats().values() for m in chat.get("messages", []) if m.get("from") and not m.get("system")}
+        return sorted(people - {self.username, None})
 
     def display(self, username):
         """What people see: „Vorname Nachname“ when that person told us (end to end), else the user name."""
