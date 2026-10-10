@@ -11,3 +11,4 @@ local.properties
 *.jks
 keystore.properties
 deploy/.env
+build-shots/
