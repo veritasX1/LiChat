@@ -1029,6 +1029,13 @@ class Window(Adw.ApplicationWindow):
                                               halign=Gtk.Align.END if mine else Gtk.Align.START))
             if m.get("anhang"):
                 piece = self.attachment_bubble(m["anhang"], mine, m)
+                if (m.get("text") or "").strip():
+                    # 2fcc3eef: the caption under the picture, in the same message – like Messages
+                    caption = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True, max_width_chars=48,
+                                        css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
+                                        halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
+                    caption.set_markup(bubble_markup(m["text"]))
+                    piece.append(caption)
             else:
                 piece = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
@@ -1864,7 +1871,7 @@ class Window(Adw.ApplicationWindow):
             return
         self.send_attachment(Path(file.get_path()))
 
-    def send_attachment(self, path, once=None, secret=False):
+    def send_attachment(self, path, once=None, secret=False, caption=""):
         """The kind from the file's type: photo, video, audio (as a voice message) or any other file. A photo first asks
         how: normal, as a one-time picture (fe9f2029) or pixelated (f9e3f055)."""
         import mimetypes
@@ -1881,7 +1888,7 @@ class Window(Adw.ApplicationWindow):
 
         def job():
             account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=bool(once), secret=secret,
-                                    changed=self.upload_moved)
+                                    changed=self.upload_moved, caption=caption)
             return cid
 
         def done(_cid, error):
@@ -1893,7 +1900,16 @@ class Window(Adw.ApplicationWindow):
 
     def photo_options(self, path):
         dialog = Adw.AlertDialog(heading="Foto senden", body=path.name)
-        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        try:                                        # the photo itself, small (2fcc3eef)
+            picture = Gtk.Picture(file=Gio.File.new_for_path(str(path)), can_shrink=True, content_fit=Gtk.ContentFit.CONTAIN)
+            picture.set_size_request(240, 180)
+            options.append(picture)
+        except GLib.Error:
+            pass
+        # 2fcc3eef: text to the photo – one message, the caption under the picture (what was typed already goes along)
+        caption = Gtk.Entry(placeholder_text="Text zum Foto", text=self.input.get_text())
+        options.append(caption)
         once = Gtk.CheckButton(label="Einmal-Ansicht – nach dem Ansehen weg")
         secret = Gtk.CheckButton(label="Verpixeln – erst ein Tippen zeigt es")
         options.append(once)
@@ -1903,9 +1919,14 @@ class Window(Adw.ApplicationWindow):
         dialog.add_response("senden", "Senden")
         dialog.set_response_appearance("senden", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("senden")
-        dialog.connect("response", lambda _d, answer: answer == "senden" and self.send_attachment(path, once.get_active(), secret.get_active()))
+        def answered(_d, answer):
+            if answer == "senden":
+                self.input.set_text("")
+                self.send_attachment(path, once.get_active(), secret.get_active(), caption.get_text().strip())
+        dialog.connect("response", answered)
         dialog.present(self)
         self.photo_dialog = (dialog, once, secret)       # for the GUI test
+        self.photo_caption = caption
         return dialog
 
     def show_media(self, cid):

@@ -282,6 +282,21 @@ class Groups(Base):
         self.assertEqual(outbox(), [])
         self.assertEqual([n for n in bernd.fetch() if n.get("anhang")], [])
 
+    def test_caption_in_the_same_message(self):
+        """2fcc3eef: photo and text leave as one message; a retry keeps the caption."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        token = anna.server.token
+        anna.server.token = "falsch"
+        with self.assertRaises(LiChatError):
+            anna.send_attachment(cid, b"Kohle", "Liste.txt", "text/plain", "datei", caption=" Für Samstag ")
+        anna.server.token = token
+        anna.retry(cid, anna.chats[cid]["messages"][-1]["mid"])
+        got = [n for n in bernd.fetch() if n.get("anhang")]
+        self.assertEqual([n["text"] for n in got], ["Datei: Liste.txt: Für Samstag"])
+        self.assertEqual(bernd.chats[cid]["messages"][-1]["text"], "Für Samstag")
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

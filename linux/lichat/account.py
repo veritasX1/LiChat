@@ -1173,6 +1173,8 @@ class Account:
             return self._upload(cid, message, changed)
         payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]} if message.get("anhang") \
             else {"t": "text", "text": message["text"], "at": message["at"], "mid": mid}
+        if message.get("anhang") and message.get("text"):
+            payload["text"] = message["text"]
         message["status"] = "wartet"
         return self._deliver(cid, message, payload)
 
@@ -1490,7 +1492,8 @@ class Account:
                 raise LiChatError("Video/Aufnahme lässt sich nicht ohne Metadaten verschicken")
             return target.read_bytes()
 
-    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None):
+    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None,
+                        caption=""):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
         [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
@@ -1540,7 +1543,8 @@ class Account:
         if secret:
             info["geheim"] = True
         at = int(time.time())
-        message = {"from": self.username, "text": "", "at": at, "anhang": info, "mid": mid, "status": "wartet"}
+        # The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
+        message = {"from": self.username, "text": str(caption or "").strip(), "at": at, "anhang": info, "mid": mid, "status": "wartet"}
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
@@ -1604,7 +1608,10 @@ class Account:
                 self._cancelling.discard(mid)
                 if changed:
                     changed()
-        return self._deliver(cid, message, {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]})
+        payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]}
+        if message.get("text"):
+            payload["text"] = message["text"]
+        return self._deliver(cid, message, payload)
 
     def _keep_sealed(self, attachment, sealed):
         folder = self.folder / "anhaenge"
@@ -1700,7 +1707,9 @@ class Account:
             return message.get("text", "")
         if info.get("einmal"):
             return "Foto · Einmal-Ansicht"
-        return {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
+        label = {"bild": "Foto", "video": "Video", "sprache": "Sprachnachricht"}.get(info.get("art"), "Datei: " + info.get("name", ""))
+        caption = (message.get("text") or "").strip()
+        return f"{label}: {caption}" if caption else label        # with its caption (2fcc3eef)
 
     def members(self, cid):
         """The people in it – each once, however many devices they have (Michelle 8534fe11: Olaf's second device made his
@@ -2019,7 +2028,7 @@ class Account:
             if not good:
                 return [{"chat": cid, "problem": f"Anhang von {sender} unvollständig – nicht übernommen"}]
             info["name"] = str(info.get("name", "Datei"))[:200].replace("/", "_")
-            message = {"from": sender, "text": "", "at": int(data.get("at") or time.time()), "anhang": info}
+            message = {"from": sender, "text": str(data.get("text") or ""), "at": int(data.get("at") or time.time()), "anhang": info}
             self._typing.get(cid, {}).pop(sender, None)
             self._remember_mid(cid, message, data)
             chat["messages"].append(message)

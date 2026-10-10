@@ -19,7 +19,7 @@
     lichat-cli [--profil NAME] hinzufuegen <gespräch> <person …> # in eine Gruppe aufnehmen
     lichat-cli [--profil NAME] umbenennen <gespräch> <name …>   # Gruppenname (nur Ende-zu-Ende)
     lichat-cli [--profil NAME] verlassen <gespräch>
-    lichat-cli [--profil NAME] datei <gespräch> <pfad> [--einmal] [--geheim]   # Datei/Foto/Video schicken (ohne Metadaten); Fotos auch als Einmal-Bild / verpixelt
+    lichat-cli [--profil NAME] datei <gespräch> <pfad> [--einmal] [--geheim] [--text T]   # Datei/Foto/Video schicken (ohne Metadaten); Fotos auch als Einmal-Bild / verpixelt; --text: Bildunterschrift
     lichat-cli [--profil NAME] anhang <gespräch> <nr> <ziel> # Anhang Nr. (aus „verlauf“) entschlüsselt speichern
     lichat-cli [--profil NAME] name <vorname> [nachname …]  # Anzeigename (Groß/klein, Leerzeichen; nur Ende-zu-Ende)
     lichat-cli [--profil NAME] kontakt                       # mein Kontakt als Link + QR (zum Scannen am Handy)
@@ -278,13 +278,18 @@ def main(argv):
         import mimetypes
         once, secret = "--einmal" in args, "--geheim" in args       # fe9f2029, f9e3f055
         args = [a for a in args if a not in ("--einmal", "--geheim")]
+        caption = ""
+        if "--text" in args:                                        # 2fcc3eef: the caption in the same message
+            at = args.index("--text")
+            caption = " ".join(args[at + 1:])
+            args = args[:at]
         if len(args) != 2:
-            raise LiChatError("datei <gespräch> <pfad> [--einmal] [--geheim]")
+            raise LiChatError("datei <gespräch> <pfad> [--einmal] [--geheim] [--text T]")
         cid, path = account.chat(args[0]), Path(args[1])
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         kind = "bild" if mime.startswith("image/") and mime != "image/svg+xml" else "video" if mime.startswith("video/") \
             else "sprache" if mime.startswith("audio/") else "datei"
-        account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=once, secret=secret)
+        account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=once, secret=secret, caption=caption)
         print(f"{account.describe(account.chats[cid]['messages'][-1])} gesendet · gesendet_ms={int(time.time() * 1000)}")
     elif command == "anhang":
         if len(args) != 3:

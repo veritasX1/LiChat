@@ -589,11 +589,16 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
            actions: AttachmentActions? = null) {
     val colors = palette()
     val info = m.optJSONObject("anhang")
-    if (info != null) Box(modifier.then(interact)) {
+    if (info != null) Column(modifier.then(interact), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         if (info.optBoolean("einmal")) OnceBubble(m, mine) { actions?.openOnce?.invoke(m.optString("mid")) }
         else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {},
             uploading = if (mine) actions?.uploading?.invoke(m.optString("mid")) else null,
             onCancel = { actions?.cancelUpload?.invoke(m.optString("mid")) }) { open(info) }
+        // The caption under the picture, in the same message (2fcc3eef) – like Messages, a text bubble right below it.
+        if (m.optString("text").isNotBlank()) {
+            Spacer(Modifier.height(2.dp))
+            Bubble(JSONObject().put("text", m.optString("text")), mine, maxLines = maxLines)
+        }
     }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
@@ -758,6 +763,10 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
     }
 }
 
+/** A photo waiting above the input (2fcc3eef): what was picked, its bytes (marked up, if so) and how it leaves. */
+data class Staged(val uri: android.net.Uri, val bytes: ByteArray?, val once: Boolean = false, val secret: Boolean = false,
+                  val markedUp: Boolean = false)
+
 /** What the conversation can do with attachments (card 9780f3a0) – the activity does the work (pickers, recorder, files). */
 class AttachmentActions(
     val plus: (() -> Unit)? = null,
@@ -782,6 +791,14 @@ class AttachmentActions(
     val load: ((JSONObject) -> ByteArray)? = null,
     /** A one-time picture tapped (its mid): opened once, full screen, then gone (fe9f2029). */
     val openOnce: (String) -> Unit = {},
+    /** Photos picked but not sent yet – they lie above the input like in Messages (2fcc3eef). */
+    val staged: List<Staged> = emptyList(),
+    /** × on a staged photo: take it out again. */
+    val unstage: (Int) -> Unit = {},
+    /** A staged photo tapped: its options (Markieren, Einmal-Ansicht, Verpixeln). */
+    val openStaged: (Int) -> Unit = {},
+    /** Send: the staged photos, the text as the caption of the last one. */
+    val sendStaged: (String) -> Unit = {},
     /** How far my attachment (its mid) is up (0…1), or null when it is not going up now (cf647f61). */
     val uploading: (String) -> Float? = { null },
     /** The ring tapped: stop sending that attachment (its mid). */
@@ -870,17 +887,18 @@ fun OnceViewer(bytes: ByteArray, secret: Boolean, onScreenshot: () -> Unit, onCl
 
 /** Before a photo leaves (fe9f2029, f9e3f055): normal, as a one-time picture, pixelated – or both. */
 @Composable
-fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onMarkup: (() -> Unit)? = null, onSend: (once: Boolean, secret: Boolean) -> Unit) {
+fun PhotoSendSheet(bytes: ByteArray?, onCancel: () -> Unit, onMarkup: (() -> Unit)? = null, startOnce: Boolean = false, startSecret: Boolean = false,
+                   confirm: String = "Senden", onSend: (once: Boolean, secret: Boolean) -> Unit) {
     val colors = palette()
-    var once by remember { mutableStateOf(false) }
-    var secret by remember { mutableStateOf(false) }
+    var once by remember { mutableStateOf(startOnce) }
+    var secret by remember { mutableStateOf(startSecret) }
     val bitmap = remember(bytes) { bytes?.let { FullImages.decode(it, 600) } }
     androidx.activity.compose.BackHandler(onBack = onCancel)
     Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars)) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
             Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) { TextButton("Abbrechen", colors.blue, onClick = onCancel) }
             BasicText("Foto", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
-            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Senden", colors.blue, 600) { onSend(once, secret) } }
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton(confirm, colors.blue, 600) { onSend(once, secret) } }
         }
         Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
             if (bitmap != null) Image(if (secret) pixelated(bitmap) else bitmap, contentDescription = "Foto", contentScale = ContentScale.Fit,
@@ -971,6 +989,21 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
         }
     }
     LaunchedEffect(preset) { if (preset != null) setText(preset) }     // „Bearbeiten“: the message's text to correct
+    // Picked photos lie above the input (2fcc3eef, like Messages): × takes one out, a tap opens its options.
+    if (actions.staged.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
+        actions.staged.forEachIndexed { index, item ->
+            val thumb = remember(item.bytes) { item.bytes?.let { FullImages.decode(it, 240) } }
+            Box(Modifier.padding(end = 8.dp).size(72.dp)) {
+                Box(Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).background(colors.fill).clickable(role = Role.Button) { actions.openStaged(index) }
+                    .semantics { contentDescription = "Foto ${index + 1}" + (if (item.once) ", Einmal-Ansicht" else "") + (if (item.secret) ", verpixelt" else "") + " – Optionen" }) {
+                    thumb?.let { Image(if (item.secret) pixelated(it) else it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                }
+                Box(Modifier.align(Alignment.TopEnd).padding(3.dp).size(22.dp).clip(CircleShape).background(Color(0x99000000))
+                    .clickable(role = Role.Button) { actions.unstage(index) }.semantics { contentDescription = "Foto ${index + 1} entfernen" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, Color.White, 12.dp) }
+            }
+        }
+    }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -999,9 +1032,10 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
             .border(0.5.dp, colors.separator, RoundedCornerShape(18.dp))) {
             BasicTextField(field, { field = it; if (it.text.isNotEmpty()) actions.typing() }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences, autoCorrectEnabled = true), textStyle = style(17f, 400, colors.label), cursorBrush = SolidColor(colors.blue),
                 modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 40.dp, top = 8.dp, bottom = 8.dp).semantics { contentDescription = "Nachricht" },
-                decorationBox = { inner -> Box { if (text.isEmpty()) BasicText("LiChat", style = style(17f, 400, colors.tertiary)); inner() } })
-            if (text.isNotBlank()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
-                .clickable(role = Role.Button) { onSend(text); setText("") }.semantics { contentDescription = "Senden" },
+                decorationBox = { inner -> Box { if (text.isEmpty()) BasicText(if (actions.staged.isEmpty()) "LiChat" else "Text zum Foto", style = style(17f, 400, colors.tertiary)); inner() } })
+            if (text.isNotBlank() || actions.staged.isNotEmpty()) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).background(colors.blue)
+                .clickable(role = Role.Button) { if (actions.staged.isNotEmpty()) actions.sendStaged(text.trim()) else onSend(text); setText("") }
+                .semantics { contentDescription = "Senden" },
                 contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
             else actions.micStart?.let { mic ->
                 Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).clickable(role = Role.Button, onClick = mic)
