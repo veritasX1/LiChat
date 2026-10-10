@@ -560,6 +560,24 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals("„anna“ gibt es auf diesem Server nicht – meinst du anna.berg?", error)
     }
 
+    /** Michelle 4da136eb: someone taken out of a group stays in „known people“; an unknown name leaves the group as it was. */
+    @Test
+    fun addPeopleKnownAndUnknown() {
+        val anna = person("anna"); val bernd = person("bernd"); val erna = person("erna")
+        val cid = anna.start(listOf("bernd", "erna"), "Grillabend")
+        bernd.fetch(); erna.fetch()
+        erna.send(cid, "Hallo zusammen")
+        anna.fetch()
+        anna.remove(cid, listOf("erna"))
+        assertTrue("erna" in anna.knownPeople())
+        val before = anna.chat(cid).getJSONObject("roster").keys().asSequence().toSet()
+        val error = try { anna.add(cid, listOf("gibtsnicht")); null } catch (e: LiChatException) { e.message }
+        assertEquals("„gibtsnicht“ gibt es auf diesem Server nicht", error)
+        assertEquals(before, anna.chat(cid).getJSONObject("roster").keys().asSequence().toSet())
+        anna.add(cid, listOf("erna"))
+        assertTrue(anna.chat(cid).getJSONObject("roster").has("erna"))
+    }
+
     /** Michelle 1a682a79 (b): playing my own voice message leaves the dot of theirs alone. */
     @Test
     fun playingMineKeepsTheirsUnheard() {

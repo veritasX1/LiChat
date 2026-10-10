@@ -371,6 +371,21 @@ class Groups(Base):
             olaf.start(["anna"])
         self.assertEqual(str(caught.exception), "„anna“ gibt es auf diesem Server nicht – meinst du anna.berg?")
 
+    def test_add_people_known_and_unknown(self):
+        """Michelle 4da136eb: someone taken out stays known; an unknown name leaves the group as it was."""
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        cid = anna.start(["bernd", "erna"], "Grillabend")
+        bernd.fetch(); erna.fetch()
+        erna.send(cid, "Hallo zusammen")
+        anna.fetch()
+        anna.remove(cid, ["erna"])
+        self.assertIn("erna", anna.known_people())
+        before = set(anna.chats[cid]["roster"])
+        with self.assertRaises(LiChatError) as caught:
+            anna.add(cid, ["gibtsnicht"])
+        self.assertEqual(str(caught.exception), "„gibtsnicht“ gibt es auf diesem Server nicht")
+        self.assertEqual(set(anna.chats[cid]["roster"]), before)
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

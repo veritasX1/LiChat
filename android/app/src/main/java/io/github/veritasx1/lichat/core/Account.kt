@@ -662,11 +662,7 @@ class Account(val folder: File, private val key: ByteArray) {
     fun start(usernames: List<String>, title: String = ""): String {
         val others = usernames.map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != username }.toSortedSet()
         if (others.isEmpty()) throw LiChatException("Mit wem? Mindestens eine andere Person")
-        // A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): say it plainly, with a guess.
-        others.firstOrNull { directory(it).isEmpty() }?.let { missing ->
-            val guess = knownPeople().firstOrNull { missing in it || it.substringBefore('.') == missing }
-            throw LiChatException("„$missing“ gibt es auf diesem Server nicht" + (guess?.let { " – meinst du $it?" } ?: ""))
-        }
+        checkNames(others)
         val (roster, packages) = claim(others.toList())
         roster.put(username, JSONArray().put(deviceId))
         val packets = mutableListOf<ByteArray>()
@@ -733,6 +729,7 @@ class Account(val folder: File, private val key: ByteArray) {
         val roster = chat.getJSONObject("roster")
         val new = usernames.map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != username && !roster.has(it) }.toSortedSet().toList()
         if (new.isEmpty()) throw LiChatException("Wen hinzufügen? Die Person ist schon dabei")
+        checkNames(new)          // before anything changes – an unknown name leaves the group as it was (Michelle 4da136eb)
         val (added, packages) = claim(new)
         val before: List<String>
         val everyone: List<String>
@@ -934,9 +931,19 @@ class Account(val folder: File, private val key: ByteArray) {
         visibleChats().firstOrNull { cid -> chat(cid).optString("removed").isEmpty() && chat(cid).optString("title").isEmpty() && others(cid) == listOf(user) }
             ?: start(listOf(user))
 
-    /** People I could write to without typing their exact name: contacts and everyone from my conversations. */
+    /** A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): plainly, with a guess. */
+    private fun checkNames(names: Collection<String>) {
+        names.firstOrNull { directory(it).isEmpty() }?.let { missing ->
+            val guess = knownPeople().firstOrNull { missing in it || it.substringBefore('.') == missing }
+            throw LiChatException("„$missing“ gibt es auf diesem Server nicht" + (guess?.let { " – meinst du $it?" } ?: ""))
+        }
+    }
+
+    /** People I could write to without typing their exact name: contacts, everyone in my conversations, and everyone who
+     *  ever wrote in one of them (also someone who was taken out of a group since – Michelle 4da136eb). */
     fun knownPeople(): List<String> = (contactsObject.keys().asSequence().toList() +
-        visibleChats().flatMap { others(it) }).distinct().filter { it != username }.sorted()
+        visibleChats().flatMap { cid -> others(cid) + liveMessagesAll(cid).mapNotNull { m -> m.optString("from").takeIf { it.isNotEmpty() && !m.optBoolean("system") } } })
+        .distinct().filter { it != username }.sorted()
 
     /** Bekannt: someone in my contacts, or a chat I wrote in myself; else Unbekannt. */
     fun known(cid: String): Boolean =
