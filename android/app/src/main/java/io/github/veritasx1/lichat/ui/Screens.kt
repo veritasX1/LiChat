@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +72,7 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -1004,6 +1008,12 @@ class AttachmentActions(
     val open: (JSONObject) -> Unit = {},
     /** Seconds recorded so far, or null when not recording. */
     val recording: Int? = null,
+    /** f0-12: ■ while recording (or letting go after holding the microphone) – keep it to hear first. */
+    val micPreview: () -> Unit = {},
+    /** A recording kept for hearing first: its seconds and whether it plays now – or null. */
+    val recorded: Pair<Double, Boolean>? = null,
+    /** ▶/⏸ on the recording kept. */
+    val previewToggle: () -> Unit = {},
     /** The voice message playing now (its id). */
     val playing: String? = null,
     /** „Nicht gesendet“ tapped: send that message (its mid) again. */
@@ -1253,13 +1263,44 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
     }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
-    Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp),
+    // f0-12, like Messages: holding the microphone records, letting go keeps it to hear first; a short tap records until ■ or ↑.
+    // The microphone gives way to the recording row at once – so the letting go is watched here, on the row that stays.
+    var armed by remember { mutableStateOf(false) }
+    val holding by androidx.compose.runtime.rememberUpdatedState(actions)
+    Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(horizontal = 12.dp, vertical = 8.dp)
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val up = waitForUpOrCancellation()
+                val onMic = armed
+                armed = false
+                if (up != null && onMic && up.uptimeMillis - down.uptimeMillis >= HOLD_MS && holding.recording != null) holding.micPreview()
+            }
+        },
         verticalAlignment = Alignment.Bottom) {
         actions.plus?.let { plus ->
             Box(Modifier.padding(end = 8.dp, bottom = 1.dp).size(34.dp).clip(CircleShape).background(colors.fill)
                 .clickable(role = Role.Button) { keyboard?.hide(); focus.clearFocus(); plus() }.semantics { contentDescription = "Anhang" }, contentAlignment = Alignment.Center) {
                 GlyphIcon(Glyph.Plus, colors.secondary, 20.dp)
             }
+        }
+        val kept = actions.recorded
+        if (kept != null) {
+            Row(Modifier.weight(1f).height(36.dp).clip(RoundedCornerShape(18.dp)).background(colors.theirs).padding(start = 6.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(28.dp).clip(CircleShape).clickable(role = Role.Button) { actions.micStop(false) }
+                    .semantics { contentDescription = "Aufnahme löschen" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
+                Box(Modifier.padding(start = 4.dp).size(28.dp).clip(CircleShape).clickable(role = Role.Button) { actions.previewToggle() }
+                    .semantics { contentDescription = if (kept.second) "Anhalten" else "Anhören" }, contentAlignment = Alignment.Center) {
+                    GlyphIcon(if (kept.second) Glyph.Pause else Glyph.Play, colors.blue, 16.dp)
+                }
+                val whole = kotlin.math.round(kept.first).toInt()
+                BasicText("Sprachnachricht  %d:%02d".format(whole / 60, whole % 60), style = style(17f, 400, colors.label),
+                    modifier = Modifier.weight(1f).padding(start = 6.dp))
+                Box(Modifier.size(28.dp).clip(CircleShape).background(colors.blue).clickable(role = Role.Button) { actions.micStop(true) }
+                    .semantics { contentDescription = "Sprachnachricht senden" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
+            }
+            return@Row
         }
         val seconds = actions.recording
         if (seconds != null) {
@@ -1270,6 +1311,10 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
                 Box(Modifier.padding(start = 6.dp).size(8.dp).clip(CircleShape).background(colors.red))
                 BasicText("Aufnahme  %d:%02d".format(seconds / 60, seconds % 60), style = style(17f, 400, colors.label),
                     modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Box(Modifier.size(28.dp).clip(CircleShape).clickable(role = Role.Button) { actions.micPreview() }
+                    .semantics { contentDescription = "Aufnahme beenden und anhören" }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(12.dp).clip(RoundedCornerShape(2.dp)).background(colors.red))
+                }
                 Box(Modifier.size(28.dp).clip(CircleShape).background(colors.blue).clickable(role = Role.Button) { actions.micStop(true) }
                     .semantics { contentDescription = "Sprachnachricht senden" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
             }
@@ -1288,12 +1333,17 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
                 .semantics { contentDescription = "Senden" },
                 contentAlignment = Alignment.Center) { GlyphIcon(Glyph.ArrowUp, Color.White, 18.dp) }
             else actions.micStart?.let { mic ->
-                Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape).clickable(role = Role.Button, onClick = mic)
-                    .semantics { contentDescription = "Sprachnachricht aufnehmen" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Mic, colors.secondary, 20.dp) }
+                Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(28.dp).clip(CircleShape)
+                    .pointerInput(mic) { detectTapGestures(onPress = { armed = true; mic() }) }
+                    .semantics(mergeDescendants = true) { contentDescription = "Sprachnachricht aufnehmen"; role = Role.Button
+                        onClick(label = "Aufnehmen") { mic(); true } }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Mic, colors.secondary, 20.dp) }
             }
         }
     }
 }
+
+/** Holding the microphone this long and letting go keeps the recording to hear first (f0-12); shorter is a tap. */
+const val HOLD_MS = 400L
 
 /** A photo or video as its picture (rounded like a bubble), a voice message with ▶ and its length, a file with its name. */
 @Composable

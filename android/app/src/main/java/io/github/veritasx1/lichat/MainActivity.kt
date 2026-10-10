@@ -225,6 +225,9 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     var sheet by remember { mutableStateOf(false) }
     var photo by remember { mutableStateOf<ByteArray?>(null) }
     var recording by remember { mutableStateOf<Int?>(null) }
+    // f0-12: a recording kept to hear first (bytes, seconds, wave) and whether it plays now – only in memory
+    var recorded by remember { mutableStateOf<Triple<ByteArray, Double, List<Int>>?>(null) }
+    var previewPlaying by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf<String?>(null) }
     var paused by remember { mutableStateOf(false) }
     var voiceSpeed by remember { mutableStateOf(1f) }        // 1× / 1,5× / 2× like Signal (1a682a79)
@@ -428,8 +431,10 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                 android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording() else microphone.launch(Manifest.permission.RECORD_AUDIO)
         },
         micStop = { send ->
+            val voice = if (recording != null) media.stopRecording(send) else recorded?.takeIf { send }
+            if (recording == null && previewPlaying) { media.stopPlaying(); previewPlaying = false }
             recording = null
-            val voice = media.stopRecording(send)
+            recorded = null
             val acc = account
             val cid = chatId()
             if (voice != null && acc != null && cid != null) uploadWork({
@@ -458,6 +463,19 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
             }
         },
         recording = recording,
+        micPreview = {
+            if (recording != null) {
+                recording = null
+                recorded = media.stopRecording(true)
+                if (recorded == null) problem = "Die Aufnahme war zu kurz."
+            }
+        },
+        recorded = recorded?.let { it.second to previewPlaying },
+        previewToggle = {
+            val kept = recorded
+            if (previewPlaying) { media.stopPlaying(); previewPlaying = false }
+            else if (kept != null) { playing = null; media.play(kept.first) { previewPlaying = false }; previewPlaying = true }
+        },
         playing = playing,
         paused = paused,
         progress = { media.progress() },
