@@ -841,7 +841,8 @@ class Window(Adw.ApplicationWindow):
         # ⊕ like Messages on the Mac: a photo, a video, a voice recording or any file (card 9780f3a0).
         attach = Gtk.Button(icon_name="list-add-symbolic", css_classes=["lichat-tool", "lichat-attach"], tooltip_text="Anhang …",
                             valign=Gtk.Align.CENTER)
-        attach.connect("clicked", lambda *_: self.choose_attachment())
+        attach.connect("clicked", lambda button: self.attachment_menu(button))
+        self.attach_button = attach
         line.append(attach)
         # Capital letters at the start of a sentence, spelling checked (Olaf c81920e8: the keyboard wrote everything small).
         self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"],
@@ -2383,10 +2384,43 @@ class Window(Adw.ApplicationWindow):
 
         Worker.wait(job, done)        # a download on its own – it holds up neither texts nor uploads
 
-    def choose_attachment(self):
+    def attachment_menu(self, button):
+        """f0-01/30a02f81, like Messages: round coloured symbols with their names – Fotos, Audio, Dateien."""
         if self.current is None and not self.composing:
             return
-        dialog = Gtk.FileDialog(title="Anhang wählen")
+        entries = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        popover = Gtk.Popover(child=entries, position=Gtk.PositionType.TOP, css_classes=["lichat-plus-menu"])
+        popover.set_parent(button)
+        popover.connect("closed", lambda p: GLib.idle_add(p.unparent))
+
+        def entry(label, icon, colour, action):
+            row = Gtk.Button(css_classes=["flat", "lichat-plus-entry"])
+            line = Gtk.Box(spacing=12)
+            line.append(Gtk.Image(icon_name=icon, pixel_size=18, css_classes=["lichat-plus-icon", f"lichat-plus-{colour}"]))
+            line.append(Gtk.Label(label=label, xalign=0))
+            row.set_child(line)
+            row.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            row.connect("clicked", lambda *_: (popover.popdown(), action()))
+            entries.append(row)
+        entry("Fotos", "image-x-generic-symbolic", "blue", lambda: self.choose_attachment(photos=True))
+        if not self.composing:
+            entry("Audio", "audio-input-microphone-symbolic", "orange", self.record)
+        entry("Dateien", "x-office-document-symbolic", "indigo", self.choose_attachment)
+        self.plus_menu = popover          # for the GUI test
+        popover.popup()
+        return popover
+
+    def choose_attachment(self, photos=False):
+        if self.current is None and not self.composing:
+            return
+        dialog = Gtk.FileDialog(title="Fotos und Videos wählen" if photos else "Dateien wählen")
+        if photos:
+            only = Gtk.FileFilter(name="Fotos und Videos")
+            only.add_mime_type("image/*")
+            only.add_mime_type("video/*")
+            filters = Gio.ListStore.new(Gtk.FileFilter)
+            filters.append(only)
+            dialog.set_filters(filters)
         dialog.open_multiple(self, None, self.on_attachment_chosen)       # several at once (5749ebd0)
 
     def on_attachment_chosen(self, dialog, result):

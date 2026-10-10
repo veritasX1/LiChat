@@ -109,3 +109,10 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-send { background-color: #0a7aff; color: #ffffff; min-width: 26px; min-height: 26px; padding: 0; margin: 2px 0; font-weight: 700; font-size: 15px; }
 .lichat-peek-time { font-size: 11px; color: rgba(60, 60, 67, 0.6); min-width: 36px; }
 .lichat-dark .lichat-peek-time { color: rgba(235, 235, 245, 0.6); }
+
+/* ---------- ⊕ menu like Messages (f0-01) ---------- */
+.lichat-plus-entry { padding: 4px 12px 4px 4px; border-radius: 20px; font-size: 15px; }
+.lichat-plus-icon { min-width: 32px; min-height: 32px; border-radius: 16px; color: #ffffff; }
+.lichat-plus-blue { background-color: #0a84ff; }
+.lichat-plus-orange { background-color: #ff9500; }
+.lichat-plus-indigo { background-color: #5856d6; }
