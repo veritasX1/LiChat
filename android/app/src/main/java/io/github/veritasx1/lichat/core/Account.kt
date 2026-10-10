@@ -76,6 +76,9 @@ val EFFECTS = linkedMapOf("knall" to "Knall", "laut" to "Laut", "sanft" to "Sanf
     "gross" to "Groß", "klein" to "Klein", "schuetteln" to "Schütteln", "nicken" to "Nicken", "zittern" to "Zittern")
 val SCREEN_EFFECTS = setOf("konfetti", "ballons", "liebe", "feuerwerk")
 val TEXT_EFFECTS = setOf("gross", "klein", "schuetteln", "nicken", "zittern")
+/** Flags a message carries end to end (card 49bec05f): weitergeleitet (f043), schutz = the sender asks not to forward or
+ *  share it (f044 – a courtesy between LiChat apps, not a lock), lautlos (f021). The twin of Python's FLAGS. */
+val FLAGS = listOf("lautlos", "weitergeleitet", "schutz")
 const val WAVE_MAX = 100            // bars in a voice message's wave at most (1a682a79)
 const val ALBUM_MAX = 10            // photos picked together at most (5749ebd0, like Messages)
 const val OUTBOX = "ausgang-"       // an attachment's local id until it is up (cf647f61)
@@ -1122,7 +1125,8 @@ class Account(val folder: File, private val key: ByteArray) {
     /** [replyTo]: the mid of the message this answers (Olaf 09.10.: swipe to answer) – sender and a short quote travel along.
      *  [silent] (f021, like Telegram/iOS „Lautlos senden“): the others get it without sound or vibration.
      *  [later] (f020, „Später senden“): kept here as „geplant“ and sent by [sendDue] at that time (unix seconds). */
-    fun send(cid: String, text: String, replyTo: String? = null, silent: Boolean = false, later: Long? = null, effect: String? = null): JSONObject {
+    fun send(cid: String, text: String, replyTo: String? = null, silent: Boolean = false, later: Long? = null, effect: String? = null,
+             forwarded: Boolean = false, quote: JSONObject? = null): JSONObject {
         val clean = text.trim()
         if (clean.isEmpty()) throw LiChatException("Leere Nachricht")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1133,6 +1137,14 @@ class Account(val folder: File, private val key: ByteArray) {
         if (silent) message.put("lautlos", true)
         val content = JSONObject().put("t", "text").put("text", clean).put("at", at).put("mid", message.getString("mid"))
         if (silent) content.put("lautlos", true)
+        if (forwarded) { message.put("weitergeleitet", true); content.put("weitergeleitet", true) }
+        if (chat(cid).optBoolean("schutz")) { message.put("schutz", true); content.put("schutz", true) }
+        if (quote != null && replyTo == null) {
+            // f036 „Privat antworten“: the group message as the quote, with the group's name
+            val q = JSONObject().put("from", quote.optString("from").take(40)).put("text", quote.optString("text").take(120))
+                .put("gruppe", quote.optString("gruppe").take(80))
+            message.put("antwort", q); content.put("antwort", JSONObject(q.toString()))
+        }
         effect?.takeIf { it in EFFECTS }?.let { message.put("effekt", it); content.put("effekt", it) }
         replyTo?.let { mid -> findMessage(cid, mid) }?.let { quoted ->
             val answer = JSONObject().put("mid", quoted.getString("mid")).put("from", quoted.optString("from"))
@@ -1225,6 +1237,72 @@ class Account(val folder: File, private val key: ByteArray) {
         groupMessage(cid, JSONObject().put("t", "bearbeiten").put("mid", mid).put("text", clean).put("at", now), null)
     }
 
+    // ------------------------------------------------------------------------------------------ message actions (49bec05f)
+
+    /** f044: what the sender protected, a one-time picture or a called-back message is not passed on. */
+    fun canForward(message: JSONObject): Boolean = !(message.optBoolean("zurueckgerufen") || message.optJSONObject("anhang")?.optBoolean("einmal") == true ||
+        (message.optBoolean("schutz") && message.optString("from") != username) || message.optBoolean("system"))
+
+    /** f043: the message once more in another chat, marked „Weitergeleitet“ – an attachment opened here and sent anew. */
+    fun forward(fromCid: String, mid: String, toCid: String, changed: () -> Unit = onChange): JSONObject {
+        val message = findMessage(fromCid, mid)?.takeIf { canForward(it) } ?: throw LiChatException("Diese Nachricht lässt sich nicht weiterleiten")
+        val info = message.optJSONObject("anhang")
+        if (info != null) {
+            val data = openAttachment(info)
+            val kind = info.optString("art").takeIf { it in KINDS } ?: "datei"
+            val wave = info.optJSONArray("welle")?.let { w -> (0 until w.length()).map { w.optInt(it) } }
+            return sendAttachment(toCid, data, info.optString("name", "Datei"), info.optString("mime", "application/octet-stream"), kind,
+                info.optDouble("dauer").takeIf { !it.isNaN() }, caption = message.optString("text"), wave = wave, changed = changed, forwarded = true)
+        }
+        return send(toCid, message.optString("text"), forwarded = true)
+    }
+
+    /** f046: one message pinned at the top for everyone in the chat; null takes it off. */
+    fun pinMessage(cid: String, mid: String?) {
+        if (mid != null && findMessage(cid, mid) == null) throw LiChatException("Nachricht nicht gefunden")
+        synchronized(lock) { if (mid == null) chat(cid).remove("nachricht_angeheftet") else chat(cid).put("nachricht_angeheftet", mid) }
+        groupMessage(cid, JSONObject().put("t", "anheften").put("mid", mid ?: ""),
+            if (mid != null) "Du hast eine Nachricht angeheftet." else "Du hast die angeheftete Nachricht gelöst.")
+    }
+
+    fun pinnedMessage(cid: String): JSONObject? = chats.optJSONObject(cid)?.optString("nachricht_angeheftet")?.takeIf { it.isNotEmpty() }
+        ?.let { findMessage(cid, it) }?.takeIf { !it.optBoolean("zurueckgerufen") && !it.has("geloescht") }
+
+    /** f047: marked for me (only on this phone, never sent) – like WhatsApp's star. */
+    fun star(cid: String, mid: String, on: Boolean = true) = synchronized(lock) {
+        val message = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
+        if (on) message.put("markiert", true) else message.remove("markiert")
+        save()
+    }
+
+    /** (cid, message) newest first – one chat or all. */
+    fun starred(cid: String? = null): List<Pair<String, JSONObject>> = synchronized(lock) {
+        chats.keys().asSequence().toList().filter { (cid == null || it == cid) && !chat(it).has("geloescht") }.flatMap { c ->
+            val list = chat(c).getJSONArray("messages")
+            (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optBoolean("markiert") && !it.optBoolean("zurueckgerufen") && !it.has("geloescht") }.map { c to it }
+        }.sortedByDescending { it.second.optLong("at") }
+    }
+
+    /** f036: the group message quoted in a private answer – waits with the draft of the 1:1 chat (only here). */
+    fun draftQuote(cid: String): JSONObject? = chats.optJSONObject(cid)?.optJSONObject("entwurf_zitat")
+
+    fun setDraftQuote(cid: String, quote: JSONObject?) = chatSetting(cid, "entwurf_zitat", quote, tell = false)
+
+    /** f044: my messages in this chat from now on ask the others not to forward or share them. */
+    fun setProtected(cid: String, on: Boolean) = chatSetting(cid, "schutz", if (on) true else null, tell = false)
+
+    /** f057/f032/f033: per person delivered / read (read only with read receipts on – mutual). */
+    fun messageInfo(cid: String, mid: String): List<Triple<String, Long?, Long?>> {
+        val message = findMessage(cid, mid) ?: throw LiChatException("Nachricht nicht gefunden")
+        if (message.optString("from") != username) return emptyList()
+        val got = message.optJSONObject("zugestellt") ?: JSONObject()
+        val read = if (receiptsFor(cid)) message.optJSONObject("gelesen") ?: JSONObject() else JSONObject()
+        return members(cid).filter { it != username }.map { person ->
+            Triple(person, (if (got.has(person)) got.getLong(person) else null) ?: (if (read.has(person)) read.getLong(person) else null),
+                if (read.has(person)) read.getLong(person) else null)
+        }
+    }
+
     /** My message taken back (iOS: two minutes) – for everyone a grey line instead of the bubble. */
     fun unsend(cid: String, mid: String) {
         synchronized(lock) {
@@ -1291,7 +1369,7 @@ class Account(val folder: File, private val key: ByteArray) {
             }
         } ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
-        if (message.optBoolean("lautlos")) content.put("lautlos", true)
+        FLAGS.forEach { if (message.optBoolean(it)) content.put(it, true) }
         message.optString("effekt").takeIf { it in EFFECTS }?.let { content.put("effekt", it) }
         message.optJSONObject("antwort")?.let { content.put("antwort", it) }
         message.put("status", "wartet")
@@ -1447,7 +1525,8 @@ class Account(val folder: File, private val key: ByteArray) {
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
                        preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, caption: String = "",
-                       album: JSONObject? = null, defer: Boolean = false, wave: List<Int>? = null, changed: () -> Unit = onChange): JSONObject {
+                       album: JSONObject? = null, defer: Boolean = false, wave: List<Int>? = null, changed: () -> Unit = onChange,
+                       forwarded: Boolean = false): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
         if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1474,6 +1553,8 @@ class Account(val folder: File, private val key: ByteArray) {
         val at = System.currentTimeMillis() / 1000
         // The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
         val message = JSONObject().put("from", username).put("text", caption.trim()).put("at", at).put("anhang", info).put("mid", mid).put("status", "wartet")
+        if (forwarded) message.put("weitergeleitet", true)
+        if (chat(cid).optBoolean("schutz")) message.put("schutz", true)
         // Several photos picked together stay together (5749ebd0): collage for 2–3, a stack from 4 – one-time and secret ones alone.
         if (album != null && !once && !secret) message.put("album", album)
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
@@ -1546,6 +1627,7 @@ class Account(val folder: File, private val key: ByteArray) {
             }
         }
         val content = JSONObject(info.toString()).put("t", "anhang").put("at", message.optLong("at")).put("mid", mid)
+        FLAGS.forEach { if (message.optBoolean(it)) content.put(it, true) }
         message.optString("text").takeIf { it.isNotEmpty() }?.let { content.put("text", it) }
         message.optJSONObject("album")?.let { content.put("album", it) }
         return deliver(cid, message, content)
@@ -1982,6 +2064,16 @@ class Account(val folder: File, private val key: ByteArray) {
                         system(chat, text)
                         return listOf(News(cid, News.Kind.System, text = text, received = at))
                     }
+                    "anheften" -> {
+                        // f046: one message pinned at the top of the chat, for everyone; "" takes it off
+                        val mid = data.optString("mid")
+                        if (mid.isNotEmpty() && findMessage(cid, mid) == null) return emptyList()
+                        if (mid.isEmpty()) chat.remove("nachricht_angeheftet") else chat.put("nachricht_angeheftet", mid)
+                        val text = (if (sender == username) "Du hast" else "${display(sender)} hat") +
+                            if (mid.isNotEmpty()) " eine Nachricht angeheftet." else " die angeheftete Nachricht gelöst."
+                        system(chat, text)
+                        return listOf(News(cid, News.Kind.System, text = text, received = at))
+                    }
                     "reaktion" -> {
                         val target = findMessage(cid, data.optString("mid")) ?: return emptyList()
                         val emoji = data.optString("emoji").trim()
@@ -2026,6 +2118,7 @@ class Account(val folder: File, private val key: ByteArray) {
                         if (info.optBoolean("einmal")) info.remove("vorschau")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
                         val message = JSONObject().put("from", sender).put("text", data.optString("text")).put("at", sent).put("anhang", info)
+                        FLAGS.forEach { if (data.optBoolean(it)) message.put(it, true) }
                         data.optJSONObject("album")?.let { a ->
                             val nr = a.optInt("nr"); val count = a.optInt("anzahl")
                             if (Regex("[0-9a-f]{16}").matches(a.optString("id")) && count in 2..ALBUM_MAX && nr in 1..count && !info.optBoolean("einmal") && !info.optBoolean("geheim"))
@@ -2043,14 +2136,17 @@ class Account(val folder: File, private val key: ByteArray) {
                         data.optJSONObject("antwort")?.takeIf { Regex("[0-9a-f]{16}").matches(it.optString("mid")) }?.let { a ->
                             message.put("antwort", JSONObject().put("mid", a.optString("mid")).put("from", a.optString("from").take(40))
                                 .put("text", a.optString("text").take(120)))
+                        } ?: data.optJSONObject("antwort")?.takeIf { it.optString("gruppe").isNotEmpty() }?.let { a ->
+                            message.put("antwort", JSONObject().put("from", a.optString("from").take(40)).put("text", a.optString("text").take(120))
+                                .put("gruppe", a.optString("gruppe").take(80)))
                         }
+                        FLAGS.forEach { if (data.optBoolean(it)) message.put(it, true) }
                         typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
                         // „@ich“ / „@alle“ in a group: a notification even when the chat is muted (iOS)
                         val group = chat.getJSONObject("roster").length() > 2 || chat.optString("title").isNotEmpty()
                         val mention = group && mentionsMe(text)
-                        if (data.optBoolean("lautlos")) message.put("lautlos", true)
                         data.optString("effekt").takeIf { it in EFFECTS }?.let { message.put("effekt", it) }
                         return listOf(News(cid, News.Kind.Text, from = sender, text = if (message.optString("effekt") == "tinte") describe(message) else text,
                             at = sent, received = at, mention = mention,

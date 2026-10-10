@@ -589,6 +589,45 @@ httpd.serve_forever()
         assertEquals("Pro Kopf 87,60/4 = 21,9", sent)
     }
 
+    /** Card 49bec05f: the menu offers Weiterleiten, Text auswählen, Anheften, Markieren, Info; Info shows the times,
+     *  Weiterleiten the other chats; a pinned message stands under the title. */
+    @Test
+    fun messageActionsMenu() {
+        var pinned: String? = "x"; var starred: Pair<String, Boolean>? = null; var forwarded: Pair<String, String>? = null
+        val more = io.github.veritasx1.lichat.ui.MoreActions(forward = { m, to -> forwarded = m to to }, pin = { pinned = it },
+            star = { m, on -> starred = m to on })
+        shot("2m-aktionen") { ChatScreen(anna, cid, 0, null, {}, {}, { _, _ -> }, more = more) }
+        val salad = "Ja, gern! Ich bringe Kartoffelsalat mit."
+        compose.onNodeWithText(salad).performTouchInput { longClick() }
+        compose.waitForIdle()
+        for (label in listOf("Weiterleiten", "Text auswählen", "Anheften", "Markieren", "Info")) compose.onNodeWithText(label).assertExists()
+        compose.onNodeWithText("Privat antworten").assertDoesNotExist()            // 1:1, not a group
+        if (out != null) captureScreenRoboImage("$out/2m-aktionen.png")
+        compose.onNodeWithText("Markieren").performClick()
+        compose.waitForIdle()
+        assertEquals(true, starred?.second)
+        compose.onNodeWithText(salad).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Anheften").performClick()
+        compose.waitForIdle()
+        assertTrue(pinned != null && pinned != "x")
+        compose.onNodeWithText(salad).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Info").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Zugestellt", substring = true).assertExists()
+        compose.onNodeWithText("Fertig").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText(salad).performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Weiterleiten").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Weiterleiten an").assertExists()
+        compose.onNodeWithText("Grillabend", substring = true).performClick()
+        compose.waitForIdle()
+        assertEquals(group, forwarded?.second)
+    }
+
     /** f012–f014: a new message with Konfetti plays it over the conversation; „Nicken“ moves, „Wiedergeben“ plays again. */
     @Test
     fun effectPlays() {

@@ -834,6 +834,52 @@ print([m["album"]["nr"] for m in a.chats["$cid"]["messages"] if m.get("album")])
         assertEquals("Nachricht mit unsichtbarer Tinte", io.github.veritasx1.lichat.core.describe(list.last { it.optString("effekt") == "tinte" }))
     }
 
+    /** Card 49bec05f: forward (attachments sent anew), protect, pin for everyone, star only here, info, private reply. */
+    @Test
+    fun messageActions() {
+        val anna = person("anna"); val bernd = person("bernd"); val erna = person("erna")
+        val group = anna.start(listOf("bernd", "erna"), "Grillabend")
+        val alone = anna.start(listOf("erna"))
+        bernd.fetch(); erna.fetch()
+        bernd.send(group, "Ich bring Senf mit")
+        bernd.sendAttachment(group, "Kohle 3 kg".toByteArray(), "Liste.txt", "text/plain", "datei", caption = "Einkauf")
+        anna.fetch()
+        val list = anna.chat(group).getJSONArray("messages")
+        val text = list.getJSONObject(list.length() - 2); val file = list.getJSONObject(list.length() - 1)
+        anna.forward(group, text.getString("mid"), alone)
+        anna.forward(group, file.getString("mid"), alone)
+        assertEquals(listOf("Ich bring Senf mit", "Datei: Liste.txt: Einkauf"), erna.fetch().filter { it.chat == alone && it.kind == News.Kind.Text }.map { it.text })
+        val got = erna.chat(alone).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) }.takeLast(2) }
+        assertTrue(got.all { it.optBoolean("weitergeleitet") })
+        assertTrue("neu hochgeladen", got[1].getJSONObject("anhang").getString("id") != file.getJSONObject("anhang").getString("id"))
+        assertEquals("Kohle 3 kg", String(erna.openAttachment(got[1].getJSONObject("anhang"))))
+        bernd.setProtected(group, true)
+        bernd.send(group, "Nur für euch")
+        anna.fetch()
+        val secret = list.getJSONObject(list.length() - 1)
+        assertTrue(secret.optBoolean("schutz")); assertFalse(anna.canForward(secret))
+        try { anna.forward(group, secret.getString("mid"), alone); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        anna.pinMessage(group, text.getString("mid"))
+        bernd.fetch()
+        assertEquals("Ich bring Senf mit", bernd.pinnedMessage(group)?.optString("text"))
+        anna.pinMessage(group, null)
+        bernd.fetch()
+        assertEquals(null, bernd.pinnedMessage(group))
+        anna.star(group, text.getString("mid"))
+        assertEquals(listOf("Ich bring Senf mit"), anna.starred().map { it.second.optString("text") })
+        anna.star(group, text.getString("mid"), false)
+        assertTrue(anna.starred().isEmpty())
+        anna.send(group, "Wer bringt Bier?")
+        val mine = list.getJSONObject(list.length() - 1)
+        bernd.fetch(); erna.fetch(); anna.fetch()
+        assertEquals(listOf("bernd", "erna"), anna.messageInfo(group, mine.getString("mid")).filter { it.second != null }.map { it.first }.sorted())
+        val private = erna.chatWith("bernd")
+        erna.send(private, "Senf? Echt jetzt?", quote = JSONObject().put("from", "bernd").put("text", "Ich bring Senf mit").put("gruppe", "Grillabend"))
+        bernd.fetch()
+        val quoted = bernd.chat(private).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }.getJSONObject("antwort")
+        assertEquals("Grillabend", quoted.optString("gruppe")); assertEquals("Ich bring Senf mit", quoted.optString("text"))
+    }
+
     /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
     @Test
     fun unreachablePlainSentence() {

@@ -626,7 +626,47 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     work({ acc.markRead(p.cid) }) { _, _ -> }
                 }
                 ChatScreen(acc, p.cid, version, problem, onBack = { page = Page.List }, onInfo = { page = Page.Info(p.cid) },
-                    onSend = { text, replyTo -> work({ acc.send(p.cid, text, replyTo) }) { _, error -> problem = error; Hub.changed() } },
+                    onSend = { text, replyTo -> work({
+                        val quote = acc.draftQuote(p.cid)                // f036: a private answer to a group message
+                        acc.send(p.cid, text, replyTo, quote = quote)
+                        if (quote != null) acc.setDraftQuote(p.cid, null)
+                    }) { _, error -> problem = error; Hub.changed() } },
+                    more = io.github.veritasx1.lichat.ui.MoreActions(
+                        forward = { mid, to ->
+                            val attachment = acc.findMessage(p.cid, mid)?.has("anhang") == true
+                            val job = { acc.forward(p.cid, mid, to) }
+                            val done = { _: JSONObject?, error: String? -> problem = error; Hub.changed() }
+                            if (attachment) uploadWork(job, done) else work(job, done)
+                        },
+                        pin = { mid -> work({ acc.pinMessage(p.cid, mid) }) { _, error -> problem = error; Hub.changed() } },
+                        star = { mid, on -> work({ acc.star(p.cid, mid, on) }) { _, error -> problem = error; Hub.changed() } },
+                        privateReply = { m ->
+                            work({
+                                val to = acc.chatWith(m.optString("from"))
+                                acc.setDraftQuote(to, JSONObject().put("from", m.optString("from")).put("text", io.github.veritasx1.lichat.core.describe(m).take(120))
+                                    .put("gruppe", acc.title(p.cid)))
+                                to
+                            }) { to, error -> problem = error; Hub.changed(); if (to != null) page = Page.Chat(to) }
+                        },
+                        share = { m ->
+                            // f056: into another app – text as text, an attachment as its file (only LiChat's cache, shared once)
+                            waitWork({
+                                m.optJSONObject("anhang")?.let { info ->
+                                    val bytes = acc.openAttachment(info)
+                                    val file = java.io.File(java.io.File(context.cacheDir, "geoeffnet").apply { mkdirs() },
+                                        info.optString("name", "anhang").replace('/', '_').ifBlank { "anhang" }).apply { writeBytes(bytes) }
+                                    androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.dateien", file) to info.optString("mime", "application/octet-stream")
+                                }
+                            }) { found, error ->
+                                problem = error
+                                val intent = Intent(Intent.ACTION_SEND)
+                                if (found != null) intent.setType(found.second).putExtra(Intent.EXTRA_STREAM, found.first).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    .also { m.optString("text").takeIf { t -> t.isNotBlank() }?.let { t -> it.putExtra(Intent.EXTRA_TEXT, io.github.veritasx1.lichat.core.formatted(t).first) } }
+                                else intent.setType("text/plain").putExtra(Intent.EXTRA_TEXT, io.github.veritasx1.lichat.core.formatted(m.optString("text")).first)
+                                if (error == null) runCatching { context.startActivity(Intent.createChooser(intent, null)) }
+                            }
+                        },
+                    ),
                     onSendWith = { text, replyTo, silent, later, effect ->
                         work({ acc.send(p.cid, text, replyTo, silent = silent, later = later, effect = effect) }) { _, error -> problem = error; Hub.changed() } },
                     actions = actions,

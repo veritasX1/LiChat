@@ -338,8 +338,11 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
                onReact: (String, String) -> Unit = { _, _ -> }, onEdit: (String, String) -> Unit = { _, _ -> },
                onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {},
-               onSendWith: ((String, String?, Boolean, Long?, String?) -> Unit)? = null) {
+               onSendWith: ((String, String?, Boolean, Long?, String?) -> Unit)? = null, more: MoreActions = MoreActions()) {
     val colors = palette()
+    var forwarding by remember(cid) { mutableStateOf<JSONObject?>(null) }     // f043: which chat it goes to
+    var infoFor by remember(cid) { mutableStateOf<JSONObject?>(null) }        // f057
+    var selecting by remember(cid) { mutableStateOf<String?>(null) }          // f045: part of the text
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     // f004: an answer begun here waits with the draft and is there again when the conversation opens
     var replyTo by remember(cid) { mutableStateOf(account.draftReply(cid)?.let { account.findMessage(cid, it) }?.takeIf { !it.optBoolean("zurueckgerufen") }) }
@@ -400,6 +403,23 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             }
         }
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+        // f046: the pinned message under the title for everyone – a tap jumps to it, ✕ takes it off
+        remember(version, cid) { account.pinnedMessage(cid) }?.let { pinned ->
+            Row(Modifier.fillMaxWidth().background(colors.bar).clickable {
+                val i = list.indexOfFirst { it.optString("mid") == pinned.optString("mid") }
+                if (i >= 0) scope.launch { listState.animateScrollToItem(list.size - 1 - i) }
+            }.padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp).semantics(mergeDescendants = true) {
+                contentDescription = "Angeheftet: ${io.github.veritasx1.lichat.core.describe(pinned)}" }, verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(3.dp, 30.dp).background(colors.blue))
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    BasicText("Angeheftet", style = style(12f, 600, colors.blue))
+                    BasicText(io.github.veritasx1.lichat.core.describe(pinned), style = style(14f, 400, colors.label), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable { more.pin(null) }.semantics { contentDescription = "Lösen" },
+                    contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 14.dp) }
+            }
+            Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+        }
         Box(Modifier.weight(1f)) {
         // „•••“ while someone types – it fades a few seconds after the last sign (card 884f7c8a).
         var clock by remember { mutableStateOf(0L) }
@@ -467,11 +487,15 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                 }
                 if (!mine && isGroup && previous?.optString("from") != m.optString("from"))
                     BasicText(account.display(m.optString("from")), style = style(11f, 400, colors.secondary), modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                if (m.optBoolean("weitergeleitet")) BasicText("↪ Weitergeleitet", style = style(12f, 400, colors.secondary).copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    textAlign = if (mine) TextAlign.End else TextAlign.Start), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp))
                 m.optJSONObject("antwort")?.let { quoted ->
                     // The message this answers, small above the bubble; a tap jumps to it.
-                    val target = list.indexOfFirst { it.optString("mid") == quoted.optString("mid") }
+                    val target = if (quoted.has("mid")) list.indexOfFirst { it.optString("mid") == quoted.optString("mid") } else -1
                     Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else account.display(quoted.optString("from"))}: ${if (quoted.optBoolean("zurueckgerufen")) "Nachricht widerrufen" else quoted.optString("text")}",
+                        BasicText("↩ ${if (quoted.optString("from") == account.username) "Du" else account.display(quoted.optString("from"))}" +
+                            quoted.optString("gruppe").takeIf { it.isNotEmpty() }?.let { " in „$it“" }.orEmpty() +
+                            ": ${if (quoted.optBoolean("zurueckgerufen")) "Nachricht widerrufen" else quoted.optString("text")}",
                             style = style(13f, 400, colors.secondary), maxLines = 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, colors.fill, RoundedCornerShape(12.dp))
                                 .clickable(enabled = target >= 0) { scope.launch { listState.animateScrollToItem(list.size - 1 - target + (if (chat.optString("removed").isEmpty()) 0 else 1) + (if (typing.isEmpty()) 0 else 1)) } }
@@ -528,12 +552,15 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                             .bubbleEffect(m.optString("effekt"), mid).textEffect(m.optString("effekt")),
                             // a tap on a text bubble uncovers its spoiler or invisible ink (like iOS; a screen reader's double tap too)
                             Modifier.combinedClickable(onClick = { if (album == null) info?.let { actions.open(it) } ?: run { if (mid.isNotEmpty()) SpoilerShown.ids.add(mid) } },
-                                onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
+                                onLongClick = { if (mid.isNotEmpty()) menuFor = m },
+                                onDoubleClick = { if (mid.isNotEmpty()) menuFor = m }),        // f038: double tap – the tapbacks, like iOS
                             playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions,
                             album = album)
                     }
                 }
                 }
+                if (m.optBoolean("markiert")) BasicText("★ Markiert", style = style(11f, 600, colors.orange).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp))
                 // f012–f014: a bubble or screen effect can be played again, like „Wiedergeben“ on the iPhone
                 m.optString("effekt").takeIf { it in io.github.veritasx1.lichat.core.EFFECTS && it !in io.github.veritasx1.lichat.core.TEXT_EFFECTS && it != "tinte" }?.let { kind ->
                     BasicText("↻ Wiedergeben", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
@@ -569,6 +596,19 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         }
         }
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
+        // f036: privately from a group – the group message waits above the input until it is sent or ✕
+        if (replyTo == null) remember(version, cid) { account.draftQuote(cid) }?.let { quote ->
+            var gone by remember(quote.toString()) { mutableStateOf(false) }
+            if (!gone) Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(3.dp, 32.dp).background(colors.blue))
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    BasicText("Privat an ${account.display(quote.optString("from"))} aus „${quote.optString("gruppe")}“", style = style(13f, 600, colors.blue))
+                    BasicText(quote.optString("text"), style = style(13f, 400, colors.secondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable { gone = true; runCatching { account.setDraftQuote(cid, null) } }
+                    .semantics { contentDescription = "Zitat aufheben" }, contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Close, colors.secondary, 16.dp) }
+            }
+        }
         replyTo?.let { quoted ->
             // Answering: the quote above the input line, ✕ takes it back.
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -609,8 +649,19 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
             onClose = { menuFor = null },
             onEdit = if (account.canEdit(m)) ({ replyTo = null; editing = m; menuFor = null }) else null,
             onDelete = { onDelete(m.optString("mid")); menuFor = null },
-            onUnsend = if (account.canUnsend(m)) ({ onUnsend(m.optString("mid")); menuFor = null }) else null)
+            onUnsend = if (account.canUnsend(m)) ({ onUnsend(m.optString("mid")); menuFor = null }) else null,
+            onForward = if (account.canForward(m)) ({ forwarding = m; menuFor = null }) else null,
+            onShare = if (account.canForward(m)) ({ more.share(m); menuFor = null }) else null,
+            onPrivate = if (isGroup && !mine) ({ more.privateReply(m); menuFor = null }) else null,
+            onSelect = if (m.optString("text").isNotBlank() && m.optString("effekt") != "tinte") ({ selecting = m.optString("text"); menuFor = null }) else null,
+            pinned = account.pinnedMessage(cid)?.optString("mid") == m.optString("mid"),
+            onPin = { more.pin(if (account.pinnedMessage(cid)?.optString("mid") == m.optString("mid")) null else m.optString("mid")); menuFor = null },
+            starred = m.optBoolean("markiert"), onStar = { more.star(m.optString("mid"), !m.optBoolean("markiert")); menuFor = null },
+            onInfo = if (mine) ({ infoFor = m; menuFor = null }) else null)
     }
+    forwarding?.let { m -> ForwardSheet(account, cid, onPick = { to -> more.forward(m.optString("mid"), to); forwarding = null }, onCancel = { forwarding = null }) }
+    infoFor?.let { m -> MessageInfoSheet(account, cid, m) { infoFor = null } }
+    selecting?.let { text -> SelectTextSheet(text) { selecting = null } }
 }
 
 val TAPBACKS = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
@@ -1024,7 +1075,10 @@ fun ReactionBadge(reactions: JSONObject, account: Account, modifier: Modifier = 
 @Composable
 fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androidx.compose.ui.geometry.Rect?, bubble: @Composable () -> Unit,
                 onReact: (String) -> Unit, onReply: () -> Unit, onCopy: () -> Unit, onClose: () -> Unit,
-                onEdit: (() -> Unit)? = null, onUnsend: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
+                onEdit: (() -> Unit)? = null, onUnsend: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
+                onForward: (() -> Unit)? = null, onShare: (() -> Unit)? = null, onPrivate: (() -> Unit)? = null, onSelect: (() -> Unit)? = null,
+                pinned: Boolean = false, onPin: (() -> Unit)? = null, starred: Boolean = false, onStar: (() -> Unit)? = null,
+                onInfo: (() -> Unit)? = null) {
     val colors = palette()
     val me = account.username
     val reactions = message.optJSONObject("reaktionen") ?: JSONObject()
@@ -1058,8 +1112,16 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                         }
             // its own node: read on its own, not merged into the full-screen backdrop that closes the menu
             Box(Modifier.semantics(mergeDescendants = true) {}) { bubble() }
-            Column(Modifier.widthIn(min = 200.dp, max = 260.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell).clickable(enabled = false) {}) {
+            Column(Modifier.widthIn(min = 200.dp, max = 260.dp).heightIn(max = 420.dp).clip(RoundedCornerShape(14.dp)).background(colors.cell)
+                .clickable(enabled = false) {}.verticalScroll(rememberScrollState())) {
+                @Composable
+                fun row(label: String, color: Color = colors.label, action: () -> Unit) {
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
+                    BasicText(label, style = style(17f, 400, color), modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = action).padding(14.dp))
+                }
                 BasicText("Antworten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onReply).padding(14.dp))
+                onPrivate?.let { row("Privat antworten", action = it) }
+                onForward?.let { row("Weiterleiten", action = it) }
                 if (message.optString("text").isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
                     BasicText("Kopieren", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = onCopy).padding(14.dp))
@@ -1079,6 +1141,11 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                         onClose()
                     }.padding(14.dp))
                 }
+                onSelect?.let { row("Text auswählen", action = it) }
+                onShare?.let { row("Teilen …", action = it) }
+                onPin?.let { row(if (pinned) "Lösen" else "Anheften", action = it) }
+                onStar?.let { row(if (starred) "Markierung entfernen" else "Markieren", action = it) }
+                onInfo?.let { row("Info", action = it) }
                 onEdit?.let { edit ->
                     Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
                     BasicText("Bearbeiten", style = style(17f, 400, colors.label), modifier = Modifier.fillMaxWidth().clickable(onClick = edit).padding(14.dp))
@@ -1120,6 +1187,90 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
                 lifted.place(left, top)
                 menu.place(side(menu.width), top + lifted.height + gap)
             }
+        }
+    }
+}
+
+/** What a message's menu can do beyond the basics (card 49bec05f) – the activity does the work. */
+class MoreActions(
+    val forward: (mid: String, toCid: String) -> Unit = { _, _ -> },
+    val pin: (String?) -> Unit = {},
+    val star: (String, Boolean) -> Unit = { _, _ -> },
+    val privateReply: (JSONObject) -> Unit = {},
+    val share: (JSONObject) -> Unit = {},
+)
+
+/** f043: where it goes – my other conversations, like the iPhone's share list. */
+@Composable
+fun ForwardSheet(account: Account, from: String, onPick: (String) -> Unit, onCancel: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onCancel)
+    val chats = remember { account.visibleChats().filter { it != from && !account.chat(it).has("geloescht") && account.chat(it).optString("removed").isEmpty() } }
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars)) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            BasicText("Weiterleiten an", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center).semantics { heading() })
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Abbrechen", colors.blue, onClick = onCancel) }
+        }
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).clip(RoundedCornerShape(10.dp)).background(colors.cell)) {
+            if (chats.isEmpty()) BasicText("Keine anderen Gespräche", style = style(17f, 400, colors.secondary), modifier = Modifier.padding(14.dp))
+            chats.forEachIndexed { k, c ->
+                if (k > 0) Box(Modifier.padding(start = 62.dp).fillMaxWidth().height(0.5.dp).background(colors.separator))
+                val others = account.others(c)
+                Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { onPick(c) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(account.title(c), if (others.size == 1) account.picture(others[0]) else account.groupPicture(c), 38.dp)
+                    BasicText(account.title(c), style = style(17f, 400, colors.label), modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+        }
+    }
+}
+
+/** f057/f032/f033: when it went, and per person delivered / read – like „Info“ on the iPhone. */
+@Composable
+fun MessageInfoSheet(account: Account, cid: String, message: JSONObject, onClose: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    val people = remember(message) { runCatching { account.messageInfo(cid, message.optString("mid")) }.getOrDefault(emptyList()) }
+    val format = java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
+    fun time(at: Long?) = at?.let { format.format(Date(it * 1000)) } ?: "–"
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars)) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            BasicText("Info", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center).semantics { heading() })
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onClose) }
+        }
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            BasicText(io.github.veritasx1.lichat.core.describe(message), style = style(15f, 400, colors.secondary), maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(colors.cell).padding(14.dp)) {
+                BasicText("Gesendet  ${time(message.optLong("at"))}", style = style(17f, 400, colors.label))
+                message.optLong("bearbeitet_am").takeIf { it > 0 }?.let { BasicText("Bearbeitet  ${time(it)}", style = style(15f, 400, colors.secondary)) }
+            }
+            Spacer(Modifier.height(18.dp))
+            people.forEach { (person, got, read) ->
+                Column(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(10.dp)).background(colors.cell).padding(14.dp)
+                    .semantics(mergeDescendants = true) {}) {
+                    BasicText(account.display(person), style = style(17f, 600, colors.label))
+                    BasicText("Zugestellt  ${time(got)}", style = style(15f, 400, colors.secondary))
+                    BasicText(if (account.receiptsFor(cid)) "Gelesen  ${time(read)}" else "Gelesen  (Lesebestätigungen aus)", style = style(15f, 400, colors.secondary))
+                }
+            }
+        }
+    }
+}
+
+/** f045: part of a message – the text to select and copy with the system's own handles. */
+@Composable
+fun SelectTextSheet(text: String, onClose: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.systemBars)) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            BasicText("Text auswählen", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center).semantics { heading() })
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onClose) }
+        }
+        androidx.compose.foundation.text.selection.SelectionContainer(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+            BasicText(io.github.veritasx1.lichat.core.formatted(text).first, style = style(20f, 400, colors.label))
         }
     }
 }

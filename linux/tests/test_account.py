@@ -794,6 +794,60 @@ class SilentAndLater(Base):
             anna.send(cid, "Zu spät", later=now - 10)
 
 
+class MessageActions(Base):
+    def test_forward_pin_star_protect_info_private_reply(self):
+        """Card 49bec05f: weiterleiten (f043, auch Anhänge, neu verschlüsselt), schützen (f044), anheften für alle (f046),
+        markieren nur für mich (f047), Info mit zugestellt/gelesen je Person (f057), privat antworten mit Zitat (f036)."""
+        anna, bernd, erna = self.person("anna"), self.person("bernd"), self.person("erna")
+        group = anna.start(["bernd", "erna"], "Grillabend")
+        alone = anna.start(["erna"])
+        bernd.fetch(); erna.fetch()
+        bernd.send(group, "Ich bring Senf mit")
+        bernd.send_attachment(group, b"Kohle 3 kg", "Liste.txt", "text/plain", "datei", caption="Einkauf")
+        anna.fetch()
+        text, file = anna.chats[group]["messages"][-2], anna.chats[group]["messages"][-1]
+        anna.forward(group, text["mid"], alone)
+        anna.forward(group, file["mid"], alone)
+        got = [n for n in erna.fetch() if n.get("chat") == alone and n.get("text")]
+        self.assertEqual([n["text"] for n in got], ["Ich bring Senf mit", "Datei: Liste.txt: Einkauf"])
+        self.assertTrue(all(m.get("weitergeleitet") for m in erna.chats[alone]["messages"][-2:]))
+        self.assertNotEqual(erna.chats[alone]["messages"][-1]["anhang"]["id"], file["anhang"]["id"], "neu hochgeladen")
+        self.assertEqual(erna.open_attachment(erna.chats[alone]["messages"][-1]["anhang"]), b"Kohle 3 kg")
+        # protected by the sender: nobody else forwards it
+        bernd.set_protected(group, True)
+        bernd.send(group, "Nur für euch")
+        anna.fetch()
+        secret = anna.chats[group]["messages"][-1]
+        self.assertTrue(secret.get("schutz"))
+        self.assertFalse(anna.can_forward(secret))
+        with self.assertRaises(LiChatError):
+            anna.forward(group, secret["mid"], alone)
+        # pinned for everyone, taken off again
+        anna.pin_message(group, text["mid"])
+        bernd.fetch(); erna.fetch()
+        self.assertEqual(bernd.pinned_message(group)["text"], "Ich bring Senf mit")
+        self.assertEqual(erna.chats[group]["messages"][-1]["text"], "anna hat eine Nachricht angeheftet.")
+        anna.pin_message(group, None)
+        bernd.fetch()
+        self.assertIsNone(bernd.pinned_message(group))
+        # starred only here
+        anna.star(group, text["mid"])
+        self.assertEqual([m["text"] for _c, m in anna.starred()], ["Ich bring Senf mit"])
+        anna.star(group, text["mid"], False)
+        self.assertEqual(anna.starred(), [])
+        # info: delivered per person
+        anna.send(group, "Wer bringt Bier?")
+        bernd.fetch(); erna.fetch(); anna.fetch()
+        mine = anna.chats[group]["messages"][-1]
+        info = anna.message_info(group, mine["mid"])
+        self.assertEqual(sorted(p for p, got, _read in info["personen"] if got), ["bernd", "erna"])
+        # privately from the group, with the quote and the group's name
+        private = erna.chat_with("bernd")
+        erna.send(private, "Senf? Echt jetzt?", quote={"from": "bernd", "text": "Ich bring Senf mit", "gruppe": "Grillabend"})
+        bernd.fetch()
+        self.assertEqual(bernd.chats[private]["messages"][-1]["antwort"], {"from": "bernd", "text": "Ich bring Senf mit", "gruppe": "Grillabend"})
+
+
 class Drafts(Base):
     def test_draft_reply_and_mark(self):
         """f003/f004: the answer begun waits with the draft over a restart; text or answer mark it as „Entwurf“."""

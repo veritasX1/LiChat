@@ -664,6 +664,27 @@ def main():
     shown = [w.get_text() for w in walk(window.list) if isinstance(w, Gtk.Label)]
     assert "Nachricht mit unsichtbarer Tinte" in shown, shown
 
+    # Card 49bec05f: anheften (bar under the title), markieren, Info, weiterleiten, privat antworten aus der Gruppe
+    window.open_chat(cid)
+    settle(0.3)
+    target = [m for m in anna.chats[cid]["messages"] if m.get("from") == "anna" and m.get("text") and not m.get("zurueckgerufen")][-1]
+    window.pin(cid, target["mid"])
+    until(lambda: window.pin_bar.get_visible())
+    shot(window, "08g-angeheftet.png")
+    window.worker.do(lambda: anna.star(cid, target["mid"], True), lambda *_: window.show_conversation())
+    until(lambda: any(isinstance(w, Gtk.Label) and w.get_label() == "★ Markiert" for w in walk(window.bubbles)))
+    window.show_message_info(cid, target)
+    assert "Zugestellt" in window.info_dialog.get_body()
+    window.info_dialog.close()
+    window.ask_forward(cid, target)
+    dialog, targets = window.forward_dialog
+    assert group in targets
+    dialog.close()
+    window.forward(cid, target, group)
+    until(lambda: anna.chats[group]["messages"][-1].get("weitergeleitet"))
+    window.pin(cid, None)
+    until(lambda: not window.pin_bar.get_visible())
+
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)
     settle(0.3)
