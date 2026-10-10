@@ -247,6 +247,41 @@ class Groups(Base):
         anna.fetch()
         self.assertEqual(anna.chats[cid]["messages"][-1]["reaktionen"], {"bernd": "👩‍👩‍👧‍👦"})
 
+    def test_upload_bubble_progress_retry_cancel(self):
+        """cf647f61: the bubble is there before the upload; a failed upload stays „Nicht gesendet“ and goes up again on a
+        retry (once at the other end); the progress reaches 100 %; a cancelled upload takes bubble and outbox bytes along."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        bernd.fetch()
+        data = os.urandom(300_000)
+        outbox = lambda: [p for p in (anna.folder / "anhaenge").iterdir() if p.name.startswith(account_module.OUTBOX)]
+        token = anna.server.token
+        anna.server.token = "falsch"
+        with self.assertRaises(LiChatError):
+            anna.send_attachment(cid, data, "Plan.pdf", "application/pdf", "datei")
+        last = anna.chats[cid]["messages"][-1]
+        self.assertEqual(anna.tick(cid, last)[0], "fehler")
+        self.assertEqual(len(outbox()), 1)
+        anna.server.token = token
+        shares = []
+        anna.retry(cid, last["mid"], changed=lambda: shares.append(anna.uploads.get(last["mid"])))
+        last = anna.chats[cid]["messages"][-1]
+        self.assertEqual(anna.tick(cid, last)[0], "gesendet")
+        self.assertFalse(last["anhang"]["id"].startswith(account_module.OUTBOX))
+        self.assertEqual(outbox(), [])
+        self.assertIn(1.0, shares)
+        self.assertGreaterEqual(len([x for x in shares if x is not None]), 3)
+        got = [n for n in bernd.fetch() if n.get("anhang")]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(bernd.open_attachment(got[0]["anhang"]), data)
+        before = len(anna.chats[cid]["messages"])
+        answer = anna.send_attachment(cid, data, "Zweiter.pdf", "application/pdf", "datei",
+                                      changed=lambda: [anna.cancel_upload(m) for m in list(anna.uploads)])
+        self.assertEqual(answer, {})
+        self.assertEqual(len(anna.chats[cid]["messages"]), before)
+        self.assertEqual(outbox(), [])
+        self.assertEqual([n for n in bernd.fetch() if n.get("anhang")], [])
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

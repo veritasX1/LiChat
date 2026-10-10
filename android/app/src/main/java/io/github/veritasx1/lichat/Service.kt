@@ -33,6 +33,7 @@ import java.io.File
 /** What the service and the screens share: the account and a counter that moves with every change. */
 object Hub {
     @Volatile var account: Account? = null
+        set(value) { value?.onChange = ::changed; field = value }   // uploads redraw their bubble (cf647f61)
     val changes = MutableStateFlow(0)
     val problem = MutableStateFlow<String?>(null)
     val connected = MutableStateFlow(false)

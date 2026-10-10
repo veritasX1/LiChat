@@ -496,6 +496,48 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertFalse(server.walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("quittung") })
     }
 
+    /** Card cf647f61: the bubble is there before the upload; a failed upload stays „Nicht gesendet“ and goes up again on a
+     *  retry (once at the other end); the ring fills to 100 %; a cancelled upload takes bubble and outbox bytes with it. */
+    @Test
+    fun uploadBubbleProgressRetryCancel() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        val data = ByteArray(300_000).also { java.util.Random(3).nextBytes(it) }
+        val list = anna.chat(cid).getJSONArray("messages")
+        fun last() = list.getJSONObject(list.length() - 1)
+        val outbox = File(File(root, "anna"), "anhaenge")
+        // 1. upload fails: the bubble stays, with its bytes in the outbox
+        val token = anna.server.token
+        anna.server.token = "falsch"
+        try { anna.sendAttachment(cid, data, "Plan.pdf", "application/pdf", "datei"); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+        assertEquals("fehler", anna.tick(cid, last()).first)
+        assertTrue(last().getJSONObject("anhang").getString("id").startsWith(io.github.veritasx1.lichat.core.OUTBOX))
+        assertEquals(1, outbox.list()!!.count { it.startsWith(io.github.veritasx1.lichat.core.OUTBOX) })
+        // 2. retry: up, delivered once, the outbox empty, the ring went to 100 %
+        anna.server.token = token
+        val shares = mutableListOf<Float>()
+        val mid = last().getString("mid")
+        anna.retry(cid, mid) { anna.uploads[mid]?.let { shares.add(it) } }
+        assertEquals("gesendet", anna.tick(cid, last()).first)
+        assertFalse(last().getJSONObject("anhang").getString("id").startsWith(io.github.veritasx1.lichat.core.OUTBOX))
+        assertEquals(0, outbox.list()!!.count { it.startsWith(io.github.veritasx1.lichat.core.OUTBOX) })
+        assertEquals(1f, shares.last(), 0f)
+        assertTrue("mehrere Schritte", shares.size >= 3)
+        val got = bernd.fetch().filter { it.kind == News.Kind.Text }
+        assertEquals(1, got.size)
+        assertEquals(data.toList(), bernd.openAttachment(got[0].attachment!!).toList())
+        assertEquals(0, anna.uploads.size)
+        // 3. cancelled as soon as it starts: bubble and bytes gone, nothing at the other end
+        val before = list.length()
+        val answer = anna.sendAttachment(cid, data, "Zweiter.pdf", "application/pdf", "datei",
+            changed = { anna.uploads.keys.forEach { anna.cancelUpload(it) } })
+        assertEquals(0, answer.length())
+        assertEquals(before, list.length())
+        assertEquals(0, outbox.list()!!.count { it.startsWith(io.github.veritasx1.lichat.core.OUTBOX) })
+        assertTrue(bernd.fetch().none { it.kind == News.Kind.Text })
+    }
+
     /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
     @Test
     fun unreachablePlainSentence() {
