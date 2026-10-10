@@ -331,8 +331,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     }
     // Scanning a new device's QR code (Olaf: „per QR-Code koppeln“): the camera only for that moment.
     var scanning by remember { mutableStateOf(false) }
+    var scanFor by remember { mutableStateOf("koppeln") }                 // what the scanner looks for: koppeln | kontakt
+    var myCode by remember { mutableStateOf<Pair<String?, String?>?>(null) }   // my contact QR (link, PIN) while shown (89aae55d)
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) scanning = true else problem = "LiChat darf die Kamera nicht benutzen – den Code stattdessen eintippen."
+    }
+    fun startScan(purpose: String) {
+        scanFor = purpose
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) scanning = true else camera.launch(Manifest.permission.CAMERA)
     }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startRecording() else problem = "LiChat darf das Mikrofon nicht benutzen – in den Android-Einstellungen erlauben."
@@ -502,7 +509,17 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                     onDelete = { mid -> work({ acc.deleteMessage(p.cid, mid) }) { _, error -> problem = error; Hub.changed() } })
             }
             Page.New -> {
-                NewMessage(problem, onCancel = { page = Page.List }) { names, text ->
+                // 89aae55d (Olaf 10.10.): someone new by QR code or PIN, someone known by a tap – straight into the conversation.
+                fun openWith(job: () -> String) = work({ acc.chatWith(job()) }) { cid, error ->
+                    problem = error
+                    Hub.changed()
+                    if (cid != null) page = Page.Chat(cid)
+                }
+                NewMessage(problem, onCancel = { page = Page.List }, people = remember(version) { acc.knownPeople().map { it to acc.display(it) } },
+                    onScan = { problem = null; startScan("kontakt") },
+                    onMyCode = { myCode = null to null; work({ acc.contactLink() }) { link, error -> problem = error; myCode = if (link != null) link to null else null } },
+                    onPin = { pin -> problem = null; openWith { acc.redeemPin(pin) } },
+                    onPick = { user -> openWith { user } }) { names, text ->
                     work({ acc.start(names).also { acc.send(it, text) } }) { cid, error ->
                         problem = error
                         Hub.changed()
@@ -544,10 +561,7 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         waitWork({ acc.acceptLink(code); acc.myDevices() }) { list, error -> linking = null; problem = error; list?.let { devices = it }; Hub.changed() }
                     },
                     onRemoveDevice = { id -> work({ acc.removeMyDevice(id); acc.myDevices() }) { list, error -> problem = error; list?.let { devices = it } } },
-                    onScanDevice = {
-                        if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                            android.content.pm.PackageManager.PERMISSION_GRANTED) scanning = true else camera.launch(Manifest.permission.CAMERA)
-                    })
+                    onScanDevice = { startScan("koppeln") })
                 LaunchedEffect(Unit) { work({ acc.myDevices() }) { list, _ -> devices = list ?: emptyList() } }
             }
         } }
@@ -574,13 +588,26 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
         if (scanning) io.github.veritasx1.lichat.ui.QrScanner { text ->
             scanning = false
             val acc = account
-            if (text != null && acc != null) {
-                if (Account.parseLinkUri(text) == null) problem = "Das ist kein LiChat-Code zum Koppeln."
+            if (text != null && acc != null && Account.parseContactUri(text) != null) {
+                // a contact's code: into my contacts (verified by its fingerprint) and straight into the conversation
+                work({ acc.chatWith(acc.addContactLink(text)) }) { cid, error ->
+                    problem = error
+                    Hub.changed()
+                    if (cid != null) page = Page.Chat(cid)
+                }
+            } else if (text != null && acc != null) {
+                if (Account.parseLinkUri(text) == null)
+                    problem = if (scanFor == "kontakt") "Das ist kein LiChat-Kontakt." else "Das ist kein LiChat-Code zum Koppeln."
                 else {
                     linking = "Warte auf das neue Gerät …"
                     waitWork({ acc.acceptLink(text); acc.myDevices() }) { list, error -> linking = null; problem = error; list?.let { devices = it }; Hub.changed() }
                 }
             }
+        }
+        myCode?.let { (link, pin) ->
+            io.github.veritasx1.lichat.ui.ContactCodeSheet(link, account?.username ?: "", pin,
+                onPin = { account?.let { acc -> work({ acc.newPin() }) { p, error -> problem = error; if (p != null) myCode = link to p } } },
+                onClose = { myCode = null })
         }
         if (explaining) Explain(onContinue = {
             explaining = false

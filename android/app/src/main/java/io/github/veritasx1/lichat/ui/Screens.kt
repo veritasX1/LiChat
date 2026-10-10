@@ -856,6 +856,33 @@ fun MessageMenu(message: JSONObject, account: Account, mine: Boolean, at: androi
     }
 }
 
+/** My contact code (89aae55d): the QR code someone scans to reach me, my user name, and a PIN on request. */
+@Composable
+fun ContactCodeSheet(link: String?, username: String, pin: String?, onPin: () -> Unit, onClose: () -> Unit) {
+    val colors = palette()
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    Column(Modifier.fillMaxSize().background(colors.grouped).windowInsetsPadding(WindowInsets.systemBars), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            BasicText("Mein QR-Code", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) { TextButton("Fertig", colors.blue, 600, onClick = onClose) }
+        }
+        Spacer(Modifier.height(24.dp))
+        Box(Modifier.size(260.dp).clip(RoundedCornerShape(20.dp)).background(Color.White), contentAlignment = Alignment.Center) {
+            if (link != null) QrCode(link, Modifier.size(236.dp).semantics { contentDescription = "QR-Code zum Hinzufügen von $username" })
+            else BasicText("…", style = style(17f, 400, colors.secondary))
+        }
+        BasicText(username, style = style(20f, 600, colors.label), modifier = Modifier.padding(top = 16.dp))
+        BasicText("Wer diesen Code mit LiChat scannt, landet direkt im Gespräch mit dir. Er enthält nur deinen Benutzernamen, den Server und den Fingerabdruck deiner Schlüssel.",
+            style = style(13f, 400, colors.secondary).copy(textAlign = TextAlign.Center), modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
+        Spacer(Modifier.height(16.dp))
+        if (pin != null) {
+            BasicText(pin, style = style(34f, 600, colors.label).copy(letterSpacing = androidx.compose.ui.unit.TextUnit(4f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                modifier = Modifier.semantics { contentDescription = "PIN ${pin.toList().joinToString(" ")}" })
+            BasicText("10 Minuten gültig, nur einmal", style = style(13f, 400, colors.secondary))
+        } else BasicText("PIN erzeugen", style = style(17f, 400, colors.blue), modifier = Modifier.clickable(role = Role.Button, onClick = onPin).padding(12.dp))
+    }
+}
+
 /** A photo waiting above the input (2fcc3eef): what was picked, its bytes (marked up, if so) and how it leaves. */
 data class Staged(val uri: android.net.Uri, val bytes: ByteArray?, val once: Boolean = false, val secret: Boolean = false,
                   val markedUp: Boolean = false, val asFile: Boolean = false)
@@ -1279,9 +1306,12 @@ fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Un
 // ---------------------------------------------------------------------------------------------- new message
 
 @Composable
-fun NewMessage(problem: String?, onCancel: () -> Unit, onSend: (List<String>, String) -> Unit) {
+fun NewMessage(problem: String?, onCancel: () -> Unit, people: List<Pair<String, String>> = emptyList(), onScan: () -> Unit = {},
+               onMyCode: () -> Unit = {}, onPin: (String) -> Unit = {}, onPick: (String) -> Unit = {}, onSend: (List<String>, String) -> Unit) {
     val colors = palette()
     var to by remember { mutableStateOf("") }
+    var pinOpen by remember { mutableStateOf(false) }
+    var pin by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.statusBars)) {
         Box(Modifier.fillMaxWidth().height(52.dp)) {
             BasicText("Neue Nachricht", style = style(17f, 600, colors.label), modifier = Modifier.align(Alignment.Center))
@@ -1294,7 +1324,46 @@ fun NewMessage(problem: String?, onCancel: () -> Unit, onSend: (List<String>, St
                 decorationBox = { inner -> Box { if (to.isEmpty()) BasicText("Benutzernamen, durch Komma getrennt", style = style(17f, 400, colors.tertiary)); inner() } })
         }
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.separator))
-        Spacer(Modifier.weight(1f))
+        // Nobody has to type an exact user name (Olaf 10.10., 89aae55d): people I know appear while typing (name or user
+        // name, anywhere in it); a QR code or a PIN finds someone new and opens the conversation with them at once.
+        val typed = to.substringAfterLast(',').trim().lowercase()
+        val matches = if (typed.isEmpty()) people else people.filter { (user, name) -> typed in user || typed in name.lowercase() }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (typed.isEmpty() && to.isBlank()) {
+                @Composable
+                fun Action(label: String, glyph: Glyph, onClick: () -> Unit) = Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick)
+                    .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GlyphIcon(glyph, colors.blue, 22.dp)
+                    BasicText(label, style = style(17f, 400, colors.blue), modifier = Modifier.padding(start = 12.dp))
+                }
+                Action("QR-Code scannen", Glyph.Camera, onScan)
+                Action("Meinen QR-Code zeigen", Glyph.QrCode, onMyCode)
+                Action("PIN eingeben", Glyph.Keypad) { pinOpen = !pinOpen }
+                if (pinOpen) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(pin, { pin = it.filter(Char::isLetterOrDigit).take(12) }, singleLine = true, textStyle = style(17f, 400, colors.label),
+                        cursorBrush = SolidColor(colors.blue), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(colors.fill)
+                            .padding(horizontal = 12.dp, vertical = 9.dp).semantics { contentDescription = "PIN" },
+                        decorationBox = { inner -> Box { if (pin.isEmpty()) BasicText("PIN der anderen Person", style = style(17f, 400, colors.tertiary)); inner() } })
+                    TextButton("Hinzufügen", colors.blue, 600) { if (pin.isNotBlank()) { onPin(pin); pin = ""; pinOpen = false } }
+                }
+                Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(0.5.dp).background(colors.separator))
+            }
+            if (matches.isNotEmpty()) BasicText(if (typed.isEmpty()) "KONTAKTE" else "VORSCHLÄGE", style = style(13f, 400, colors.secondary),
+                modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp))
+            matches.take(30).forEach { (user, name) ->
+                Row(Modifier.fillMaxWidth().clickable {
+                    // a tap: straight into the conversation with them (only one person typed so far), else into the list
+                    val before = to.substringBeforeLast(',', "").trim()
+                    if (before.isEmpty()) onPick(user) else to = "$before, $user, "
+                }.padding(horizontal = 16.dp, vertical = 8.dp).semantics { contentDescription = "$name ($user)" }, verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(name, null, 36.dp)
+                    Column(Modifier.padding(start = 12.dp)) {
+                        BasicText(name, style = style(17f, 400, colors.label))
+                        if (name != user) BasicText(user, style = style(13f, 400, colors.secondary))
+                    }
+                }
+            }
+        }
         if (problem != null) BasicText(problem, style = style(12f, 400, colors.red), modifier = Modifier.padding(horizontal = 16.dp))
         InputBar(onSend = { text -> onSend(to.split(',', ';', ' ').map { it.trim().lowercase() }.filter { it.isNotEmpty() }, text) })
     }

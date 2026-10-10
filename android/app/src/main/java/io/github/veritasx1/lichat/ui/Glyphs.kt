@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 
 /** LiChat's symbols – the same drawings as LiMail (Li-Gestaltung), drawn in the manner of SF Symbols (regular weight, round ends) – no Apple artwork. */
-enum class Glyph { Back, Chevron, Search, Compose, Filter, FilterOn, Inbox, Inboxes, Sent, Drafts, Trash, Archive, Junk, Folder, Flag, Star, Reply, ReplyAll, Forward, Move, Paperclip, More, Envelope, ArrowUp, Shield, Close, Check, Photo, Calendar, Clock, Handle, Person, Cart, Megaphone, Tag, Gear, BellOff, Lock, Seal, Share, Bell, Plus, Mic, Play, Pause, Stop, Document }
+enum class Glyph { Back, Chevron, Search, Compose, Filter, FilterOn, Inbox, Inboxes, Sent, Drafts, Trash, Archive, Junk, Folder, Flag, Star, Reply, ReplyAll, Forward, Move, Paperclip, More, Envelope, ArrowUp, Shield, Close, Check, Photo, Calendar, Clock, Handle, Person, Cart, Megaphone, Tag, Gear, BellOff, Lock, Seal, Share, Bell, Plus, Mic, Play, Pause, Stop, Document, Camera, QrCode, Keypad }
 
 @Composable
 fun GlyphIcon(glyph: Glyph, color: Color, size: Dp, modifier: Modifier = Modifier) {
@@ -116,6 +116,18 @@ private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
             line(3.5f to 9.5f, 20.5f to 9.5f); line(8f to 3f, 8f to 6.5f); line(16f to 3f, 16f to 6.5f)
         }
         // Kategorien like iOS (card 152271eb): own drawings in the manner of SF Symbols.
+        Glyph.Camera -> {  // a camera body with its lens (89aae55d: scan a code)
+            line(3f to 8.5f, 3f to 18.5f, 21f to 18.5f, 21f to 8.5f, 16.5f to 8.5f, 15f to 6f, 9f to 6f, 7.5f to 8.5f, 3f to 8.5f)
+            drawCircle(color, 3.4f * s, Offset(12f * s, 13f * s), style = stroke)
+        }
+        Glyph.QrCode -> {  // three finder squares and a few modules
+            box(3.5f, 3.5f, 6.5f, 6.5f, 1f); box(14f, 3.5f, 6.5f, 6.5f, 1f); box(3.5f, 14f, 6.5f, 6.5f, 1f)
+            for ((x, y) in listOf(14f to 14f, 18f to 14f, 16f to 17f, 14f to 19.5f, 19f to 19.5f))
+                drawRect(color, Offset(x * s, y * s), Size(1.8f * s, 1.8f * s))
+        }
+        Glyph.Keypad -> {  // nine dots: type a PIN
+            for (row in 0..2) for (col in 0..2) drawCircle(color, 1.6f * s, Offset((6f + col * 6f) * s, (6f + row * 6f) * s))
+        }
         Glyph.Person -> {
             drawCircle(color, 3.6f * s, Offset(12f * s, 8f * s), style = stroke)
             drawPath(Path().apply { moveTo(4.5f * s, 20.5f * s); cubicTo(5f * s, 14.5f * s, 19f * s, 14.5f * s, 19.5f * s, 20.5f * s) }, color, style = stroke)

@@ -753,6 +753,10 @@ class Window(Adw.ApplicationWindow):
                                   input_hints=Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.LOWERCASE)
         self.to_entry.connect("activate", lambda *_: self.input.grab_focus())
         self.to_line.append(self.to_entry)
+        # 89aae55d (Olaf 10.10.): nobody has to type an exact user name – my code, someone's code or PIN, people I know
+        self.contact_button = Gtk.MenuButton(label="Kontakt", css_classes=["flat"], tooltip_text="QR-Code, PIN oder bekannte Personen")
+        self.contact_button.set_create_popup_func(self.fill_contact_menu)
+        self.to_line.append(self.contact_button)
         self.pane.append(self.to_line)
         self.to_hairline = Gtk.Box(css_classes=["lichat-hairline"], visible=False)
         self.pane.append(self.to_hairline)
@@ -1322,6 +1326,97 @@ class Window(Adw.ApplicationWindow):
         box.append(Gtk.Label(label="Vergleicht den Code auf allen Geräten – gleich heißt: niemand liest mit.", wrap=True,
                              max_width_chars=34, css_classes=["lichat-subtitle"], xalign=0))
         button.set_popover(Gtk.Popover(child=box))
+
+    def fill_contact_menu(self, button):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        mine = Gtk.Button(label="Meinen QR-Code zeigen", css_classes=["flat"])
+        mine.connect("clicked", lambda *_: (button.popdown(), self.show_my_code()))
+        box.append(mine)
+        entry = Gtk.Entry(placeholder_text="Kontakt-Link oder PIN einfügen", width_chars=32)
+        box.append(entry)
+
+        def add(*_):
+            text = entry.get_text().strip()
+            if not text:
+                return
+            button.popdown()
+            account = self.account
+            if text.startswith("lichat://"):
+                self.open_chat_with(lambda: account.add_contact_link(text)[0])
+            else:
+                self.open_chat_with(lambda: account.redeem_pin(text)[0])
+        entry.connect("activate", add)
+        go = Gtk.Button(label="Hinzufügen und schreiben", css_classes=["suggested-action"])
+        go.connect("clicked", add)
+        box.append(go)
+        people = self.account.known_people() if self.account else []
+        if people:
+            box.append(Gtk.Label(label="KONTAKTE", css_classes=["lichat-subtitle"], xalign=0, margin_top=6))
+            for user in people[:30]:
+                name = self.account.display(user)
+                row = Gtk.Button(label=name if name == user else f"{name} ({user})", css_classes=["flat"])
+                row.connect("clicked", lambda _b, u=user: (button.popdown(), self.open_chat_with(lambda: u)))
+                box.append(row)
+        button.set_popover(Gtk.Popover(child=Gtk.ScrolledWindow(child=box, propagate_natural_height=True, max_content_height=480,
+                                                               hscrollbar_policy=Gtk.PolicyType.NEVER)))
+
+    def open_chat_with(self, find_user):
+        """Someone found by code, PIN or a tap: into my contacts and straight into the conversation with them."""
+        account = self.account
+
+        def done(cid, error):
+            self.show_notice(error)
+            if cid:
+                self.composing = False
+                self.current = cid
+                self.fill_list()
+                self.show_conversation()
+        self.worker.do(lambda: account.chat_with(find_user()), done)
+
+    def show_my_code(self):
+        """My contact code: the QR code a phone scans to reach me, my user name, and a PIN on request (89aae55d)."""
+        from .qrcodegen import QrCode
+        account = self.account
+        dialog = Adw.AlertDialog(heading="Mein QR-Code", body=f"{account.username} – wer ihn mit LiChat scannt, landet direkt im Gespräch mit dir.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        area = Gtk.DrawingArea(content_width=220, content_height=220, halign=Gtk.Align.CENTER, css_classes=["lichat-qr"])
+        pin_label = Gtk.Label(label="", css_classes=["title-1"], selectable=True)
+        pin_button = Gtk.Button(label="PIN erzeugen", css_classes=["flat"], halign=Gtk.Align.CENTER)
+        link_label = Gtk.Label(label="", selectable=True, wrap=True, wrap_mode=Pango.WrapMode.CHAR, max_width_chars=40, css_classes=["dim-label"])
+        box.append(area)
+        box.append(link_label)
+        box.append(pin_button)
+        box.append(pin_label)
+        dialog.set_extra_child(box)
+        dialog.add_response("fertig", "Fertig")
+
+        def drawn(link, error):
+            if error:
+                link_label.set_label(error)
+                return
+            qr = QrCode.encode_text(link, QrCode.Ecc.MEDIUM)
+
+            def draw(_area, cr, width, height):
+                size = qr.get_size() + 8
+                scale = min(width, height) / size
+                cr.set_source_rgb(1, 1, 1)
+                cr.paint()
+                cr.set_source_rgb(0, 0, 0)
+                for y in range(qr.get_size()):
+                    for x in range(qr.get_size()):
+                        if qr.get_module(x, y):
+                            cr.rectangle((x + 4) * scale, (y + 4) * scale, scale + 0.5, scale + 0.5)
+                cr.fill()
+            area.set_draw_func(draw)
+            area.update_property([Gtk.AccessibleProperty.LABEL], [f"QR-Code zum Hinzufügen von {account.username}"])
+            link_label.set_label(link)
+        self.worker.do(account.contact_link, drawn)
+
+        def pin_made(pin, error):
+            pin_label.set_label(f"{pin}  · 10 Minuten gültig, einmal" if pin else (error or ""))
+        pin_button.connect("clicked", lambda *_: self.worker.do(account.new_pin, pin_made))
+        dialog.present(self)
+        self.code_dialog = (dialog, link_label, pin_label)       # for the GUI test
 
     def start_composing(self):
         self.composing = True

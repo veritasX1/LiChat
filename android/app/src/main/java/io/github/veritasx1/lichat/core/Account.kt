@@ -324,6 +324,25 @@ class Account(val folder: File, private val key: ByteArray) {
         /** What the new device's QR code says (Olaf: „per QR-Code koppeln“): lichat://koppeln?server=…&code=… */
         fun linkUri(server: String, code: String) = "lichat://koppeln?server=${URLEncoder.encode(server, "UTF-8")}&code=$code"
 
+        /** 16 bytes of SHA-256 over a user's identity keys (sorted byte-wise) – what a contact QR carries (89aae55d);
+         *  the same as Python's Account.fingerprint, so a phone's code works in the Ubuntu app and back. */
+        fun fingerprint(identities: Collection<ByteArray>): String {
+            val sorted = identities.sortedWith { a, b ->
+                (0 until minOf(a.size, b.size)).firstOrNull { a[it] != b[it] }?.let { (a[it].toInt() and 0xFF) - (b[it].toInt() and 0xFF) } ?: (a.size - b.size)
+            }
+            return java.security.MessageDigest.getInstance("SHA-256").digest(sorted.fold(ByteArray(0)) { all, k -> all + k }).hex().take(32)
+        }
+
+        /** (server, name, fingerprint) from a scanned/pasted lichat://kontakt link, or null. */
+        fun parseContactUri(text: String): Triple<String, String, String>? {
+            val uri = runCatching { URI(text.trim()) }.getOrNull() ?: return null
+            if (uri.scheme != "lichat" || uri.host != "kontakt") return null
+            val query = (uri.rawQuery ?: "").split("&").mapNotNull { part -> part.split("=", limit = 2).takeIf { it.size == 2 } }
+                .associate { (k, v) -> k to java.net.URLDecoder.decode(v, "UTF-8") }
+            val name = query["name"]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+            return Triple(query["server"] ?: "", name, query["fp"] ?: "")
+        }
+
         /** (server, code) from a scanned/pasted lichat://koppeln link, or null. */
         fun parseLinkUri(text: String): Pair<String, String>? {
             val uri = runCatching { URI(text.trim()) }.getOrNull() ?: return null
@@ -821,6 +840,62 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     private val contactsObject: JSONObject get() = profiles.optJSONObject("kontakte") ?: JSONObject()
+
+    // ------------------------------------------------------------------------------------------ contacts (89aae55d)
+    // Olaf 10.10.: „man soll auch einen QR code des anderen scannen können und man kommt direkt zu ihm in den
+    // gesprächsdialog“ – no exact typing of names. The QR holds only name, server and the keys' fingerprint.
+
+    /** My contact as a link (and QR code): lichat://kontakt?server=…&name=…&fp=… */
+    fun contactLink(): String {
+        val fp = fingerprint(directory(username).values.ifEmpty { listOf(device.identityKey()) })
+        return "lichat://kontakt?server=${URLEncoder.encode(server.url, "UTF-8")}&name=$username&fp=$fp"
+    }
+
+    /** Into my contacts – verified when the fingerprint from their QR code matches the server's directory now. */
+    fun addContact(user: String, fp: String = ""): Boolean {
+        val name = user.trim().lowercase()
+        val listed = directory(name)
+        if (listed.isEmpty()) throw LiChatException("$name gibt es auf diesem Server nicht")
+        val verified = fp.isNotEmpty() && fingerprint(listed.values) == fp
+        if (fp.isNotEmpty() && !verified) throw LiChatException("Der Schlüssel von $name passt nicht zum QR-Code – Kontakt nicht übernommen")
+        synchronized(lock) {
+            val contacts = profiles.optJSONObject("kontakte") ?: JSONObject().also { profiles.put("kontakte", it) }
+            val known = contacts.optJSONObject(name) ?: JSONObject()
+            contacts.put(name, JSONObject().put("verifiziert", verified || known.optBoolean("verifiziert"))
+                .put("seit", known.optLong("seit", System.currentTimeMillis() / 1000)))
+            save()
+        }
+        return verified
+    }
+
+    /** A scanned/pasted contact link: added (and verified) – its user name, for opening the conversation with them. */
+    fun addContactLink(text: String): String {
+        val (server, name, fp) = parseContactUri(text) ?: throw LiChatException("Das ist kein LiChat-Kontakt")
+        if (server.isNotEmpty() && runCatching { checkServer(server) }.getOrNull() != this.server.url)
+            throw LiChatException("Dieser Kontakt ist auf einem anderen LiChat-Server")
+        if (name == username) throw LiChatException("Das ist dein eigener Code")
+        addContact(name, fp)
+        return name
+    }
+
+    /** A PIN for someone to add me (10 minutes, once). */
+    fun newPin(): String = server.call("POST", "/v1/pins", JSONObject()).getString("pin")
+
+    /** Someone's PIN typed in: added – their user name. */
+    fun redeemPin(pin: String): String {
+        val name = server.call("POST", "/v1/pins/einloesen", JSONObject().put("pin", pin.trim())).getString("username")
+        addContact(name)
+        return name
+    }
+
+    /** The conversation with just this person: the one there is, else a new one (scan → straight into it). */
+    fun chatWith(user: String): String =
+        visibleChats().firstOrNull { cid -> chat(cid).optString("removed").isEmpty() && chat(cid).optString("title").isEmpty() && others(cid) == listOf(user) }
+            ?: start(listOf(user))
+
+    /** People I could write to without typing their exact name: contacts and everyone from my conversations. */
+    fun knownPeople(): List<String> = (contactsObject.keys().asSequence().toList() +
+        visibleChats().flatMap { others(it) }).distinct().filter { it != username }.sorted()
 
     /** Bekannt: someone in my contacts, or a chat I wrote in myself; else Unbekannt. */
     fun known(cid: String): Boolean =
