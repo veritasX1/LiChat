@@ -298,6 +298,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     }
     val actions = AttachmentActions(
         load = { info -> account?.openAttachment(info) ?: throw LiChatException("kein Konto") },
+        uploading = { mid -> account?.uploads?.get(mid) },
+        cancelUpload = { mid -> account?.cancelUpload(mid) },
         openOnce = { mid ->
             val acc = account; val cid = chatId()
             // One opening at a time: a double tap must not spend the picture on a second, failing call (Michelle c5efaa9).

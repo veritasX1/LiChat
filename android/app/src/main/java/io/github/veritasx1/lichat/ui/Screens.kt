@@ -565,6 +565,23 @@ fun firstEmoji(text: String): String? {
     return null
 }
 
+/** Like Messages while a photo goes up: a ring that fills, an × in the middle – a tap stops it (cf647f61). */
+@Composable
+fun UploadRing(share: Float, color: Color, modifier: Modifier, onCancel: () -> Unit) {
+    androidx.compose.foundation.Canvas(modifier.clickable(onClick = onCancel)
+        .semantics { contentDescription = "Wird gesendet, ${(share * 100).toInt()} Prozent – tippen zum Abbrechen" }) {
+        val ring = size.minDimension * 0.36f
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = size.minDimension * 0.07f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        val corner = androidx.compose.ui.geometry.Offset(center.x - ring, center.y - ring)
+        val box = androidx.compose.ui.geometry.Size(ring * 2, ring * 2)
+        drawArc(color.copy(alpha = 0.3f), 0f, 360f, false, corner, box, style = stroke)
+        drawArc(color, -90f, 360f * share.coerceIn(0.02f, 1f), false, corner, box, style = stroke)
+        val x = ring * 0.38f
+        drawLine(color, center + androidx.compose.ui.geometry.Offset(-x, -x), center + androidx.compose.ui.geometry.Offset(x, x), stroke.width)
+        drawLine(color, center + androidx.compose.ui.geometry.Offset(-x, x), center + androidx.compose.ui.geometry.Offset(x, -x), stroke.width)
+    }
+}
+
 /** A bubble as it is: text, or the attachment. The same in the transcript and lifted above it while its menu is open. */
 @Composable
 fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact: Modifier = Modifier, playing: Boolean = false,
@@ -574,7 +591,9 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
     val info = m.optJSONObject("anhang")
     if (info != null) Box(modifier.then(interact)) {
         if (info.optBoolean("einmal")) OnceBubble(m, mine) { actions?.openOnce?.invoke(m.optString("mid")) }
-        else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {}) { open(info) }
+        else AttachmentBubble(info, mine, playing, load, actions?.paused ?: false, actions?.progress ?: { null }, actions?.seek ?: {},
+            uploading = if (mine) actions?.uploading?.invoke(m.optString("mid")) else null,
+            onCancel = { actions?.cancelUpload?.invoke(m.optString("mid")) }) { open(info) }
     }
     else {
         // As wide as its longest line (Olaf 18cfe3d2: wrapped text kept the full 280 dp and left blue space on the right).
@@ -763,6 +782,10 @@ class AttachmentActions(
     val load: ((JSONObject) -> ByteArray)? = null,
     /** A one-time picture tapped (its mid): opened once, full screen, then gone (fe9f2029). */
     val openOnce: (String) -> Unit = {},
+    /** How far my attachment (its mid) is up (0…1), or null when it is not going up now (cf647f61). */
+    val uploading: (String) -> Float? = { null },
+    /** The ring tapped: stop sending that attachment (its mid). */
+    val cancelUpload: (String) -> Unit = {},
 )
 
 /** Secret pictures (f9e3f055) tapped open while the app runs – everywhere else they stay pixelated. */
@@ -991,7 +1014,8 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
 /** A photo or video as its picture (rounded like a bubble), a voice message with ▶ and its length, a file with its name. */
 @Composable
 fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((JSONObject) -> ByteArray)? = null,
-                     paused: Boolean = false, progress: () -> Pair<Int, Int>? = { null }, seek: (Float) -> Unit = {}, onOpen: () -> Unit) {
+                     paused: Boolean = false, progress: () -> Pair<Int, Int>? = { null }, seek: (Float) -> Unit = {},
+                     uploading: Float? = null, onCancel: () -> Unit = {}, onOpen: () -> Unit) {
     val colors = palette()
     val kind = info.optString("art")
     val id = info.optString("id")
@@ -1033,7 +1057,8 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
             }
             else if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) GifView(bytes, Modifier.fillMaxSize())
             else Image(preview, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            if (kind == "video") Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+            if (uploading != null) UploadRing(uploading, Color.White, Modifier.size(44.dp).clip(CircleShape).background(Color(0x99000000)), onCancel)
+            else if (kind == "video") Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
                 GlyphIcon(Glyph.Play, Color.White, 24.dp)
             }
         }
@@ -1043,6 +1068,7 @@ fun AttachmentBubble(info: JSONObject, mine: Boolean, playing: Boolean, load: ((
     Row(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(if (mine) colors.blue else colors.theirs)
         .clickable(onClick = onOpen).semantics { contentDescription = label }.padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically) {
+        if (uploading != null) UploadRing(uploading, foreground, Modifier.padding(end = 8.dp).size(28.dp), onCancel)
         if (kind == "sprache") {
             // Like Messages (Olaf 864041bf): ▶ ⇄ ⏸, the wave fills as it plays, the time left counts down, a pause keeps
             // the place, a swipe or tap on the wave jumps, at the end it is back at the start.

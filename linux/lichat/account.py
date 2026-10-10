@@ -81,6 +81,7 @@ PICTURE_PX = 512
 PICTURE_MAX = 150 * 1024   # a received picture larger than this is not kept
 ATTACHMENT_MAGIC = b"LICHATA1"
 ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
+OUTBOX = "ausgang-"        # an attachment's local id until it is up (cf647f61)
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
 ONCE_DAYS = 14             # an unopened one-time picture lapses (the server deletes it too)
@@ -95,6 +96,10 @@ TYPING_PACE = 3.5    # characters per second with thumbs on a phone (Olaf 09.10.
 TYPING_LONGEST = 180 # s – nobody types longer than this, however long the text
 SUPPLY = 20          # key packages uploaded at the start
 TIMEOUT = 20
+
+
+class UploadCancelled(Exception):
+    """The upload was stopped from the bubble (cf647f61): the bubble goes."""
 
 
 class LiChatError(Exception):
@@ -281,10 +286,23 @@ class Server:
     def __init__(self, url, token=None):
         self.url, self.token = check_server(url), token
 
-    def raw(self, method, path, data=None, timeout=120):
-        """Bytes in, bytes out – the attachments (no JSON around 100 MB)."""
-        request = urllib.request.Request(self.url + path, data=data, method=method)
+    def raw(self, method, path, data=None, timeout=120, progress=None, cancelled=None):
+        """Bytes in, bytes out – the attachments (no JSON around 100 MB). Going up in 64 KB pieces: [progress](sent, total)
+        after each, [cancelled]() asked before each (cf647f61)."""
+        body = data
+        if data is not None and (progress or cancelled):
+            def pieces():
+                for start in range(0, len(data), 64 * 1024):
+                    if cancelled and cancelled():
+                        raise UploadCancelled()
+                    yield data[start:start + 64 * 1024]
+                    if progress:
+                        progress(min(start + 64 * 1024, len(data)), len(data))
+            body = pieces()
+        request = urllib.request.Request(self.url + path, data=body, method=method)
         request.add_header("Content-Type", "application/octet-stream")
+        if body is not data:
+            request.add_header("Content-Length", str(len(data)))
         if self.token:
             request.add_header("Authorization", "Bearer " + self.token)
         try:
@@ -368,6 +386,8 @@ class Account:
         self.lock = ProfileLock(self)
         self._seen = self._disk_mark()
         self._owe_picture = set()   # chats that learn my picture once their roster is known
+        self.uploads = {}           # mid → share sent (0…1) while an attachment goes up (cf647f61)
+        self._cancelling = set()
         self._typing = {}           # chat → {sender: when their „tippt“ came} – only in memory, never saved (884f7c8a)
         self._typed = {}            # chat → when I last said „tippt“ there
         self._owe_delivered = {}    # chat → mids that arrived and still get their „zugestellt“
@@ -1145,9 +1165,12 @@ class Account:
             self.save()
         return answer
 
-    def retry(self, cid, mid):
-        """„Nicht gesendet“ tapped: the same message (same mid) once more."""
+    def retry(self, cid, mid, changed=None):
+        """„Nicht gesendet“ tapped: the same message (same mid) once more – an attachment still in the outbox goes up first."""
         message = next(m for m in self.chats[cid]["messages"] if m.get("mid") == mid)
+        if (message.get("anhang") or {}).get("id", "").startswith(OUTBOX):
+            message["status"] = "wartet"
+            return self._upload(cid, message, changed)
         payload = {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]} if message.get("anhang") \
             else {"t": "text", "text": message["text"], "at": message["at"], "mid": mid}
         message["status"] = "wartet"
@@ -1467,7 +1490,7 @@ class Account:
                 raise LiChatError("Video/Aufnahme lässt sich nicht ohne Metadaten verschicken")
             return target.read_bytes()
 
-    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False):
+    def send_attachment(self, cid, data, name, mime, kind, duration=None, preview=None, once=False, secret=False, changed=None):
         """Encrypts [data] with its own key, uploads the encrypted bytes, then announces it end-to-end in the chat.
         [once]: a one-time picture (fe9f2029), [secret]: pixelated until tapped (f9e3f055) – both only for photos."""
         if kind not in KINDS:
@@ -1503,26 +1526,85 @@ class Account:
             preview = None          # nothing of the picture stays in the chat
         key, nonce = os.urandom(32), os.urandom(12)
         sealed = nonce + AESGCM(key).encrypt(nonce, data, ATTACHMENT_MAGIC)
-        people = len([m for m in self.members(cid) if m != self.username])
-        attachment = json.loads(self.server.raw("PUT", f"/v1/anhaenge?einmal={max(1, people)}" if once else "/v1/anhaenge", sealed))["id"]
-        info = {"id": attachment, "schluessel": b64(key), "sha256": hashlib.sha256(sealed).hexdigest(),
+        # The bubble is there at once (cf647f61): the sealed bytes wait in the outbox until they are up.
+        mid = secrets.token_hex(8)
+        self._keep_sealed(OUTBOX + mid, sealed)
+        info = {"id": OUTBOX + mid, "schluessel": b64(key), "sha256": hashlib.sha256(sealed).hexdigest(),
                 "name": str(name)[:200], "mime": str(mime)[:100], "groesse": len(data), "art": kind}
         if duration is not None:
             info["dauer"] = round(float(duration), 1)
         if preview:
             info["vorschau"] = b64(preview)
         if once:
-            info["einmal"] = True       # the sender cannot open it either (nothing kept here)
-        else:
-            self._keep_sealed(attachment, sealed)
+            info["einmal"] = True       # the sender cannot open it either (nothing kept here once it is up)
         if secret:
             info["geheim"] = True
         at = int(time.time())
-        message = {"from": self.username, "text": "", "at": at, "anhang": info, "mid": secrets.token_hex(8), "status": "wartet"}
+        message = {"from": self.username, "text": "", "at": at, "anhang": info, "mid": mid, "status": "wartet"}
         with self.lock:
             self.chats[cid]["messages"].append(message)
             self.save()
-        return self._deliver(cid, message, {"t": "anhang", "at": at, "mid": message["mid"], **info})
+        if changed:
+            changed()
+        return self._upload(cid, message, changed)
+
+    def cancel_upload(self, mid):
+        if mid in self.uploads:
+            self._cancelling.add(mid)
+
+    def _upload(self, cid, message, changed=None):
+        """Up with it (if it still waits in the outbox), then delivered. Fails → „Nicht gesendet“, the bytes stay for a
+        retry; cancelled → the bubble and the bytes go."""
+        info, mid = message["anhang"], message["mid"]
+        if info["id"].startswith(OUTBOX):
+            path = self.folder / "anhaenge" / info["id"]
+            if not path.exists():
+                with self.lock:
+                    self._mine(cid, mid)["status"] = "fehler"
+                    self.save()
+                raise LiChatError("Anhang ist nicht mehr da – bitte neu senden")
+            self.uploads[mid] = 0.0
+            if changed:
+                changed()
+
+            def step(sent, total):
+                share = sent / total
+                if share - self.uploads.get(mid, 0) >= 0.04 or sent == total:
+                    self.uploads[mid] = share
+                    if changed:
+                        changed()
+            try:
+                people = len([m for m in self.members(cid) if m != self.username])
+                once = info.get("einmal")
+                answer = self.server.raw("PUT", f"/v1/anhaenge?einmal={max(1, people)}" if once else "/v1/anhaenge",
+                                         path.read_bytes(), progress=step, cancelled=lambda: mid in self._cancelling)
+                attachment = json.loads(answer)["id"]
+                with self.lock:
+                    mine = self._mine(cid, mid)
+                    mine["anhang"]["id"] = attachment
+                    if once:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.rename(path.with_name(attachment))
+                    self.save()
+                    message = mine
+            except UploadCancelled:
+                with self.lock:
+                    self.chats[cid]["messages"] = [m for m in self.chats[cid]["messages"] if m.get("mid") != mid]
+                    self.save()
+                path.unlink(missing_ok=True)
+                return {}
+            except LiChatError:
+                with self.lock:
+                    self._mine(cid, mid)["status"] = "fehler"
+                    self.save()
+                raise
+            finally:
+                self.uploads.pop(mid, None)
+                self._cancelling.discard(mid)
+                if changed:
+                    changed()
+        return self._deliver(cid, message, {"t": "anhang", "at": message["at"], "mid": mid, **message["anhang"]})
 
     def _keep_sealed(self, attachment, sealed):
         folder = self.folder / "anhaenge"

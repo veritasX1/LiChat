@@ -29,6 +29,9 @@ import javax.crypto.spec.SecretKeySpec
 /** [suggestions]: free user names when the wanted one is taken (ebc3d629). */
 class LiChatException(message: String, val suggestions: List<String> = emptyList(), val detail: String? = null) : Exception(message)
 
+/** The bubble's ring was tapped while the attachment went up (cf647f61): stop, the bubble goes. */
+class UploadCancelled : RuntimeException("Abgebrochen")
+
 /** No way to the server: one plain sentence per kind – the raw text (public IP, port, the phone's home address) only as
  *  [LiChatException.detail] for the log, never on the screen (Michelle 8e7a493b). */
 fun unreachable(e: java.io.IOException) = LiChatException(when (e) {
@@ -65,6 +68,7 @@ const val UNREADABLE = "Eine Nachricht konnte nicht entschlüsselt werden."
 const val EDIT_WINDOW_S = 15 * 60L   // like iOS: edit for 15 minutes …
 const val EDIT_MAX = 5               // … at most five times
 const val UNSEND_WINDOW_S = 2 * 60L  // and call back for two minutes
+const val OUTBOX = "ausgang-"       // an attachment's local id until it is up (cf647f61)
 const val RESEND_S = 24 * 3600L     // „Nicht gesendet“ goes out by itself when the connection is back – for a day (72c8a716)
 private const val LATE_S = 60L       // slack for clocks a little apart (only the sender's own times are compared)
 const val TYPING_EVERY_MS = 3_000L   // between two „tippt“ of mine
@@ -171,8 +175,10 @@ class Server(url: String, var token: String? = null) {
         }
     }
 
-    /** Bytes in, bytes out – the attachments (up to 100 MB, no JSON around them). */
-    fun raw(method: String, path: String, data: ByteArray? = null): ByteArray {
+    /** Bytes in, bytes out – the attachments (up to 100 MB, no JSON around them). Going up in 64 KB pieces: [progress]
+     *  hears (sent, total) after each, [cancelled] is asked before each (cf647f61). */
+    fun raw(method: String, path: String, data: ByteArray? = null, progress: ((Long, Long) -> Unit)? = null,
+            cancelled: () -> Boolean = { false }): ByteArray {
         val connection = (URI(url + path).toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
@@ -184,7 +190,16 @@ class Server(url: String, var token: String? = null) {
             if (data != null) {
                 connection.doOutput = true
                 connection.setFixedLengthStreamingMode(data.size)
-                connection.outputStream.use { it.write(data) }
+                connection.outputStream.use { out ->
+                    var sent = 0
+                    while (sent < data.size) {
+                        if (cancelled()) throw UploadCancelled()
+                        val piece = minOf(64 * 1024, data.size - sent)
+                        out.write(data, sent, piece)
+                        sent += piece
+                        progress?.invoke(sent.toLong(), data.size.toLong())
+                    }
+                }
             }
             val code = connection.responseCode
             if (code !in 200..299) {
@@ -992,9 +1007,13 @@ class Account(val folder: File, private val key: ByteArray) {
     }
 
     /** „Nicht gesendet“ tapped: the same message (same mid) once more. */
-    fun retry(cid: String, mid: String): JSONObject {
+    fun retry(cid: String, mid: String, changed: () -> Unit = onChange): JSONObject {
         val list = chat(cid).getJSONArray("messages")
         val message = (0 until list.length()).map { list.getJSONObject(it) }.first { it.optString("mid") == mid }
+        if (message.optJSONObject("anhang")?.optString("id")?.startsWith(OUTBOX) == true) {
+            message.put("status", "wartet")
+            return upload(cid, message, changed)
+        }
         val content = message.optJSONObject("anhang")?.let { JSONObject(it.toString()).put("t", "anhang") }
             ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
@@ -1004,7 +1023,7 @@ class Account(val folder: File, private val key: ByteArray) {
 
     /** Back online: what stayed „Nicht gesendet“ during the outage goes out by itself, oldest first (72c8a716: Olaf's
      *  messages from the morning of the IP change never left the phone). Only the last day – older ones wait for a tap. */
-    fun resendFailed(nowS: Long = System.currentTimeMillis() / 1000): Int {
+    fun resendFailed(nowS: Long = System.currentTimeMillis() / 1000, changed: () -> Unit = onChange): Int {
         val failed = synchronized(lock) {
             visibleChats().filter { chat(it).optString("removed").isEmpty() }.flatMap { cid ->
                 val list = chat(cid).getJSONArray("messages")
@@ -1015,7 +1034,7 @@ class Account(val folder: File, private val key: ByteArray) {
         }
         var sent = 0
         for ((cid, message) in failed) {
-            try { retry(cid, message.getString("mid")); sent++ } catch (_: LiChatException) { }
+            try { retry(cid, message.getString("mid"), changed); sent++ } catch (_: LiChatException) { }
         }
         return sent
     }
@@ -1149,7 +1168,7 @@ class Account(val folder: File, private val key: ByteArray) {
     /** Encrypts [data] with its own key, uploads the encrypted bytes, announces it end-to-end. Photos come already
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
-                       preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false): JSONObject {
+                       preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, changed: () -> Unit = onChange): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
         if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1160,18 +1179,79 @@ class Account(val folder: File, private val key: ByteArray) {
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
         cipher.updateAAD(ATTACHMENT_MAGIC)
         val sealed = nonce + cipher.doFinal(data)
-        val people = members(cid).count { it != username }.coerceAtLeast(1)
-        val id = JSONObject(String(server.raw("PUT", if (once) "/v1/anhaenge?einmal=$people" else "/v1/anhaenge", sealed))).getString("id")
-        val info = JSONObject().put("id", id).put("schluessel", b64(key)).put("sha256", sha256(sealed)).put("name", name.take(200))
+        // The bubble is there at once (cf647f61, like Messages): the sealed bytes wait in the outbox under a local id until
+        // they are up – then the server's id replaces it. A one-time picture's preview stays out as before.
+        val mid = newMid()
+        val local = OUTBOX + mid
+        keepSealed(local, sealed)
+        val info = JSONObject().put("id", local).put("schluessel", b64(key)).put("sha256", sha256(sealed)).put("name", name.take(200))
             .put("mime", mime.take(100)).put("groesse", data.size).put("art", kind)
         durationS?.let { info.put("dauer", Math.round(it * 10) / 10.0) }
         if (once) info.put("einmal", true)            // no preview, nothing kept – the sender cannot open it either
-        else { preview?.let { info.put("vorschau", b64(it)) }; keepSealed(id, sealed) }
+        else preview?.let { info.put("vorschau", b64(it)) }
         if (secret) info.put("geheim", true)
         val at = System.currentTimeMillis() / 1000
-        val message = JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info).put("mid", newMid()).put("status", "wartet")
+        val message = JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info).put("mid", mid).put("status", "wartet")
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
-        return deliver(cid, message, JSONObject(info.toString()).put("t", "anhang").put("at", at).put("mid", message.getString("mid")))
+        changed()
+        return upload(cid, message, changed)
+    }
+
+    /** Told when an upload moves on (the app redraws its bubbles) – set once by whoever shows them. */
+    @Volatile var onChange: () -> Unit = {}
+
+    /** Attachments going up now: mid → share sent (0…1). The bubble shows it as a ring; a tap on it cancels. */
+    val uploads = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private val cancelling = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun cancelUpload(mid: String) { if (uploads.containsKey(mid)) cancelling.add(mid) }
+
+    /** Up with it (if it still waits in the outbox), then delivered. Fails → „Nicht gesendet“, the bytes stay for a retry;
+     *  cancelled → the bubble and the bytes go. */
+    private fun upload(cid: String, message: JSONObject, changed: () -> Unit): JSONObject {
+        val info = message.getJSONObject("anhang")
+        val mid = message.getString("mid")
+        val local = info.optString("id")
+        if (local.startsWith(OUTBOX)) {
+            val file = File(File(folder, "anhaenge"), local)
+            if (!file.exists()) {
+                synchronized(lock) { message.put("status", "fehler"); save() }
+                throw LiChatException("Anhang ist nicht mehr da – bitte neu senden")
+            }
+            uploads[mid] = 0f
+            changed()
+            try {
+                val once = info.optBoolean("einmal")
+                val people = members(cid).count { it != username }.coerceAtLeast(1)
+                val answer = server.raw("PUT", if (once) "/v1/anhaenge?einmal=$people" else "/v1/anhaenge", file.readBytes(),
+                    progress = { sent, total ->
+                        val share = sent.toFloat() / total
+                        if (share - (uploads[mid] ?: 0f) >= 0.04f || sent == total) { uploads[mid] = share; changed() }
+                    }, cancelled = { mid in cancelling })
+                val id = JSONObject(String(answer)).getString("id")
+                synchronized(lock) {
+                    info.put("id", id)
+                    if (once) file.delete() else file.renameTo(File(File(folder, "anhaenge"), id))
+                    save()
+                }
+            } catch (e: UploadCancelled) {
+                synchronized(lock) {
+                    val list = chat(cid).getJSONArray("messages")
+                    (0 until list.length()).firstOrNull { list.getJSONObject(it).optString("mid") == mid }?.let { list.remove(it) }
+                    save()
+                }
+                file.delete()
+                return JSONObject()
+            } catch (e: Exception) {
+                synchronized(lock) { message.put("status", "fehler"); save() }
+                throw (e as? LiChatException) ?: LiChatException("Nicht gesendet")
+            } finally {
+                uploads.remove(mid)
+                cancelling.remove(mid)
+                changed()
+            }
+        }
+        return deliver(cid, message, JSONObject(info.toString()).put("t", "anhang").put("at", message.optLong("at")).put("mid", mid))
     }
 
     private fun sha256(data: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(data).hex()

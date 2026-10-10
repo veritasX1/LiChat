@@ -1545,7 +1545,33 @@ class Window(Adw.ApplicationWindow):
             self.show_notice(error)
             self.show_conversation()
 
-        self.worker.do(lambda: account.retry(cid, mid), done)
+        self.worker.do(lambda: account.retry(cid, mid, changed=self.upload_moved), done)
+
+    def upload_moved(self):
+        """From the worker thread while an attachment goes up: redraw the conversation once, not for every piece."""
+        if not getattr(self, "_redraw_waiting", False):
+            self._redraw_waiting = True
+
+            def redraw():
+                self._redraw_waiting = False
+                self.show_conversation()
+                return False
+            GLib.idle_add(redraw)
+
+    def with_upload(self, box, message):
+        """Under my bubble while it goes up: how far, and „Abbrechen“ (cf647f61, like the ring in Messages)."""
+        share = self.account.uploads.get(message.get("mid")) if message is not None else None
+        if share is None:
+            return box
+        row = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=4)
+        bar = Gtk.ProgressBar(fraction=share, valign=Gtk.Align.CENTER, width_request=140,
+                              tooltip_text=f"Wird gesendet, {int(share * 100)} %")
+        cancel = Gtk.Button(label="Abbrechen", css_classes=["flat"])
+        cancel.connect("clicked", lambda *_: self.account.cancel_upload(message.get("mid")))
+        row.append(bar)
+        row.append(cancel)
+        box.append(row)
+        return box
 
     # ------------------------------------------------------------------------------------------ attachments
 
@@ -1654,7 +1680,7 @@ class Window(Adw.ApplicationWindow):
             except GLib.Error:
                 kind = "datei"
         if kind == "sprache":
-            return self.voice_bubble(info, mine, box)
+            return self.with_upload(self.voice_bubble(info, mine, box), message)
         if button.get_child() is None:
             if kind == "sprache":
                 seconds = int(round(info.get("dauer") or 0))
@@ -1666,7 +1692,7 @@ class Window(Adw.ApplicationWindow):
             button.set_child(Gtk.Label(label=text, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"]))
         button.connect("clicked", lambda *_: self.open_attachment(info))
         box.append(button)
-        return box
+        return self.with_upload(box, message)
 
     def animate_gif(self, picture, data, key):
         try:
@@ -1854,7 +1880,8 @@ class Window(Adw.ApplicationWindow):
             return
 
         def job():
-            account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=bool(once), secret=secret)
+            account.send_attachment(cid, path.read_bytes(), path.name, mime, kind, once=bool(once), secret=secret,
+                                    changed=self.upload_moved)
             return cid
 
         def done(_cid, error):
