@@ -337,7 +337,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                onSend: (String, String?) -> Unit, actions: AttachmentActions = AttachmentActions(),
                onReact: (String, String) -> Unit = { _, _ -> }, onEdit: (String, String) -> Unit = { _, _ -> },
                onUnsend: (String) -> Unit = {}, onDelete: (String) -> Unit = {},
-               onSendWith: ((String, String?, Boolean, Long?) -> Unit)? = null) {
+               onSendWith: ((String, String?, Boolean, Long?, String?) -> Unit)? = null) {
     val colors = palette()
     // Olaf 09.10.: swipe a bubble to the right to answer it, press it long for a reaction (card a7d9d987).
     // f004: an answer begun here waits with the draft and is there again when the conversation opens
@@ -406,6 +406,17 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         LaunchedEffect(typing, clock, version) { if (typing.isNotEmpty()) { kotlinx.coroutines.delay(io.github.veritasx1.lichat.core.TYPING_FRESH_MS + 100); clock++ } }
         LaunchedEffect(typing.isNotEmpty()) { if (typing.isNotEmpty() && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
         val albums = remember(list, version) { albumRuns(list) }
+        // f012–f014: the newest effect plays once when it is new to me – sent just now or arrived in the last minutes;
+        // older ones count as seen when the conversation opens
+        val allowedMotion = motionAllowed()
+        LaunchedEffect(cid, list.size) {
+            val now = System.currentTimeMillis() / 1000
+            val withEffect = list.filter { it.optString("effekt") in io.github.veritasx1.lichat.core.EFFECTS && it.optString("mid").isNotEmpty() }
+            val fresh = withEffect.lastOrNull { it.optString("mid") !in Effects.played && now - it.optLong("at") <= 600 }
+            withEffect.forEach { if (it.optString("mid") !in Effects.played && it !== fresh) Effects.played.add(it.optString("mid")) }
+            if (fresh != null && allowedMotion) Effects.play(fresh.optString("mid"), fresh.optString("effekt"))
+            else fresh?.let { Effects.played.add(it.optString("mid")) }
+        }
         // f0-07, like Messages: a swipe to the left anywhere in the conversation pulls the bubbles aside and shows every
         // message's time at the right; letting go brings them back. (A swipe to the right on a bubble still answers it.)
         val peek = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -512,12 +523,19 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                     if (!mine && isGroup && info == null) Box(Modifier.padding(end = 6.dp)) { Avatar(account.display(m.optString("from")), account.picture(m.optString("from")), 28.dp) }
                     // While its menu is open the bubble is shown lifted – the original is hidden (Michelle 20eb5cc5).
                     Reacted(m, account, gestures.alpha(if (menuFor?.optString("mid") == mid && mid.isNotEmpty()) 0f else 1f)) {
-                        Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() },
+                        Bubble(m, mine, Modifier.onGloballyPositioned { if (mid.isNotEmpty()) bounds[mid] = it.boundsInWindow() }
+                            .bubbleEffect(m.optString("effekt"), mid).textEffect(m.optString("effekt")),
                             Modifier.combinedClickable(onClick = { if (album == null) info?.let { actions.open(it) } }, onLongClick = { if (mid.isNotEmpty()) menuFor = m }),
                             playing = info != null && actions.playing == info.optString("id"), open = actions.open, load = actions.load, actions = actions,
                             album = album)
                     }
                 }
+                }
+                // f012–f014: a bubble or screen effect can be played again, like „Wiedergeben“ on the iPhone
+                m.optString("effekt").takeIf { it in io.github.veritasx1.lichat.core.EFFECTS && it !in io.github.veritasx1.lichat.core.TEXT_EFFECTS && it != "tinte" }?.let { kind ->
+                    BasicText("↻ Wiedergeben", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
+                        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { Effects.play(mid, kind) }.padding(horizontal = 12.dp, vertical = 2.dp)
+                            .semantics { contentDescription = "Effekt ${io.github.veritasx1.lichat.core.EFFECTS[kind]} wiedergeben" })
                 }
                 if (versions != null) {
                     BasicText(if (versionsOf == mid) "Frühere Versionen ausblenden" else "Bearbeitet", style = style(11f, 600, colors.blue).copy(textAlign = if (mine) TextAlign.End else TextAlign.Start),
@@ -540,6 +558,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
                         if (i >= 0) scope.launch { listState.animateScrollToItem(row) }
                     }.padding(horizontal = 14.dp, vertical = 7.dp))
         }
+        Effects.screen?.let { (kind, key) -> ScreenEffect(kind, key) { if (Effects.screen?.second == key) Effects.screen = null } }
         if (unseen > 0) {
             BasicText(if (unseen == 1) "↓ Neue Nachricht" else "↓ $unseen neue Nachrichten", style = style(15f, 600, Color.White),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).clip(RoundedCornerShape(18.dp)).background(colors.blue)
@@ -577,7 +596,7 @@ fun ChatScreen(account: Account, cid: String, version: Int, problem: String?, on
         }, actions, preset = editing?.optString("text"),
             mentions = if (isGroup) ({ typed -> account.mentionCandidates(cid, typed).map { it to account.display(it) } }) else null,
             draft = account.draft(cid), onDraft = { text -> if (editing == null) runCatching { account.setDraft(cid, text) } },   // a draft never crashes
-            onSendWith = onSendWith?.takeIf { editing == null }?.let { with -> { text, silent, later -> with(text, replyTo?.optString("mid"), silent, later); replyTo = null } }) }
+            onSendWith = onSendWith?.takeIf { editing == null }?.let { with -> { text, silent, later, effect -> with(text, replyTo?.optString("mid"), silent, later, effect); replyTo = null } }) }
         else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
     menuFor?.let { m ->
@@ -839,7 +858,7 @@ fun Bubble(m: JSONObject, mine: Boolean, modifier: Modifier = Modifier, interact
         var asking by remember { mutableStateOf<String?>(null) }
         val text = remember(m.optString("text"), revealed, mine, colors.dark) {
             formattedText(m.optString("text"), if (mine) Color.White else colors.blue, if (mine) Color.White else colors.label, revealed,
-                onSpoiler = { SpoilerShown.ids.add(spoilerKey) }, onTitledLink = { asking = it })
+                onSpoiler = { SpoilerShown.ids.add(spoilerKey) }, onTitledLink = { asking = it }, covered = m.optString("effekt") == "tinte")
         }
         asking?.let { url -> LinkCheck(url, onCancel = { asking = null }) }
         val textStyle = style(17f, 400, if (mine) Color.White else colors.label)
@@ -864,8 +883,10 @@ object SpoilerShown {
 
 /** A message's text with its formatting (f005–f011, core/Format.kt), links and „@name“. */
 fun formattedText(raw: String, linkColor: Color, textColor: Color, revealed: Boolean, onSpoiler: () -> Unit = {},
-                  onTitledLink: (String) -> Unit = {}): androidx.compose.ui.text.AnnotatedString {
-    val (plain, spans) = io.github.veritasx1.lichat.core.formatted(raw)
+                  onTitledLink: (String) -> Unit = {}, covered: Boolean = false): androidx.compose.ui.text.AnnotatedString {
+    val (plain, found) = io.github.veritasx1.lichat.core.formatted(raw)
+    // f012 „Unsichtbare Tinte“: the whole message is one spoiler
+    val spans = if (covered) found + io.github.veritasx1.lichat.core.FormatSpan(0, plain.length, "spoiler") else found
     return androidx.compose.ui.text.buildAnnotatedString {
         append(plain)
         val lines = mutableMapOf<Int, MutableSet<String>>()          // decorations meet: underline and strike together
@@ -1389,7 +1410,7 @@ fun TickGlyph(state: String, color: Color, modifier: Modifier = Modifier) {
 @Composable
 fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentActions(), preset: String? = null,
              mentions: ((String) -> List<Pair<String, String>>)? = null, draft: String = "", onDraft: (String) -> Unit = {},
-             onSendWith: ((String, Boolean, Long?) -> Unit)? = null) {
+             onSendWith: ((String, Boolean, Long?, String?) -> Unit)? = null) {
     val colors = palette()
     // The text with its cursor: after „Bearbeiten“ or a suggested name the cursor stands at the end (Michelle 4ceca163).
     // It starts with the draft left here before (979f9b22) and keeps it, a moment after each change.
@@ -1447,16 +1468,22 @@ fun InputBar(onSend: (String) -> Unit, actions: AttachmentActions = AttachmentAc
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     var sendMenu by remember { mutableStateOf(false) }
     var laterMenu by remember { mutableStateOf(false) }
+    var effectMenu by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
-    fun sendWith(silent: Boolean, later: Long?) { onSendWith?.invoke(text, silent, later); setText("") }
+    fun sendWith(silent: Boolean, later: Long?, effect: String? = null) { onSendWith?.invoke(text, silent, later, effect); setText("") }
     // over the whole screen, not inside the input's column
     @Composable
-    fun Over(content: @Composable () -> Unit) = androidx.compose.ui.window.Dialog(onDismissRequest = { sendMenu = false; laterMenu = false },
+    fun Over(content: @Composable () -> Unit) = androidx.compose.ui.window.Dialog(onDismissRequest = { sendMenu = false; laterMenu = false; effectMenu = false },
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) { content() }
-    if (sendMenu) Over { ChoiceSheet(listOf("Lautlos senden", "Später senden …"), -1, onChoose = { choice ->
+    if (sendMenu) Over { ChoiceSheet(listOf("Mit Effekt senden …", "Lautlos senden", "Später senden …"), -1, onChoose = { choice ->
         sendMenu = false
-        if (choice == 0) sendWith(true, null) else laterMenu = true
+        when (choice) { 0 -> effectMenu = true; 1 -> sendWith(true, null); else -> laterMenu = true }
     }, onCancel = { sendMenu = false }) }
+    // f012–f014, like holding the arrow on the iPhone: Blase, Bildschirm, Text
+    if (effectMenu) Over { ChoiceSheet(io.github.veritasx1.lichat.core.EFFECTS.values.toList(), -1, onChoose = { k ->
+        effectMenu = false
+        sendWith(false, null, io.github.veritasx1.lichat.core.EFFECTS.keys.toList()[k])
+    }, onCancel = { effectMenu = false }) }
     if (laterMenu) {
         val choices = laterChoices()
         Over { ChoiceSheet(choices.map { it.first } + "Eigene Zeit …", -1, onChoose = { k ->

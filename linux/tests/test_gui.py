@@ -562,6 +562,7 @@ def main():
     window.input.grab_focus()
     window.input.set_text("Einkaufsliste:")
     height_one = window.input.get_height()
+    assert height_one < 45, height_one                                   # one line is one line
     assert window.input._key(None, Gdk.KEY_Return, 0, Gdk.ModifierType.SHIFT_MASK) is False      # left to the field
     window.input.buffer.insert_at_cursor("\nKohle\nSenf")
     settle(0.3)
@@ -632,6 +633,28 @@ def main():
     window.input.view.activate_action("senden.lautlos", None)
     until(lambda: anna.chats[cid]["messages"][-1].get("text") == "Psst" and anna.tick(cid, anna.chats[cid]["messages"][-1])[0] != "wartet")
     assert [(n["text"], n.get("lautlos")) for n in bernd.fetch() if n.get("text")] == [("Psst", True)]
+
+    # f012–f014: „Mit Effekt senden“ – Konfetti over the conversation, „Nicken“ in a loop, Tinte covered
+    bernd.fetch()
+    window.input.set_text("Alles Gute!")
+    window.input.view.activate_action("senden.effekt", GLib.Variant.new_string("konfetti"))
+    until(lambda: anna.chats[cid]["messages"][-1].get("effekt") == "konfetti" and anna.tick(cid, anna.chats[cid]["messages"][-1])[0] != "wartet")
+    settle(0.6)
+    assert [(n["text"], n.get("effekt")) for n in bernd.fetch() if n.get("text")] == [("Alles Gute!", "konfetti")]
+    if Gtk.Settings.get_default().get_property("gtk-enable-animations"):
+        assert window.effect_area.get_visible()
+        shot(window, "08f-konfetti.png")
+    bernd.send(cid, "Ja genau", effect="nicken")
+    bernd.send(cid, "Geheim!", effect="tinte")
+    until(lambda: anna.chats[cid]["messages"][-1].get("effekt") == "tinte")
+    settle(0.5)
+    nod = window.effect_of[anna.chats[cid]["messages"][-2]["mid"]][0]
+    assert any(w.has_css_class("lichat-effekt-nicken") for w in walk(nod))
+    ink = window.bubble_of[anna.chats[cid]["messages"][-1]["mid"]]
+    ink = ink if isinstance(ink, Gtk.Label) else [w for w in walk(ink) if isinstance(w, Gtk.Label)][0]
+    assert "fgalpha" in ink.get_label()
+    shown = [w.get_text() for w in walk(window.list) if isinstance(w, Gtk.Label)]
+    assert "Nachricht mit unsichtbarer Tinte" in shown, shown
 
     # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
     menu = window.attachment_menu(window.attach_button)

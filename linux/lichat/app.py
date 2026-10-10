@@ -16,6 +16,7 @@ import math
 import os
 import re
 import queue
+import random
 import sys
 import tempfile
 import threading
@@ -32,7 +33,8 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango  # 
 from .formatting import formatted, preview_text  # noqa: E402
 from .recorder import Recorder  # noqa: E402
 
-from .account import ALBUM_MAX, MENTION, TYPING_FRESH, Account, LiChatError, emoji_only, find_links, short, unb64  # noqa: E402
+from .account import (ALBUM_MAX, EFFECTS, MENTION, SCREEN_EFFECTS, TEXT_EFFECTS, TYPING_FRESH, Account, LiChatError,  # noqa: E402
+                      emoji_only, find_links, short, unb64)
 
 APP_ID = "io.github.veritasx1.LiChat"
 HERE = Path(__file__).resolve().parent
@@ -178,11 +180,13 @@ def album_runs(messages):
 SPOILER = "lichat-spoiler:"      # a covered spoiler is a link of its own – a click uncovers it (f009)
 
 
-def bubble_markup(text, revealed=False):
+def bubble_markup(text, revealed=False, covered=False):
     """The bubble's text: its formatting (f005–f011, formatting.py) – *fett*, _kursiv_, __unter__, ~durch~, `Code`,
     ||Spoiler|| covered until clicked, [Titel](Link), „> “ quotes –, links (web, mail, phone – 22c918ce) clickable,
     „@name“ bold (d54175ed); everything escaped."""
     plain, spans = formatted(text)
+    if covered:                           # f012 „Unsichtbare Tinte“: the whole message is one spoiler
+        spans = spans + [(0, len(plain), "spoiler", None)]
     covered = [(a, b) for a, b, kind, _t in spans if kind in ("link", "code") or (kind == "spoiler" and not revealed)]
     links = [(a, b, t) for a, b, t in find_links(plain) if not any(a < e and s < b for s, e in covered)]
     links += [(a, b, t) for a, b, kind, t in spans if kind == "link"]
@@ -339,7 +343,9 @@ class Composer(Gtk.Overlay):
             line = self.view.get_pango_context().get_metrics(None, None).get_height() / Pango.SCALE or 20
         except (AttributeError, TypeError):
             line = 20
-        self.scroll = Gtk.ScrolledWindow(child=self.view, hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+        # no scrollbar of its own (its minimum height made one empty line 58 px tall) – it scrolls with the cursor and the wheel
+        self.scroll = Gtk.ScrolledWindow(child=self.view, hscrollbar_policy=Gtk.PolicyType.NEVER, vscrollbar_policy=Gtk.PolicyType.EXTERNAL,
+                                         propagate_natural_height=True,
                                          max_content_height=int(line * self.LINES + 12), valign=Gtk.Align.CENTER)
         self.set_child(self.scroll)
         self.placeholder = Gtk.Label(label=placeholder, xalign=0, css_classes=["lichat-placeholder"], can_target=False,
@@ -965,6 +971,10 @@ class Window(Adw.ApplicationWindow):
                                    valign=Gtk.Align.END, margin_bottom=10, visible=False)
         self.new_pill.connect("clicked", lambda *_: self.to_end())
         overlay = Gtk.Overlay(child=self.scroller, vexpand=True)
+        # f014: Konfetti, Ballons, Liebe, Feuerwerk over the conversation – drawn here, clicks go through
+        self.effect_area = Gtk.DrawingArea(can_target=False, visible=False)
+        self.effect_area.set_draw_func(self.draw_screen_effect)
+        overlay.add_overlay(self.effect_area)
         overlay.add_overlay(self.new_pill)
         self.first_pill = Gtk.Button(css_classes=["lichat-new-pill"], halign=Gtk.Align.CENTER, valign=Gtk.Align.START, margin_top=10, visible=False)
         self.first_pill.connect("clicked", lambda *_: self.to_first_unread())
@@ -1031,6 +1041,13 @@ class Window(Adw.ApplicationWindow):
             sending.add_action(item)
         self.input.view.insert_action_group("senden", sending)
         options = Gio.Menu()
+        effects = Gio.Menu()
+        for key, label in EFFECTS.items():
+            effects.append(label, f"senden.effekt::{key}")
+        effect = Gio.SimpleAction.new("effekt", GLib.VariantType.new("s"))
+        effect.connect("activate", lambda _a, value: self.send(effect=value.get_string()))
+        sending.add_action(effect)
+        options.append_submenu("Mit Effekt senden", effects)
         options.append("Lautlos senden", "senden.lautlos")
         options.append("Später senden …", "senden.spaeter")
         self.input.extra.append_section(None, options)
@@ -1284,6 +1301,7 @@ class Window(Adw.ApplicationWindow):
         first = self.account.first_unread(cid) if self.shown_unread_for != cid else None
         self.shown_unread_for = cid
         self.bubble_of = {}
+        self.effect_of = {}
         self.peek_times = []
         leaders, hidden = album_runs([m for m in chat["messages"] if not m.get("geloescht")])
         for m in chat["messages"]:
@@ -1336,7 +1354,7 @@ class Window(Adw.ApplicationWindow):
                                   max_width_chars=48, css_classes=["lichat-bubble", "lichat-mine" if mine else "lichat-theirs"],
                                   halign=Gtk.Align.END if mine else Gtk.Align.START, margin_top=2)
                 # „@name“ bold (card d54175ed)
-                piece.set_markup(bubble_markup(m["text"], self.spoiler_shown(m)))
+                piece.set_markup(bubble_markup(m["text"], self.spoiler_shown(m), m.get("effekt") == "tinte"))
                 piece.connect("activate-link", lambda label, uri, msg=m: self.bubble_link(label, uri, msg))
             if group and not mine:
                 # In a group: the sender's picture next to the bubble, like Messages (card d45b319a).
@@ -1381,6 +1399,16 @@ class Window(Adw.ApplicationWindow):
             line.append(piece)
             line.append(stamp)
             self.bubbles.append(line)
+            effect = m.get("effekt") if m.get("effekt") in EFFECTS else None
+            if effect in TEXT_EFFECTS:
+                piece.add_css_class(f"lichat-effekt-{effect}")          # in a loop, like the iPhone
+            if effect and m.get("mid"):
+                self.effect_of[m["mid"]] = (piece, effect)
+                if effect not in TEXT_EFFECTS and effect != "tinte":
+                    again = Gtk.Button(label="↻ Wiedergeben", css_classes=["flat", "lichat-edited"], halign=Gtk.Align.END if mine else Gtk.Align.START,
+                                       tooltip_text=f"Effekt {EFFECTS[effect]} noch einmal")
+                    again.connect("clicked", lambda _b, mid=m["mid"]: self.play_effect(mid))
+                    self.bubbles.append(again)
             if m.get("bearbeitet"):
                 # „Bearbeitet“ (iOS): a click shows the earlier versions.
                 edited = Gtk.Button(label="Bearbeitet", css_classes=["flat", "lichat-edited"], halign=Gtk.Align.END if mine else Gtk.Align.START,
@@ -1396,6 +1424,7 @@ class Window(Adw.ApplicationWindow):
             if mine:
                 self.bubbles.append(self.tick_line(cid, m))
             previous = m
+        self.fresh_effect()
         if first and first in self.bubble_of:
             count = self.account.unread(cid)
             self.first_pill.set_label("↑ 1 ungelesene Nachricht" if count == 1 else f"↑ {count} ungelesene Nachrichten")
@@ -1801,7 +1830,7 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------------------------------ server work
 
-    def send(self, silent=False, later=None):
+    def send(self, silent=False, later=None, effect=None):
         """[silent] (f021): without sound for the others; [later] (f020): planned, sent at that time (unix seconds)."""
         text = self.input.get_text().strip()
         if not text:
@@ -1830,7 +1859,7 @@ class Window(Adw.ApplicationWindow):
             self.end_reply()
 
             def job():
-                account.send(cid, text, reply_to=reply, changed=self.upload_moved, silent=silent, later=later)
+                account.send(cid, text, reply_to=reply, changed=self.upload_moved, silent=silent, later=later, effect=effect)
                 return cid
 
         if not self.composing:
@@ -2048,6 +2077,108 @@ class Window(Adw.ApplicationWindow):
         self.later_dialog = (dialog, typed, chosen)         # for the GUI test
         dialog.present(self)
 
+    # ------------------------------------------------------------------------------------------ effects (f012–f014)
+    # Like Messages: an effect plays once when the message is new to me (arrives, or I send it) and on „Wiedergeben“;
+    # text effects run in a loop (CSS). Without animations (GNOME „Animationen“ off) nothing moves.
+
+    def fresh_effect(self):
+        played = self.__dict__.setdefault("effects_played", set())
+        now = time.time()
+        found = [(mid, kind) for mid, (_w, kind) in self.effect_of.items() if mid not in played]
+        fresh = None
+        for mid, kind in found:
+            message = next((m for m in self.account.chats[self.current]["messages"] if m.get("mid") == mid), {})
+            if now - message.get("at", 0) <= 600:
+                fresh = mid
+        for mid, _kind in found:
+            played.add(mid)
+        if fresh is not None:
+            GLib.idle_add(lambda: self.play_effect(fresh) and False)
+
+    def play_effect(self, mid):
+        if mid not in self.effect_of or not Gtk.Settings.get_default().get_property("gtk-enable-animations"):
+            return False
+        widget, kind = self.effect_of[mid]
+        if kind in SCREEN_EFFECTS:
+            self.screen_effect = (kind, GLib.get_monotonic_time(), random.Random(mid))
+            self.effect_area.set_visible(True)
+            self.effect_area.add_tick_callback(self.effect_tick)
+        elif kind in ("knall", "laut", "sanft"):
+            widget.remove_css_class(f"lichat-effekt-{kind}")
+            GLib.idle_add(lambda: widget.add_css_class(f"lichat-effekt-{kind}") and False)     # again from the start
+        return True
+
+    SCREEN_SECONDS = 3.2
+
+    def effect_tick(self, area, _clock):
+        kind, start, _r = self.screen_effect
+        if (GLib.get_monotonic_time() - start) / 1e6 > self.SCREEN_SECONDS:
+            area.set_visible(False)
+            self.screen_effect = None
+            return False
+        area.queue_draw()
+        return True
+
+    def draw_screen_effect(self, _area, cr, w, h):
+        if not getattr(self, "screen_effect", None):
+            return
+        kind, start, _r = self.screen_effect
+        t = min(1.0, (GLib.get_monotonic_time() - start) / 1e6 / self.SCREEN_SECONDS)
+        r = random.Random(start)
+        palette = [(1, .23, .19), (1, .58, 0), (1, .8, 0), (.2, .78, .35), (.04, .52, 1), (.69, .32, .87), (1, .18, .33)]
+        fade = (1 - t) / 0.2 if t > 0.8 else 1.0
+        if kind == "konfetti":
+            for _ in range(140):
+                x, y, vx, vy = r.random(), -0.1 - r.random() * 0.4, (r.random() - .5) * .15, .45 + r.random() * .5
+                c, size, spin = r.choice(palette), 4 + r.random() * 5, r.random() * 12
+                cr.save()
+                cr.translate((x + vx * t * 3) * w, (y + vy * t * 2.2) * h)
+                cr.rotate(spin * t)
+                cr.set_source_rgba(*c, fade)
+                cr.rectangle(-size, -size / 2, size * 2, size)
+                cr.fill()
+                cr.restore()
+        elif kind == "ballons":
+            for _ in range(16):
+                x, y, vy, c, size, delay = r.random(), 1.15 + r.random() * .3, -(.45 + r.random() * .35), r.choice(palette), 22 + r.random() * 12, r.random() * .25
+                life = max(0.0, (t - delay) / (1 - delay))
+                px, py = (x + 0.02 * math.sin(life * 10 + x * 6)) * w, (y + vy * life * 2.4) * h
+                cr.set_source_rgba(*c, 0.9 * fade)
+                cr.save()
+                cr.translate(px, py)
+                cr.scale(0.8, 1.0)
+                cr.arc(0, 0, size, 0, 2 * math.pi)
+                cr.restore()
+                cr.fill()
+                cr.set_source_rgba(0.5, 0.5, 0.5, 0.6 * fade)
+                cr.move_to(px, py + size)
+                cr.line_to(px, py + size * 3.2)
+                cr.stroke()
+        elif kind == "liebe":
+            for _ in range(26):
+                x, vx, vy, size, delay = .5 + (r.random() - .5) * .5, (r.random() - .5) * .35, -(.25 + r.random() * .45), 10 + r.random() * 14, r.random() * .4
+                life = max(0.0, (t - delay) / (1 - delay))
+                if life <= 0:
+                    continue
+                px, py, s = (x + vx * life) * w, (.75 + vy * life) * h, size * (.6 + .6 * life)
+                cr.set_source_rgba(1, .18, .33, fade)
+                cr.move_to(px, py + s * .35)
+                cr.curve_to(px - s * 1.1, py - s * .3, px - s * .45, py - s * .95, px, py - s * .4)
+                cr.curve_to(px + s * .45, py - s * .95, px + s * 1.1, py - s * .3, px, py + s * .35)
+                cr.fill()
+        else:                                     # feuerwerk
+            for burst in range(4):
+                x, y, c, delay = .2 + r.random() * .6, .15 + r.random() * .35, r.choice(palette), burst * .18
+                life = max(0.0, (t - delay) / (1 - delay))
+                if life <= 0:
+                    continue
+                reach = 0.22 * w * (1 - (1 - life) ** 2)
+                cr.set_source_rgba(*c, fade)
+                for k in range(26):
+                    angle = 2 * math.pi * k / 26
+                    cr.arc(x * w + math.cos(angle) * reach, y * h + math.sin(angle) * reach + 0.08 * h * life * life, 2.4, 0, 2 * math.pi)
+                    cr.fill()
+
     def spoiler_shown(self, message):
         return message.get("mid") in getattr(self, "spoilers", set())
 
@@ -2056,7 +2187,7 @@ class Window(Adw.ApplicationWindow):
         (f011, a title can say anything); every other link opens as before."""
         if uri.startswith(SPOILER):
             self.spoilers = getattr(self, "spoilers", set()) | {message.get("mid")}
-            label.set_markup(bubble_markup(message["text"], True))
+            label.set_markup(bubble_markup(message["text"], True, message.get("effekt") == "tinte"))
             return True
         titled = [t for _a, _b, kind, t in formatted(message.get("text", ""))[1] if kind == "link"]
         if uri in titled:

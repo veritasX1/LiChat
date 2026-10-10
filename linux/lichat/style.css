@@ -126,3 +126,24 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 .lichat-big-emoji { font-size: 44px; padding: 0 4px; }
 .lichat-big-emoji-2 { font-size: 38px; }
 .lichat-big-emoji-3 { font-size: 32px; }
+
+/* ---------- effects like Messages (f012–f014): bubble once, text in a loop ---------- */
+@keyframes lichat-knall { 0% { transform: translateY(-60px) scale(2.6); opacity: 0.2; } 30% { transform: translateY(0) scale(1); opacity: 1; }
+  45% { transform: translateX(-6px); } 60% { transform: translateX(5px); } 75% { transform: translateX(-3px); } 100% { transform: none; } }
+@keyframes lichat-laut { 0% { transform: scale(1); } 25% { transform: scale(1.9); } 60% { transform: scale(1.9); } 80% { transform: scale(0.92); } 100% { transform: scale(1); } }
+@keyframes lichat-sanft { 0% { transform: scale(0.55); opacity: 0.6; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes lichat-gross { 0% { transform: scale(1); } 50% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes lichat-klein { 0% { transform: scale(1); } 50% { transform: scale(0.8); } 100% { transform: scale(1); } }
+@keyframes lichat-schuetteln { 0% { transform: translateX(0); } 8% { transform: translateX(-7px); } 16% { transform: translateX(7px); }
+  24% { transform: translateX(-5px); } 32% { transform: translateX(5px); } 40% { transform: translateX(0); } 100% { transform: translateX(0); } }
+@keyframes lichat-nicken { 0% { transform: translateY(0); } 25% { transform: translateY(-5px); } 75% { transform: translateY(5px); } 100% { transform: translateY(0); } }
+@keyframes lichat-zittern { 0% { transform: translate(0, 0); } 25% { transform: translate(1.5px, -1px); } 50% { transform: translate(-1px, 1.5px); }
+  75% { transform: translate(-1.5px, -1px); } 100% { transform: translate(0, 0); } }
+.lichat-effekt-knall { animation: lichat-knall 900ms ease-out 1; }
+.lichat-effekt-laut { animation: lichat-laut 1100ms ease-out 1; }
+.lichat-effekt-sanft { animation: lichat-sanft 1800ms ease-out 1; }
+.lichat-effekt-gross { animation: lichat-gross 1400ms ease-in-out infinite; }
+.lichat-effekt-klein { animation: lichat-klein 1400ms ease-in-out infinite; }
+.lichat-effekt-schuetteln { animation: lichat-schuetteln 1400ms linear infinite; }
+.lichat-effekt-nicken { animation: lichat-nicken 1400ms ease-in-out infinite; }
+.lichat-effekt-zittern { animation: lichat-zittern 240ms linear infinite; }

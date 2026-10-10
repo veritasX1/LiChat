@@ -84,6 +84,12 @@ ATTACHMENT_MAX = 100 * 1024 * 1024 - 64
 OUTBOX = "ausgang-"        # an attachment's local id until it is up (cf647f61)
 RESEND_S = 24 * 3600       # „Nicht gesendet“ goes out by itself when the connection is back – for a day (like Android 72c8a716)
 ALBUM_MAX = 10             # photos picked together at most (5749ebd0, like Messages)
+# f012–f014, like Messages: how a message arrives – the twin of Kotlin's EFFECTS (bubble, screen, text in a loop).
+EFFECTS = {"knall": "Knall", "laut": "Laut", "sanft": "Sanft", "tinte": "Unsichtbare Tinte",
+           "konfetti": "Konfetti", "ballons": "Ballons", "liebe": "Liebe", "feuerwerk": "Feuerwerk",
+           "gross": "Groß", "klein": "Klein", "schuetteln": "Schütteln", "nicken": "Nicken", "zittern": "Zittern"}
+SCREEN_EFFECTS = {"konfetti", "ballons", "liebe", "feuerwerk"}
+TEXT_EFFECTS = {"gross", "klein", "schuetteln", "nicken", "zittern"}
 WAVE_MAX = 100             # bars in a voice message's wave at most (1a682a79)
 PHOTO_PX = 2048
 KINDS = ("bild", "video", "sprache", "datei")
@@ -1106,7 +1112,7 @@ class Account:
     def _payload(data):
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send(self, cid, text, reply_to=None, changed=None, silent=False, later=None):
+    def send(self, cid, text, reply_to=None, changed=None, silent=False, later=None, effect=None):
         """[reply_to]: the mid of the message this answers – its sender and a short quote travel along. [changed]: called
         once the bubble is there, before it goes out (it shows at once, even while the server is slow). [silent] (f021):
         the others get it without sound. [later] (f020): kept here as „geplant“, send_due sends it then (unix seconds)."""
@@ -1123,6 +1129,8 @@ class Account:
         payload = {"t": "text", "text": text, "at": at, "mid": message["mid"]}
         if silent:
             message["lautlos"] = payload["lautlos"] = True
+        if effect in EFFECTS:
+            message["effekt"] = payload["effekt"] = effect
         if reply_to:
             quoted = next((m for m in self.chats[cid]["messages"] if m.get("mid") == reply_to), None)
             if quoted:
@@ -1144,8 +1152,9 @@ class Account:
             due = sorted(((cid, m) for cid, chat in self.chats.items() if not chat.get("removed")
                           for m in chat["messages"] if m.get("status") == "geplant" and not m.get("geloescht") and m.get("at", 0) <= now),
                          key=lambda pair: pair[1]["at"])
-            for _cid, m in due:
+            for cid, m in due:
                 m["status"], m["at"] = "fehler", now        # if it fails now it is „Nicht gesendet“ and resent later
+                self._to_end(cid, m)
             if due:
                 self.save()
         sent = 0
@@ -1162,8 +1171,15 @@ class Account:
             message = next((m for m in self.chats[cid]["messages"] if m.get("mid") == mid and m.get("status") == "geplant"), None)
             if message is not None:
                 message["status"], message["at"] = "fehler", int(time.time())
+                self._to_end(cid, message)
                 self.save()
         return self.retry(cid, mid)
+
+    def _to_end(self, cid, message):
+        """A planned message that leaves now stands where it leaves – after what was sent meanwhile (Michelle, like Apple)."""
+        messages = self.chats[cid]["messages"]
+        messages.remove(message)
+        messages.append(message)
 
     def react(self, cid, mid, emoji):
         """My reaction on a message (one per person, like iOS); "" takes it back."""
@@ -1293,6 +1309,8 @@ class Account:
             payload["album"] = message["album"]
         if message.get("lautlos"):
             payload["lautlos"] = True
+        if message.get("effekt") in EFFECTS:
+            payload["effekt"] = message["effekt"]
         if message.get("antwort"):
             payload["antwort"] = message["antwort"]
         message["status"] = "wartet"
@@ -1882,6 +1900,8 @@ class Account:
         if message.get("zurueckgerufen"):
             return "Nachricht widerrufen"
         info = message.get("anhang")
+        if message.get("effekt") == "tinte" and not info:
+            return "Nachricht mit unsichtbarer Tinte"       # f012: covered there too
         if not info:
             from .formatting import preview_text
             return preview_text(message.get("text", ""))
@@ -2234,7 +2254,11 @@ class Account:
             chat["messages"].append(message)
             if data.get("lautlos") is True:
                 message["lautlos"] = True       # f021: no sound for this one
+            if data.get("effekt") in EFFECTS:
+                message["effekt"] = data["effekt"]
             news = {"chat": cid, **{k: v for k, v in message.items() if k != "mid"}}
+            if message.get("effekt") == "tinte":
+                news["text"] = self.describe(message)      # the notification keeps it covered
             if (len(chat.get("roster", {})) > 2 or chat.get("title")) and self.mentions_me(cid, message["text"]):
                 news["mention"] = True      # „@ich“ or „@alle“: a notification even when the chat is muted (iOS)
             return [news]

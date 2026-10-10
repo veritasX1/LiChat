@@ -806,13 +806,32 @@ print([m["album"]["nr"] for m in a.chats["$cid"]["messages"] if m.get("album")])
         assertEquals("geplant", anna.tick(cid, anna.findMessage(cid, soon.getString("mid"))!!).first)
         assertEquals(0, anna.sendDue(now + 60))
         assertTrue(bernd.fetch().none { it.kind == News.Kind.Text })
+        anna.send(cid, "Zwischendurch")
+        bernd.fetch()
         assertEquals(1, anna.sendDue(now + 3601))
         assertEquals(listOf("Guten Morgen!"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
+        anna.chat(cid).getJSONArray("messages").let { assertEquals("wo sie losging", "Guten Morgen!", it.getJSONObject(it.length() - 1).optString("text")) }
         anna.sendPlannedNow(cid, soon.getString("mid"))
         assertEquals(listOf("Gleich"), bernd.fetch().filter { it.kind == News.Kind.Text }.map { it.text })
         assertEquals(0, anna.sendDue(now + 99_999))
         assertEquals(null, anna.nextPlanned())
         try { anna.send(cid, "Zu spät", later = now - 10); throw AssertionError("muss scheitern") } catch (e: LiChatException) { }
+    }
+
+    /** f012–f014: an effect travels with the message, an unknown one is dropped; Tinte stays covered in list and notification. */
+    @Test
+    fun effects() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val cid = anna.start(listOf("bernd"))
+        bernd.fetch()
+        anna.send(cid, "Alles Gute!", effect = "konfetti")
+        anna.send(cid, "Geheim", effect = "tinte")
+        anna.send(cid, "Nix", effect = "rakete")
+        val got = bernd.fetch().filter { it.kind == News.Kind.Text }
+        assertEquals(listOf("Alles Gute!", "Nachricht mit unsichtbarer Tinte", "Nix"), got.map { it.text })
+        val list = bernd.chat(cid).getJSONArray("messages").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        assertEquals(listOf("konfetti", "tinte", ""), list.takeLast(3).map { it.optString("effekt") })
+        assertEquals("Nachricht mit unsichtbarer Tinte", io.github.veritasx1.lichat.core.describe(list.last { it.optString("effekt") == "tinte" }))
     }
 
     /** Card 8e7a493b: no way to the server – a plain sentence, never address and port on the screen; the cause only as detail. */
