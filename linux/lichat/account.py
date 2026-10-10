@@ -1335,6 +1335,15 @@ class Account:
         if tell and key in self.SYNCED_CHAT_KEYS:
             self._tell_own_devices({"t": "gespraech", "chat": cid, "key": key, "value": value})
 
+    def draft(self, cid):
+        """What I had begun to type here (979f9b22, like Messages) – only on this device, sealed with the chats."""
+        return (self.chats.get(cid) or {}).get("entwurf", "")
+
+    def set_draft(self, cid, text):
+        if cid not in self.chats or self.draft(cid) == text:
+            return
+        self._chat_setting(cid, "entwurf", text if text.strip() else None, tell=False)
+
     def receipts_for(self, cid):
         """Read receipts in this chat: its own setting, else the general one (Apple: per conversation)."""
         own = self.chats.get(cid, {}).get("lesebestaetigungen")

@@ -803,6 +803,15 @@ class Account(val folder: File, private val key: ByteArray) {
         if (tell && key in syncedChatKeys) tellOwnDevices(JSONObject().put("t", "gespraech").put("chat", cid).put("key", key).put("value", value ?: JSONObject.NULL))
     }
 
+    /** What I had begun to type here (979f9b22, like Messages): kept per conversation, also over a restart – only on this
+     *  phone, sealed with the chats, never sent to my other devices; empty once sent. */
+    fun draft(cid: String): String = chats.optJSONObject(cid)?.optString("entwurf").orEmpty()
+
+    fun setDraft(cid: String, text: String) {
+        if (draft(cid) == text || chats.optJSONObject(cid) == null) return
+        chatSetting(cid, "entwurf", text.takeIf { it.isNotBlank() }, tell = false)
+    }
+
     fun receiptsFor(cid: String): Boolean {
         val chat = chats.optJSONObject(cid) ?: return readReceipts
         return if (chat.has("lesebestaetigungen")) chat.optBoolean("lesebestaetigungen") else readReceipts

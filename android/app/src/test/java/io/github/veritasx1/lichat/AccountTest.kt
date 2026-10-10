@@ -560,6 +560,20 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals("„anna“ gibt es auf diesem Server nicht – meinst du anna.berg?", error)
     }
 
+    /** Card 979f9b22: begun text stays with its conversation, also after a restart; never sent anywhere. */
+    @Test
+    fun draftPerConversation() {
+        val anna = person("anna"); val bernd = person("bernd")
+        val a = anna.start(listOf("bernd")); val b = anna.start(listOf("bernd"), "Grillabend")
+        anna.setDraft(a, "Kommst du mor"); anna.setDraft(b, "Wer bringt")
+        val again = Account(File(root, "anna"), KeyVault.Plain.load(File(root, "anna"))!!)
+        assertEquals("Kommst du mor", again.draft(a)); assertEquals("Wer bringt", again.draft(b))
+        again.setDraft(a, "")
+        assertEquals("", again.draft(a))
+        bernd.fetch()
+        assertTrue(bernd.visibleChats().none { bernd.chat(it).has("entwurf") })
+    }
+
     /** Michelle 4da136eb: someone taken out of a group stays in „known people“; an unknown name leaves the group as it was. */
     @Test
     fun addPeopleKnownAndUnknown() {

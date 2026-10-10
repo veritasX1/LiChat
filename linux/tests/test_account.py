@@ -386,6 +386,19 @@ class Groups(Base):
         self.assertEqual(str(caught.exception), "„gibtsnicht“ gibt es auf diesem Server nicht")
         self.assertEqual(set(anna.chats[cid]["roster"]), before)
 
+    def test_draft_per_conversation(self):
+        """979f9b22: begun text stays with its conversation, also after a restart; only here; gone when cleared."""
+        anna, bernd = self.person("anna"), self.person("bernd")
+        a, b = anna.start(["bernd"]), anna.start(["bernd"], "Grillabend")
+        anna.set_draft(a, "Kommst du mor")
+        anna.set_draft(b, "Wer bringt")
+        again = Account(anna.folder)
+        self.assertEqual((again.draft(a), again.draft(b)), ("Kommst du mor", "Wer bringt"))
+        again.set_draft(a, "")
+        self.assertEqual(Account(anna.folder).draft(a), "")
+        bernd.fetch()
+        self.assertTrue(all("entwurf" not in c for c in bernd.chats.values()), "nie zum Gegenüber")
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

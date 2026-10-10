@@ -270,7 +270,15 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
     // A photo lies above the input first (2fcc3eef, like Messages): text to it, options by a tap; videos go at once.
     val staged = remember { androidx.compose.runtime.mutableStateListOf<io.github.veritasx1.lichat.ui.Staged>() }
     var stagedOpen by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(chatId()) { staged.clear(); stagedOpen = null }     // they belong to the conversation they were picked in
+    // they belong to the conversation they were picked in – and wait there when one goes elsewhere and comes back (979f9b22)
+    val stagedByChat = remember { mutableMapOf<String, List<io.github.veritasx1.lichat.ui.Staged>>() }
+    var stagedFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(chatId()) {
+        stagedFor?.let { stagedByChat[it] = staged.toList() }
+        staged.clear(); stagedOpen = null
+        chatId()?.let { cid -> staged.addAll(stagedByChat.remove(cid).orEmpty()) }
+        stagedFor = chatId()
+    }
     // Up to 10 at once (5749ebd0, like Messages): photos lie above the input, videos go at once.
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(io.github.veritasx1.lichat.core.ALBUM_MAX)) { uris ->
         for (uri in uris) {
