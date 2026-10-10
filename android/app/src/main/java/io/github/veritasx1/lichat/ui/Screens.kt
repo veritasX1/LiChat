@@ -1487,7 +1487,7 @@ fun AttachmentSheet(onPhotos: () -> Unit, onFile: () -> Unit, onCancel: () -> Un
     // with their names, left-aligned – no „Abbrechen“, a tap beside it or „zurück“ closes it.
     val colors = palette()
     androidx.activity.compose.BackHandler(onBack = onCancel)
-    Box(Modifier.fillMaxSize().background(if (colors.dark) Color(0xCC000000) else Color(0xD9FFFFFF))
+    Box(Modifier.fillMaxSize().background(if (colors.dark) Color(0x99000000) else Color(0xA6FFFFFF))
         .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = onCancel)
         .semantics { contentDescription = "Anhang-Menü schließen" }, contentAlignment = Alignment.BottomStart) {
         Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)).padding(start = 20.dp, bottom = 76.dp),
