@@ -524,6 +524,22 @@ httpd.serve_forever()
         compose.onNodeWithText("Bernd Brandt").assertExists()
     }
 
+    /** 4da136eb (Olaf 10.10.): add people to a group from my contacts – check marks, who is in already greyed out. */
+    @Test
+    fun addPeopleToGroup() {
+        var added: List<String>? = null
+        shot("4b-personen-hinzufuegen") {
+            io.github.veritasx1.lichat.ui.AddPeopleSheet(listOf("anna.berg" to "Anna Berg", "bernd" to "Bernd Brandt", "erna" to "erna", "ted" to "Ted Mosby"),
+                setOf("olaf", "bernd"), {}) { added = it }
+        }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Bernd Brandt, schon in der Gruppe")).assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Anna Berg")).performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Ted Mosby")).performClick()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Bernd Brandt, schon in der Gruppe")).performClick()
+        compose.onNodeWithText("Hinzufügen (2)").performClick()
+        org.junit.Assert.assertEquals(listOf("anna.berg", "ted"), added)
+    }
+
     /** 1a682a79: voice messages like Signal – mine playing at 1,5× with its real wave, ticks and time inside; theirs unheard. */
     @Test
     fun voiceLikeSignal() {

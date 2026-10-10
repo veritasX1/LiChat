@@ -1310,9 +1310,9 @@ class Window(Adw.ApplicationWindow):
             box.append(row)
         if not self.account.chats[cid].get("removed"):
             if group:
-                adding = Gtk.Entry(placeholder_text="Person hinzufügen (Benutzername)", css_classes=["lichat-field"], margin_top=4)
-                adding.connect("activate", lambda e: (button.popdown(), self.group_job(
-                    lambda a: a.add(cid, [n.strip().lower() for n in e.get_text().replace(";", ",").split(",") if n.strip()]))))
+                # 4da136eb (Olaf 10.10.): pick from my contacts like Messages instead of typing an exact name
+                adding = Gtk.Button(label="Personen hinzufügen …", css_classes=["flat"], halign=Gtk.Align.START, margin_top=4)
+                adding.connect("clicked", lambda *_: (button.popdown(), self.add_people(cid, set(members))))
                 box.append(adding)
             # In a group a muted chat still notifies for @me / @alle (iOS, card d54175ed).
             mute = Gtk.CheckButton(label="Nur bei Erwähnung benachrichtigen" if group else "Mitteilungen stummschalten",
@@ -1393,6 +1393,46 @@ class Window(Adw.ApplicationWindow):
                 self.fill_list()
                 self.show_conversation()
         self.worker.do(lambda: account.chat_with(find_user()), done)
+
+    def add_people(self, cid, members):
+        """Add people to a group (4da136eb): search, my contacts with check boxes, who is in already greyed out, an exact
+        user name typed as its own entry; new members see the messages from now on."""
+        account = self.account
+        people = [(u, account.display(u)) for u in account.known_people()]
+        dialog = Adw.AlertDialog(heading="Personen hinzufügen",
+                                 body="Neue Mitglieder sehen die Nachrichten ab jetzt – frühere bleiben für sie verborgen.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        search = Gtk.SearchEntry(placeholder_text="Name oder Benutzername")
+        box.append(search)
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(Gtk.ScrolledWindow(child=rows, min_content_height=220, max_content_height=360, propagate_natural_height=True,
+                                      hscrollbar_policy=Gtk.PolicyType.NEVER))
+        chosen = set()
+
+        def fill(*_):
+            while (child := rows.get_first_child()) is not None:
+                rows.remove(child)
+            typed = search.get_text().strip().lower()
+            shown = [(u, n) for u, n in people if not typed or typed in u or typed in n.lower()]
+            if typed and re.fullmatch(r"[a-z0-9._-]{2,32}", typed) and typed not in members and all(u != typed for u, _ in people):
+                shown.insert(0, (typed, typed))
+            for user, name in shown:
+                inside = user in members
+                check = Gtk.CheckButton(label=name if name == user else f"{name} ({user})", active=user in chosen or inside,
+                                        sensitive=not inside, tooltip_text="Schon in der Gruppe" if inside else None)
+                check.connect("toggled", lambda c, u=user: chosen.add(u) if c.get_active() else chosen.discard(u))
+                rows.append(check)
+            if not shown:
+                rows.append(Gtk.Label(label="Noch keine Kontakte – Benutzernamen eintippen", css_classes=["dim-label"]))
+        search.connect("search-changed", fill)
+        fill()
+        dialog.set_extra_child(box)
+        dialog.add_response("abbrechen", "Abbrechen")
+        dialog.add_response("hinzufuegen", "Hinzufügen")
+        dialog.set_response_appearance("hinzufuegen", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda _d, answer: answer == "hinzufuegen" and chosen and self.group_job(lambda a: a.add(cid, sorted(chosen))))
+        dialog.present(self)
+        self.people_dialog = (dialog, search, rows, chosen)       # for the GUI test
 
     def show_invite(self):
         """An invitation for someone new (Olaf 10.10.): its QR code – any phone camera opens the invitation page, LiChat
