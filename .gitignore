@@ -10,3 +10,4 @@ local.properties
 *.so
 *.jks
 keystore.properties
+deploy/.env

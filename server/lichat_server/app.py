@@ -157,6 +157,9 @@ class App:
         self.link_limit = Limiter(20, 3600, clock)          # new link codes per address
         self.link_failures = Limiter(10, 900, clock)        # wrong codes typed on an existing device
         self.public = (os.environ.get("LICHAT_OEFFENTLICH") or "https://exampleserver.lisoftware.de").rstrip("/")
+        # 30 days for unfetched messages and attachments: the server tidies up by itself, at most once an hour, beside
+        # the requests (it said so in the README, but „purge“ only ran by hand – found for 1.0).
+        self.clock, self.last_purge, self.purging = clock, clock(), threading.Lock()
         self.routes = [
             ("POST", r"/v1/register", self.register, False),
             ("GET", r"/v1/users/(?P<name>[^/]+)", self.user, True),
@@ -187,7 +190,20 @@ class App:
 
     # WSGI ----------------------------------------------------------------------------------------
 
+    def tidy(self):
+        if self.clock() - self.last_purge < 3600 or not self.purging.acquire(blocking=False):
+            return
+        self.last_purge = self.clock()
+
+        def run():
+            try:
+                self.store.purge()
+            finally:
+                self.purging.release()
+        threading.Thread(target=run, daemon=True).start()
+
     def __call__(self, environ, start_response):
+        self.tidy()
         try:
             status, payload = 200, self.dispatch(environ)
         except HttpError as error:
