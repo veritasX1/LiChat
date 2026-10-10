@@ -541,6 +541,19 @@ def main():
     assert window.reply_to is last and window.reply_line.get_visible()
     window.end_reply()
 
+    # f0-01: ⊕ opens the menu like Messages – Fotos, Audio, Dateien with round coloured symbols.
+    menu = window.attachment_menu(window.attach_button)
+    settle(0.3)
+    labels = []
+    child = menu.get_child().get_first_child()
+    while child is not None:
+        labels.append(child.get_child().get_last_child().get_label())
+        child = child.get_next_sibling()
+    assert labels == ["Fotos", "Audio", "Dateien"], labels
+    shot(menu, "08c-plus-menue.png")
+    menu.popdown()
+    settle(0.2)
+
     # f0-05/f0-12: the field empty → a microphone; record (a test tone, never a real microphone), stop, hear, send.
     window.input.set_text("")
     settle(0.2)
