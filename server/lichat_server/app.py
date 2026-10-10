@@ -49,6 +49,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 
+from . import VERSION
 from .store import ATTACHMENT_BYTES, Store, invite_key
 
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
@@ -174,7 +175,7 @@ class App:
             ("POST", r"/v1/messages", self.send, True),
             ("GET", r"/v1/messages", self.mailbox, True),
             ("POST", r"/v1/messages/ack", self.ack, True),
-            ("GET", r"/v1/health", lambda env, body, me: {"ok": True}, False),
+            ("GET", r"/v1/health", lambda env, body, me: {"ok": True, "version": VERSION}, False),
             ("PUT", r"/v1/anhaenge", self.put_attachment, True),
             ("POST", r"/v1/pins", self.new_pin, True),
             ("POST", r"/v1/einladungen", self.new_invite, True),

@@ -6,28 +6,29 @@ ohne Telefonnummer, ohne Werbung, ohne Datensammlung. Teil der Li-Apps von LiSof
 > Name: **LiChat** (Olaf, 08.10.2026).
 
 ## Grundsätze (Wertekompass, gilt für alle Li-Apps)
-1. **Privatsphäre:** Der Server sieht nur verschlüsselte Pakete. Keine Kontaktlisten, keine Gruppennamen,
-   kein Absender (Sealed Sender), Zugestelltes wird sofort gelöscht, nicht Abgeholtes nach 30 Tagen.
-2. **Kontrolle:** Eigener Server (Pi im Heimnetz), Registrierung nur mit Einladung, alles abschaltbar.
-3. **Einfachheit:** Bedienung wie Apple Nachrichten (Apple HIG, iOS 26 als Vorbild).
+1. **Privatsphäre:** Inhalte, Anhänge, Gruppennamen und Kontaktlisten sind Ende-zu-Ende verschlüsselt (MLS, RFC 9420) –
+   der Server sieht nur verschlüsselte Pakete. Im Postfach speichert er keinen Absender. Zugestelltes löscht er sofort,
+   nicht Abgeholtes nach 30 Tagen.
+2. **Kontrolle:** Eigener Server (z. B. ein Raspberry Pi zu Hause), Registrierung nur mit Einladung, alles abschaltbar.
+   Keine Telefonnummer, kein Push-Dienst von Google oder Apple – die App hält selbst die Verbindung.
+3. **Einfachheit:** Bedienung wie Apple Nachrichten (iOS 18 / macOS 15 als Vorbild).
 4. **Kostenlos für immer:** keine Käufe, keine Abos, keine Werbung, keine Telemetrie.
 
-KI ist ab Werk aus. Es wird kein Modell mitgeliefert. Eine KI kann höchstens als **sichtbares Mitglied** in ein
-Gespräch eingeladen werden, mit deutlichem Hinweis und Schlüsselwechsel beim Entfernen.
+KI ist ab Werk aus. Es wird kein Modell mitgeliefert.
 
 ## Aufbau
 
-| Ordner | Inhalt | Stand |
-|---|---|---|
-| `server/` | LiChat-Server, Stufe 1: Einladungen, Geräte, MLS-Key-Packages, Postfach je Gerät, ntfy-Anstoß. Python, nur Standardbibliothek | **Grundgerüst mit Tests** |
-| `core/` | Gemeinsamer Kern in Rust: OpenMLS (RFC 9420); Bindings für Kotlin (uniffi) und Python (pyo3) folgen | **Gespräche mit Tests** (zu zweit, Gruppe, Schlüsselwechsel, Fälschungen) |
-| `android/` | Android-App (Kotlin/Compose), Look wie Nachrichten auf dem iPhone | geplant |
-| `linux/` | Ubuntu-App (GTK4/libadwaita, Python), Look wie Nachrichten auf dem Mac; dazu `lichat-cli` fürs Team | geplant |
-| `shared/` | Gemeinsames: Übersetzungen (DE/EN/FR), Hilfe, Testdaten | geplant |
-| `docs/` | Architektur, Protokoll, später Transparenzbericht | begonnen |
+| Ordner | Inhalt |
+|---|---|
+| `server/` | LiChat-Server: Einladungen, Geräte, MLS-Key-Packages, Postfach je Gerät, verschlüsselte Anhänge. Python, nur Standardbibliothek |
+| `core/` | Gemeinsamer Kern in Rust: OpenMLS (RFC 9420), Zustand verschlüsselt auf dem Gerät; Bindings für Kotlin (uniffi) und Python (pyo3) |
+| `android/` | Android-App (Kotlin/Compose), Look wie Nachrichten auf dem iPhone |
+| `linux/` | Ubuntu-App (GTK4/libadwaita, Python), Look wie Nachrichten auf dem Mac; dazu `lichat-cli` |
+| `deploy/` | Docker, nginx – der Server auf dem eigenen Rechner ([docs/SERVER.md](docs/SERVER.md)) |
+| `docs/` | Architektur, Server-Anleitung, Hilfe, Transparenzbericht |
 
-Ausbaustufen (Konzept): **1** Einzel- und Gruppengespräche (Gruppen früh, Olaf 08.10.) · **2** Anhänge, mehrere Geräte · **3** Signal auf dem Gerät (libsignal als
-verknüpftes Gerät, keine Brücke auf dem Server, AGPL). Telegram vorerst nicht.
+Version **1.0.0** (10.10.2026). Hilfe: [docs/HILFE.md](docs/HILFE.md) · eigener Server: [docs/SERVER.md](docs/SERVER.md) ·
+was die App tut und nicht tut: [docs/TRANSPARENZ-1.0.md](docs/TRANSPARENZ-1.0.md).
 
 ## Kern testen
 
@@ -46,17 +47,8 @@ LICHAT_DATA=/tmp/lichat python3 -m lichat_server.admin invite "für Anna"
 
 Die Schnittstelle steht oben in `server/lichat_server/app.py`.
 
-## Entschieden (Olaf, 08.10.2026)
-- **A** Name: LiChat.
-- **B** Gruppen schon in Stufe 1, damit das Team früh dabei ist.
-- **C** Farben wie iMessage: eigenes Netz blau, Grün bleibt für „unsicherer“ (z. B. Signal-Brücke später).
-
-## Noch offen
-- **Lizenz AGPL-3.0-or-later** für ganz LiChat (Server, Kern, Ubuntu, Android) – Olaf 09.10.2026: „agpl ja, veröffentlichen
-  ja, risiko ja“. Grund: libsignal (AGPL) für die Signal-Verknüpfung (a2f95231). Der Quelltext wird veröffentlicht (GitHub
-  wie die anderen Li-Apps), spätestens mit der ersten Weitergabe an andere. Signal ist ein fremder Dienst, der inoffizielle
-  Programme dulden, aber jederzeit aussperren kann – die Verknüpfung ist ein Zusatz zum Einschalten, mit Hinweis, „Signal“
-  nur beschreibend, ohne Logo.
+## Lizenz
+GPL-3.0 für ganz LiChat (Server, Kern, Ubuntu, Android) wie bei den anderen Li-Apps – Olaf 10.10.2026. Siehe `LICENSE`.
 
 Grundlagen: Olafs Notiz „LiChat – Konzept“ (LiNotes 1a8a84fc), Anforderungskarte 37ad8505,
 Konzeptabgleich `~/Team/Jean-Marie/lichat-konzept.md`, Testplan `~/Team/Michelle/lichat-testplan.md`.

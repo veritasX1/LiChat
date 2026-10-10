@@ -5,7 +5,7 @@
 //! bytes for the server's mailbox: welcomes, commits and application messages. The server never sees a plaintext, a
 //! group name or who sent what (docs/ARCHITEKTUR.md).
 //!
-//! Step 1 keeps the state in memory; the encrypted store on the device follows (docs, „nächste Schritte“).
+//! The whole state is sealed with the device's key and kept on the device ([`Device::save`] / [`Device::load`]).
 
 #[cfg(feature = "python")]
 mod python;

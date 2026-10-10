@@ -874,6 +874,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Name ändern …", "win.name")
         menu.append("Meine Geräte …", "win.geraete")
         menu.append("Profilbild wählen …", "win.bild")
+        menu.append("Über LiChat", "win.ueber")
         menu.append("LiChat beenden", "win.beenden")
         for name in ("hintergrund", "vorschau"):
             action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(self.settings[name]))
@@ -896,6 +897,9 @@ class Window(Adw.ApplicationWindow):
         picture_action = Gio.SimpleAction.new("bild", None)
         picture_action.connect("activate", lambda *_: self.choose_picture())
         self.add_action(picture_action)
+        about = Gio.SimpleAction.new("ueber", None)
+        about.connect("activate", lambda *_: self.show_about())
+        self.add_action(about)
         quit_action = Gio.SimpleAction.new("beenden", None)
         quit_action.connect("activate", lambda *_: self.quit_all())
         self.add_action(quit_action)
@@ -2330,6 +2334,15 @@ class Window(Adw.ApplicationWindow):
         dialog.add_response("ok", "Fertig")
         self.info_dialog = dialog
         dialog.present(self)
+
+    def show_about(self):
+        from . import VERSION
+        about = Adw.AboutDialog(application_name="LiChat", version=VERSION, developer_name="LiSoftware",
+                                website="https://lisoftware.de/lichat/", license_type=Gtk.License.GPL_3_0_ONLY,
+                                comments="Ende-zu-Ende verschlüsselt (MLS), auf deinem eigenen Server.",
+                                application_icon="io.github.veritasx1.LiChat")
+        self.about_dialog = about
+        about.present(self)
 
     INK_WORDS = "unsichtbare Tinte, zum Aufdecken anklicken"
 

@@ -1,1 +1,3 @@
-"""LiChat server (step 1: single conversations, end-to-end encrypted with MLS on the devices)."""
+"""LiChat server: mailboxes for MLS-encrypted messages between devices – it never sees what is written."""
+
+VERSION = "1.0.0"
