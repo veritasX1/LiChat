@@ -20,7 +20,7 @@ genauen Befehle stehen auf der Homepage unter „Laden“. LiChat erscheint dana
 nur noch deinen Namen ein. Ohne Kamera geht es auch von Hand: Serveradresse und Code abtippen.
 
 **Dein Name.** Vor- und Nachname, wie die anderen dich sehen sollen. Daraus macht LiChat einen Benutzernamen
-(z. B. `anna.berg`). Den Namen kannst du später in den Einstellungen ändern, den Benutzernamen nicht.
+(z. B. `erna.berg`). Den Namen kannst du später in den Einstellungen ändern, den Benutzernamen nicht.
 
 **Mitteilungen und Akku (Android).** LiChat hält selbst die Verbindung zu deinem Server, ohne Push-Dienst von Google.
 Damit Nachrichten sofort ankommen, fragt die App beim ersten Start, ob sie im Hintergrund laufen darf. Sagst du nein,
