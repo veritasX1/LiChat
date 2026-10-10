@@ -570,6 +570,13 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertEquals("Kommst du mor", again.draft(a)); assertEquals("Wer bringt", again.draft(b))
         again.setDraft(a, "")
         assertEquals("", again.draft(a))
+        // f003/f004: the answer begun stays with the draft; either one marks the chat as „Entwurf“
+        assertTrue(again.hasDraft(b)); assertFalse(again.hasDraft(a))
+        again.setDraftReply(a, "abc123")
+        assertEquals("abc123", Account(File(root, "anna"), KeyVault.Plain.load(File(root, "anna"))!!).draftReply(a))
+        assertTrue(again.hasDraft(a))
+        again.setDraftReply(a, null)
+        assertEquals(null, again.draftReply(a)); assertFalse(again.hasDraft(a))
         bernd.fetch()
         assertTrue(bernd.visibleChats().none { bernd.chat(it).has("entwurf") })
     }

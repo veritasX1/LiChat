@@ -763,6 +763,23 @@ class Ticks(Base):
         self.assertEqual([n for n in bernd.fetch() if n.get("anhang")][0]["anhang"]["name"], "Plan.pdf")
 
 
+class Drafts(Base):
+    def test_draft_reply_and_mark(self):
+        """f003/f004: the answer begun waits with the draft over a restart; text or answer mark it as „Entwurf“."""
+        anna, _bernd = self.person("anna"), self.person("bernd")
+        cid = anna.start(["bernd"])
+        self.assertFalse(anna.has_draft(cid))
+        anna.set_draft_reply(cid, "abc123")
+        self.assertTrue(anna.has_draft(cid))
+        self.assertEqual(Account(anna.folder).draft_reply(cid), "abc123")
+        anna.set_draft_reply(cid, None)
+        anna.set_draft(cid, "Bringst du")
+        self.assertTrue(anna.has_draft(cid))
+        anna.set_draft(cid, "")
+        self.assertFalse(anna.has_draft(cid))
+        self.assertIsNone(anna.draft_reply(cid))
+
+
 class RepliesAndReactions(Base):
     """Olaf 09.10.: swipe to answer, long press for an emoji – end to end."""
 

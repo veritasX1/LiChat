@@ -1365,6 +1365,19 @@ class Account:
             return
         self._chat_setting(cid, "entwurf", text if text.strip() else None, tell=False)
 
+    def draft_reply(self, cid):
+        """f004: the message I had begun to answer here (its mid) – it waits with the draft, like Messages."""
+        return (self.chats.get(cid) or {}).get("entwurf_antwort")
+
+    def set_draft_reply(self, cid, mid):
+        if cid not in self.chats or self.draft_reply(cid) == (mid or None):
+            return
+        self._chat_setting(cid, "entwurf_antwort", mid or None, tell=False)
+
+    def has_draft(self, cid):
+        """f003: something begun here – text or the answer to a message – shown in the list as „Entwurf:“."""
+        return bool(self.draft(cid).strip() or self.draft_reply(cid))
+
     def receipts_for(self, cid):
         """Read receipts in this chat: its own setting, else the general one (Apple: per conversation)."""
         own = self.chats.get(cid, {}).get("lesebestaetigungen")

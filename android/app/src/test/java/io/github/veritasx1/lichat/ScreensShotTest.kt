@@ -119,6 +119,16 @@ httpd.serve_forever()
     @Test
     fun list() = shot("1-liste") { ChatList(anna, 0, mapOf(group to 1), null, false, {}, {}, {}, {}) }
 
+    /** f003: a conversation with something begun shows „Entwurf:“ and the text instead of the last message. */
+    @Test
+    fun draftInList() {
+        anna.setDraft(cid, "Bringst du Senf mit")
+        try {
+            shot("1c-entwurf") { ChatList(anna, 0, emptyMap(), null, false, {}, {}, {}, {}) }
+            compose.onNodeWithText("Entwurf: Bringst du Senf mit").assertExists()
+        } finally { anna.setDraft(cid, "") }
+    }
+
     /** Michelle 24e8f89c: notifications refused – said plainly in the list and in the settings. */
     @Test
     fun notificationsOff() {

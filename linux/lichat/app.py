@@ -988,6 +988,8 @@ class Window(Adw.ApplicationWindow):
             text.append(head)
             preview = (last["text"] if last.get("system") else ("Du: " if last["from"] == self.account.username else "") + Account.describe(last)) \
                 if last else "Noch keine Nachrichten"
+            # f003: something begun there – „Entwurf:“ in red and what it says, like WhatsApp and Telegram (not while open)
+            drafted = cid != self.current and self.account.has_draft(cid)
             typists = self.account.typing_now(cid)
             if typists:
                 group = len(self.account.members(cid)) > 2 or bool(chat.get("title"))
@@ -996,8 +998,11 @@ class Window(Adw.ApplicationWindow):
                 if not getattr(self, "list_typing_timer", 0):
                     self.list_typing_timer = GLib.timeout_add(TYPING_FRESH * 1000 + 100, self.list_typing_over)
             else:
-                text.append(Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
-                                      ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD))
+                line = Gtk.Label(label=preview, css_classes=["lichat-preview"], xalign=0, wrap=True, lines=2,
+                                 ellipsize=Pango.EllipsizeMode.END, max_width_chars=30, natural_wrap_mode=Gtk.NaturalWrapMode.WORD)
+                if drafted:
+                    line.set_markup(f'<span foreground="#ff3b30">Entwurf:</span> {GLib.markup_escape_text(self.account.draft(cid).strip())}')
+                text.append(line)
             box.append(text)
             row.set_child(box)
             self.add_row_menu(row, cid)
@@ -1060,11 +1065,20 @@ class Window(Adw.ApplicationWindow):
             GLib.source_remove(self._draft_timer)
             self._draft_timer = None
         if old is not None and old in self.account.chats and not getattr(self, "editing", None):
-            self.account.set_draft(old, self.input.get_text())
+            if self.account.draft(old) != self.input.get_text():
+                self.account.set_draft(old, self.input.get_text())
+                GLib.idle_add(lambda: self.fill_list() and False)      # its row shows „Entwurf:“ now (f003)
         self._draft_cid = new
         self._draft_loading = True
         self.input.set_text(self.account.draft(new) if new else "")
         self.input.set_position(-1)
+        # f004: the answer begun there comes back with it – the old one stays where it was
+        self.reply_to = self.editing = None
+        self.reply_line.set_visible(False)
+        mid = self.account.draft_reply(new) if new else None
+        message = next((m for m in self.account.chats[new]["messages"] if m.get("mid") == mid), None) if mid else None
+        if message is not None and not message.get("zurueckgerufen"):
+            self.show_reply(message)
         self._draft_loading = False
 
     def show_conversation(self):
@@ -1852,15 +1866,22 @@ class Window(Adw.ApplicationWindow):
         return True
 
     def start_reply(self, message):
-        """Answering: a line above the input with the quote, ✕ takes it back."""
+        """Answering: a line above the input with the quote, ✕ takes it back. It waits with the draft (f004)."""
+        self.show_reply(message)
+        if self.current is not None and not self.composing and message.get("mid"):
+            self.account.set_draft_reply(self.current, message["mid"])
+        self.input.grab_focus()
+
+    def show_reply(self, message):
         self.editing = None
         self.reply_to = message
         who = "dich" if message["from"] == self.account.username else self.account.display(message["from"])
         self.reply_label.set_label(f"Antwort an {who}: {Account.describe(message) or message.get('text', '')}")
         self.reply_line.set_visible(True)
-        self.input.grab_focus()
 
     def end_reply(self):
+        if self.reply_to is not None and self.current is not None and not self.composing:
+            self.account.set_draft_reply(self.current, None)
         self.reply_to = None
         self.editing = None
         self.reply_line.set_visible(False)

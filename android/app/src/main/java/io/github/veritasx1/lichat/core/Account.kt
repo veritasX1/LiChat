@@ -813,6 +813,18 @@ class Account(val folder: File, private val key: ByteArray) {
         chatSetting(cid, "entwurf", text.takeIf { it.isNotBlank() }, tell = false)
     }
 
+    /** f004: the message I had begun to answer here (its mid) – it waits with the draft, like Messages. */
+    fun draftReply(cid: String): String? = chats.optJSONObject(cid)?.optString("entwurf_antwort")?.takeIf { it.isNotEmpty() }
+
+    fun setDraftReply(cid: String, mid: String?) {
+        if (chats.optJSONObject(cid) == null || draftReply(cid) == mid?.takeIf { it.isNotEmpty() }) return
+        chatSetting(cid, "entwurf_antwort", mid?.takeIf { it.isNotEmpty() }, tell = false)
+    }
+
+    /** f003: something begun here – text, the answer to a message or photos – shown in the list as „Entwurf:“. */
+    fun hasDraft(cid: String): Boolean = draft(cid).isNotBlank() || draftReply(cid) != null ||
+        File(draftFolder(cid), "liste.bin").exists()
+
     fun receiptsFor(cid: String): Boolean {
         val chat = chats.optJSONObject(cid) ?: return readReceipts
         return if (chat.has("lesebestaetigungen")) chat.optBoolean("lesebestaetigungen") else readReceipts
