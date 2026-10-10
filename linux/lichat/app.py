@@ -27,7 +27,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango  # noqa: E402
 
 from .recorder import Recorder  # noqa: E402
 
@@ -261,6 +261,61 @@ def typing_label(names):
     if len(names) == 1:
         return f"{names[0]} schreibt …"
     return ", ".join(names[:-1]) + f" und {names[-1]} schreiben …"
+
+
+class Composer(Gtk.Overlay):
+    """f024/f025, the input like Messages on the Mac: it grows with the text up to six lines and then scrolls; Enter sends,
+    Shift+Enter starts a new line. Speaks like a Gtk.Entry (get_text, set_text, set_position, „changed“, „activate“)."""
+
+    __gsignals__ = {"changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+                    "activate": (GObject.SignalFlags.RUN_FIRST, None, ())}
+    LINES = 6
+
+    def __init__(self, placeholder, css_classes, input_hints):
+        super().__init__(hexpand=True, css_classes=css_classes)
+        self.view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False, input_hints=input_hints,
+                                 top_margin=6, bottom_margin=6, css_classes=["lichat-input-view"])
+        self.view.update_property([Gtk.AccessibleProperty.LABEL], ["Nachricht"])
+        try:
+            line = self.view.get_pango_context().get_metrics(None, None).get_height() / Pango.SCALE or 20
+        except (AttributeError, TypeError):
+            line = 20
+        self.scroll = Gtk.ScrolledWindow(child=self.view, hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                         max_content_height=int(line * self.LINES + 12), valign=Gtk.Align.CENTER)
+        self.set_child(self.scroll)
+        self.placeholder = Gtk.Label(label=placeholder, xalign=0, css_classes=["lichat-placeholder"], can_target=False,
+                                     valign=Gtk.Align.CENTER, halign=Gtk.Align.START)
+        self.add_overlay(self.placeholder)
+        self.buffer = self.view.get_buffer()
+        self.buffer.connect("changed", self._changed)
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._key)
+        self.view.add_controller(keys)
+
+    def _changed(self, _buffer):
+        self.placeholder.set_visible(not self.get_text())
+        self.emit("changed")
+
+    def _key(self, _controller, keyval, _keycode, state):
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter) and not state & Gdk.ModifierType.SHIFT_MASK:
+            self.emit("activate")
+            return True
+        return False
+
+    def get_text(self):
+        return self.buffer.get_text(self.buffer.get_start_iter(), self.buffer.get_end_iter(), False)
+
+    def set_text(self, text):
+        self.buffer.set_text(text)
+
+    def set_position(self, position):
+        self.buffer.place_cursor(self.buffer.get_end_iter() if position < 0 else self.buffer.get_iter_at_offset(position))
+
+    def get_position(self):
+        return self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
+
+    def grab_focus(self):
+        return self.view.grab_focus()
 
 
 class Worker:
@@ -845,8 +900,8 @@ class Window(Adw.ApplicationWindow):
         self.attach_button = attach
         line.append(attach)
         # Capital letters at the start of a sentence, spelling checked (Olaf c81920e8: the keyboard wrote everything small).
-        self.input = Gtk.Entry(placeholder_text="LiChat", hexpand=True, css_classes=["lichat-input"],
-                               input_hints=Gtk.InputHints.UPPERCASE_SENTENCES | Gtk.InputHints.SPELLCHECK | Gtk.InputHints.EMOJI)
+        self.input = Composer("LiChat", ["lichat-input"],
+                              Gtk.InputHints.UPPERCASE_SENTENCES | Gtk.InputHints.SPELLCHECK | Gtk.InputHints.EMOJI)
         self.input.connect("activate", lambda *_: self.send())
         self.input.connect("changed", self.typed)
         self.input.connect("changed", self.keep_draft)

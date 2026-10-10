@@ -69,7 +69,12 @@ window.lichat, .lichat-transcript, .lichat-setup, .lichat-pane { background-colo
 
 /* ---------- input ---------- */
 .lichat-input { border-radius: 16px; min-height: 30px; border: 1px solid rgba(60, 60, 67, 0.25); background-color: #ffffff; box-shadow: none; padding: 0 10px; }
+.lichat-input-view, .lichat-input-view text, .lichat-input scrolledwindow { background: none; }
+.lichat-placeholder { color: rgba(60, 60, 67, 0.3); }
+.lichat-input:focus-within { border-color: #0a7aff; box-shadow: 0 0 0 1px #0a7aff; }
+.lichat-dark .lichat-placeholder { color: rgba(235, 235, 245, 0.3); }
 .lichat-dark .lichat-input { background-color: #1e1e1e; border-color: rgba(235, 235, 245, 0.25); color: #f5f5f7; }
+.lichat-dark .lichat-input-view text { color: #f5f5f7; }
 .lichat-to { font-size: 13px; color: rgba(60, 60, 67, 0.6); }
 .lichat-to-entry { background: none; box-shadow: none; border: none; }
 
