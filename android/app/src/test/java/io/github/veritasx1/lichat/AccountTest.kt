@@ -550,6 +550,16 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertTrue((0 until clipped.length()).all { clipped.getInt(it) == 31 })
     }
 
+    /** Olaf 10.10.: „Server: unbekannt (404)“ when writing to „anna“ (she is anna.berg) – now a plain sentence with a guess. */
+    @Test
+    fun unknownNameIsSaidPlainly() {
+        File(root, "aw").let { Account.register(it, url, invites.removeFirst(), "anna.berg", KeyVault.Plain.create(it)) }
+        val olaf = person("olaf")
+        olaf.chatWith("anna.berg")
+        val error = try { olaf.start(listOf("anna")); null } catch (e: LiChatException) { e.message }
+        assertEquals("„anna“ gibt es auf diesem Server nicht – meinst du anna.berg?", error)
+    }
+
     /** Michelle 1a682a79 (b): playing my own voice message leaves the dot of theirs alone. */
     @Test
     fun playingMineKeepsTheirsUnheard() {

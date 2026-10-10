@@ -362,6 +362,15 @@ class Groups(Base):
         self.assertTrue(all(m.get("angehoert") for m in bernd.chats[cid]["messages"] if m.get("anhang")))
         self.assertFalse(any(m.get("angehoert") for m in anna.chats[cid]["messages"]), "nur bei mir, niemandem gesagt")
 
+    def test_unknown_name_is_said_plainly(self):
+        """Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ (she is anna.berg) – now a plain sentence with a guess."""
+        self.person("anna.berg")
+        olaf = self.person("olaf")
+        olaf.chat_with("anna.berg")
+        with self.assertRaises(LiChatError) as caught:
+            olaf.start(["anna"])
+        self.assertEqual(str(caught.exception), "„anna“ gibt es auf diesem Server nicht – meinst du anna.berg?")
+
     def test_typing_takes_as_long_as_the_text(self):
         """Olaf 09.10.: short quickly, long slowly, at most 3 minutes – and „…“ goes out on the way (both switched on)."""
         anna, bernd = self.person("anna"), self.person("bernd")

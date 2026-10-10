@@ -662,6 +662,11 @@ class Account(val folder: File, private val key: ByteArray) {
     fun start(usernames: List<String>, title: String = ""): String {
         val others = usernames.map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != username }.toSortedSet()
         if (others.isEmpty()) throw LiChatException("Mit wem? Mindestens eine andere Person")
+        // A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): say it plainly, with a guess.
+        others.firstOrNull { directory(it).isEmpty() }?.let { missing ->
+            val guess = knownPeople().firstOrNull { missing in it || it.substringBefore('.') == missing }
+            throw LiChatException("„$missing“ gibt es auf diesem Server nicht" + (guess?.let { " – meinst du $it?" } ?: ""))
+        }
         val (roster, packages) = claim(others.toList())
         roster.put(username, JSONArray().put(deviceId))
         val packets = mutableListOf<ByteArray>()
@@ -1184,9 +1189,10 @@ class Account(val folder: File, private val key: ByteArray) {
         val packet: ByteArray
         val targets: List<String>
         synchronized(lock) {
+            targets = targets(cid)
+            if (targets.isEmpty()) return false      // nobody to tell yet (just joined) – no 400 every 3 s from the server
             packet = device.encrypt(cid.unhex(), payload(JSONObject().put("t", "tippt").put("at", System.currentTimeMillis() / 1000)))
             save()
-            targets = targets(cid)
         }
         post(targets, byteArrayOf(MLS) + packet)
         return true

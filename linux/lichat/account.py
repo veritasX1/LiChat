@@ -759,9 +759,14 @@ class Account:
     def start(self, usernames, title=""):
         """A conversation with these people (all their devices). Every claimed key package must belong to the user and
         the device the directory names – the server cannot slip in a device of its own."""
-        others = sorted({u for u in usernames if u != self.username})
+        others = sorted({str(u).strip().lower() for u in usernames if str(u).strip() and u != self.username})
         if not others:
             raise LiChatError("Mit wem? Mindestens eine andere Person")
+        # A name nobody has (Olaf 10.10.: „Server: unbekannt (404)“ for „anna“ – she is anna.berg): plainly, with a guess.
+        for missing in others:
+            if not self.directory(missing):
+                guess = next((p for p in self.known_people() if missing in p or p.split(".")[0] == missing), None)
+                raise LiChatError(f"„{missing}“ gibt es auf diesem Server nicht" + (f" – meinst du {guess}?" if guess else ""))
         roster, packages = self._claim(others)
         roster[self.username] = [self.device_id]
         with self.lock:
@@ -1247,9 +1252,11 @@ class Account:
             return False
         self._typed[cid] = now
         with self.lock:
+            targets = self.targets(cid)
+            if not targets:
+                return False        # nobody to tell yet (just joined) – no 400 every few seconds from the server
             packet = self.device.encrypt(bytes.fromhex(cid), self._payload({"t": "tippt", "at": int(time.time())}))
             self.save()
-            targets = self.targets(cid)
         self.server.call("POST", "/v1/messages", {"to": targets, "blob": b64(MLS + bytes(packet))})
         return True
 
