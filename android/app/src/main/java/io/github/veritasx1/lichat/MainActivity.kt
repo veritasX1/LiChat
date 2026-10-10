@@ -402,7 +402,8 @@ fun LiChatApp(opened: androidx.compose.runtime.MutableState<String?> = mutableSt
                         "bild" -> photo = bytes
                         "sprache" -> {
                             playing = info.optString("id"); paused = false; media.play(bytes) { playing = null; paused = false }
-                            chatId()?.let { cid -> acc.markListened(cid, info.optString("id")); Hub.changed() }      // the dot goes (1a682a79)
+                            val length = media.progress()?.second?.takeIf { it > 0 }?.let { it / 1000.0 }
+                            chatId()?.let { cid -> acc.markListened(cid, info.optString("id"), length); Hub.changed() }      // the dot goes (1a682a79)
                         }
                         else -> media.view(bytes, info)?.let { problem = it }
                     }
