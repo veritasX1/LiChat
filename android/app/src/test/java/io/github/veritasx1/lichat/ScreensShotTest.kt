@@ -3,6 +3,7 @@ package io.github.veritasx1.lichat
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.foundation.background
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
@@ -191,6 +192,33 @@ httpd.serve_forever()
         }
         compose.onNodeWithText("0:03").assertExists()
         compose.onNode(androidx.compose.ui.test.hasContentDescription("Abgespielt 25 Prozent")).assertExists()
+    }
+
+    /** cf647f61 + 2fcc3eef: my photo going up (ring with ×, 40 %), a received photo with its caption under it, and two photos
+     *  waiting above the input (one pixelated) with × and the send button already there. */
+    @Test
+    fun photoUploadCaptionStaged() {
+        val picture = android.graphics.Bitmap.createBitmap(1200, 900, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF4FA36B.toInt()) }
+        val raw = java.io.ByteArrayOutputStream().also { picture.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
+        val info = org.json.JSONObject().put("id", "p1").put("art", "bild").put("vorschau", java.util.Base64.getEncoder().encodeToString(preview))
+        val mine = org.json.JSONObject().put("from", "anna").put("text", "").put("mid", "m1").put("anhang", info)
+        val theirs = org.json.JSONObject().put("from", "bernd").put("text", "Der Garten im Oktober 🍂").put("mid", "m2")
+            .put("anhang", org.json.JSONObject(info.toString()).put("id", "p2"))
+        val staged = listOf(io.github.veritasx1.lichat.ui.Staged(android.net.Uri.EMPTY, jpeg),
+            io.github.veritasx1.lichat.ui.Staged(android.net.Uri.EMPTY, jpeg, secret = true))
+        shot("2l-foto-hochladen-bildunterschrift-eingabe") {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.background(io.github.veritasx1.lichat.ui.palette().background)) {
+                io.github.veritasx1.lichat.ui.Bubble(mine, true, actions = io.github.veritasx1.lichat.ui.AttachmentActions(uploading = { 0.4f }))
+                io.github.veritasx1.lichat.ui.Bubble(theirs, false)
+                io.github.veritasx1.lichat.ui.InputBar({}, io.github.veritasx1.lichat.ui.AttachmentActions(staged = staged))
+            }
+        }
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Wird gesendet, 40 Prozent – tippen zum Abbrechen")).assertExists()
+        compose.onNodeWithText("Der Garten im Oktober 🍂").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Foto 2 entfernen")).assertExists()
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("Senden")).assertExists()
+        compose.onNodeWithText("Text zum Foto").assertExists()
     }
 
     /** 18cfe3d2: a wrapped message's bubble is only as wide as its longest line – no blue space on the right; links tappable. */

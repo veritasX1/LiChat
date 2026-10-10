@@ -496,6 +496,30 @@ a.send_attachment("$cid", b"Kohle, Wuerstchen", "Einkauf.txt", "text/plain", "da
         assertFalse(server.walk().filter { it.isFile }.any { String(it.readBytes(), Charsets.ISO_8859_1).contains("quittung") })
     }
 
+    /** Card 2fcc3eef: photo and text leave as one message – the caption arrives with the picture on a phone and in the CLI,
+     *  and the CLI's --text comes back the same way. */
+    @Test
+    fun captionTravelsWithThePicture() {
+        val anna = person("anna"); val bernd = person("bernd")
+        assertTrue(cli("erna", "register", url, invites.removeFirst(), "erna").contains("Angemeldet"))
+        val cid = anna.start(listOf("bernd", "erna"))
+        bernd.fetch(); cli("erna", "abholen")
+        val bitmap = android.graphics.Bitmap.createBitmap(400, 300, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF3C9A5A.toInt()) }
+        val raw = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        val (jpeg, preview) = io.github.veritasx1.lichat.core.Pictures.photo(raw)
+        anna.sendAttachment(cid, jpeg, "garten.jpg", "image/jpeg", "bild", preview = preview, caption = "  Der Garten im Oktober  ")
+        val list = anna.chat(cid).getJSONArray("messages")
+        assertEquals("Der Garten im Oktober", list.getJSONObject(list.length() - 1).getString("text"))
+        val got = bernd.fetch().filter { it.attachment != null }.single()
+        assertEquals("Foto: Der Garten im Oktober", got.text)
+        val theirs = bernd.chat(cid).getJSONArray("messages").let { it.getJSONObject(it.length() - 1) }
+        assertEquals("Der Garten im Oktober", theirs.getString("text"))
+        assertTrue(cli("erna", "abholen").contains("Foto: Der Garten im Oktober"))
+        val file = File(root, "notiz.txt").apply { writeText("Kohle") }
+        cli("erna", "datei", cid, file.absolutePath, "--text", "Einkaufsliste", "für", "Samstag")
+        assertEquals(listOf("Datei: notiz.txt: Einkaufsliste für Samstag"), anna.fetch().filter { it.attachment != null }.map { it.text })
+    }
+
     /** Card cf647f61: the bubble is there before the upload; a failed upload stays „Nicht gesendet“ and goes up again on a
      *  retry (once at the other end); the ring fills to 100 %; a cancelled upload takes bubble and outbox bytes with it. */
     @Test

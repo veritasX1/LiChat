@@ -127,10 +127,11 @@ fun describe(message: JSONObject): String {
     if (message.optBoolean("zurueckgerufen")) return "Nachricht widerrufen"
     val info = message.optJSONObject("anhang") ?: return message.optString("text")
     if (info.optBoolean("einmal")) return "Foto · Einmal-Ansicht"
-    return when (info.optString("art")) {
+    val label = when (info.optString("art")) {
         "bild" -> "Foto"; "video" -> "Video"; "sprache" -> "Sprachnachricht"
         else -> "Datei: " + info.optString("name")
     }
+    return message.optString("text").takeIf { it.isNotBlank() }?.let { "$label: $it" } ?: label   // with its caption (2fcc3eef)
 }
 
 /** https only – except for a server on this phone (adb reverse in tests: 127.0.0.1 is the computer). */
@@ -1014,8 +1015,9 @@ class Account(val folder: File, private val key: ByteArray) {
             message.put("status", "wartet")
             return upload(cid, message, changed)
         }
-        val content = message.optJSONObject("anhang")?.let { JSONObject(it.toString()).put("t", "anhang") }
-            ?: JSONObject().put("t", "text").put("text", message.optString("text"))
+        val content = message.optJSONObject("anhang")?.let { a ->
+            JSONObject(a.toString()).put("t", "anhang").also { c -> message.optString("text").takeIf { it.isNotEmpty() }?.let { c.put("text", it) } }
+        } ?: JSONObject().put("t", "text").put("text", message.optString("text"))
         content.put("at", message.optLong("at")).put("mid", mid)
         message.put("status", "wartet")
         return deliver(cid, message, content)
@@ -1168,7 +1170,8 @@ class Account(val folder: File, private val key: ByteArray) {
     /** Encrypts [data] with its own key, uploads the encrypted bytes, announces it end-to-end. Photos come already
      *  prepared (Pictures.photo: without EXIF, at most 2048 px) with their [preview]. */
     fun sendAttachment(cid: String, data: ByteArray, name: String, mime: String, kind: String, durationS: Double? = null,
-                       preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, changed: () -> Unit = onChange): JSONObject {
+                       preview: ByteArray? = null, once: Boolean = false, secret: Boolean = false, caption: String = "",
+                       changed: () -> Unit = onChange): JSONObject {
         if (kind !in KINDS) throw LiChatException("unbekannte Art von Anhang")
         if ((once || secret) && kind != "bild") throw LiChatException("Einmal-Ansicht und Verpixeln gibt es nur für Fotos")
         chat(cid).optString("removed").takeIf { it.isNotEmpty() }?.let { throw LiChatException("$it hat dich aus dem Gespräch entfernt") }
@@ -1191,7 +1194,8 @@ class Account(val folder: File, private val key: ByteArray) {
         else preview?.let { info.put("vorschau", b64(it)) }
         if (secret) info.put("geheim", true)
         val at = System.currentTimeMillis() / 1000
-        val message = JSONObject().put("from", username).put("text", "").put("at", at).put("anhang", info).put("mid", mid).put("status", "wartet")
+        // The caption lives in the same message as the picture (2fcc3eef, like Messages) – one bubble, one delivery.
+        val message = JSONObject().put("from", username).put("text", caption.trim()).put("at", at).put("anhang", info).put("mid", mid).put("status", "wartet")
         synchronized(lock) { chat(cid).getJSONArray("messages").put(message); save() }
         changed()
         return upload(cid, message, changed)
@@ -1251,7 +1255,9 @@ class Account(val folder: File, private val key: ByteArray) {
                 changed()
             }
         }
-        return deliver(cid, message, JSONObject(info.toString()).put("t", "anhang").put("at", message.optLong("at")).put("mid", mid))
+        val content = JSONObject(info.toString()).put("t", "anhang").put("at", message.optLong("at")).put("mid", mid)
+        message.optString("text").takeIf { it.isNotEmpty() }?.let { content.put("text", it) }
+        return deliver(cid, message, content)
     }
 
     private fun sha256(data: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(data).hex()
@@ -1725,7 +1731,7 @@ class Account(val folder: File, private val key: ByteArray) {
                         for (flag in listOf("einmal", "geheim")) if (data.optBoolean(flag) && info.optString("art") == "bild") info.put(flag, true)
                         if (info.optBoolean("einmal")) info.remove("vorschau")
                         val sent = data.optLong("at", System.currentTimeMillis() / 1000)
-                        val message = JSONObject().put("from", sender).put("text", "").put("at", sent).put("anhang", info)
+                        val message = JSONObject().put("from", sender).put("text", data.optString("text")).put("at", sent).put("anhang", info)
                         typingSeen[cid]?.remove(sender)
                         rememberMid(cid, message, data)
                         chat.getJSONArray("messages").put(message)
